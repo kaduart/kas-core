@@ -1,8 +1,15 @@
+const correlationIDPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
 function matchesType(value, expectedType) {
-  if (expectedType === 'integer') return Number.isInteger(value);
+  // Go values are int64; JavaScript can compare only safe integers exactly.
+  if (expectedType === 'integer') return Number.isSafeInteger(value);
   if (expectedType === 'boolean') return typeof value === 'boolean';
   if (expectedType === 'string') return typeof value === 'string';
   return false;
+}
+
+function validCorrelationID(value) {
+  return typeof value === 'string' && correlationIDPattern.test(value);
 }
 
 function safeTarget(rawURL) {
@@ -70,7 +77,7 @@ export function createKasConfigShadowClient({
             'content-type': 'application/json',
             'x-kas-service': serviceId,
             authorization: 'Bearer ' + token,
-            ...(correlationId ? { 'x-correlation-id': String(correlationId).slice(0, 80) } : {}),
+            ...(validCorrelationID(correlationId) ? { 'x-correlation-id': correlationId } : {}),
           },
           body: JSON.stringify({
             contract_version: 'v1',

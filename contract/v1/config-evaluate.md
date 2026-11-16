@@ -58,7 +58,7 @@ Every error response has this shape:
 | 403 | `tenant_inactive` | Tenant is registered but inactive; existing audit history is retained |
 | 404 | `tenant_not_found` | Requested tenant is absent from `tenant_registry` |
 | 404 | `config_not_found` | Tenant has no configured value for the key |
-| 413 | `invalid_request` | Request body exceeds the size limit |
+| 413 | `payload_too_large` | Request body exceeds the size limit |
 | 415 | `unsupported_media_type` | Content type is not JSON |
 | 422 | `unknown_key` | Key is absent from `key_schema` |
 | 422 | `type_mismatch` | Requested type differs from the declared key type |

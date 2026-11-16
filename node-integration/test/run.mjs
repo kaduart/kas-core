@@ -37,6 +37,7 @@ for (const testFile of [
   path.join(integrationDir, 'kasConfigShadowClient.test.mjs'),
   path.join(integrationDir, 'processIntegration.test.mjs'),
   path.join(integrationDir, 'auditProcessIntegration.test.mjs'),
+  path.join(integrationDir, 'tenantRegistryProcessIntegration.test.mjs'),
 ]) {
   const tests = spawnSync(process.execPath, ['--test', testFile], {
     cwd: integrationDir,

@@ -4,13 +4,14 @@ Projeto independente em Go, mantido fora dos repositórios do CRM. Esta etapa co
 
 O valor fictício `logging.max_meta_keys` foi inspirado em um logger do legado, mas é somente dado de exemplo declarado em `config.example.json`; o núcleo não depende do logger nem de caminhos ou entidades do CRM. Todos os tenants, atores e recursos usados nos exemplos são fictícios.
 
-## Executar localmente (PowerShell)
+## Executar localmente (WSL)
 
-Defina tokens descartáveis de teste, não credenciais reais:
+No Ubuntu WSL, entre na pasta do projeto e use somente tokens fictícios descartáveis:
 
-```powershell
-$env:KAS_CALLER_FONO_NODE_TOKEN = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-$env:KAS_CALLER_DEMO_NODE_B_TOKEN = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+```bash
+cd /mnt/c/Users/User/Documents/projetos/kas-core-pilot
+export KAS_CALLER_FONO_NODE_TOKEN='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+export KAS_CALLER_DEMO_NODE_B_TOKEN='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 go run ./cmd/kas-core -config ./config.example.json -audit-data-dir ./data -addr 127.0.0.1:8088
 ```
 
@@ -48,7 +49,7 @@ npm test
 
 `npm test` compila o executável localmente e executa testes do cliente Node, a integração Go–Node já existente e um teste HTTP real da auditoria. O teste da auditoria valida envio autorizado, negação de acesso cruzado, bloqueio da segunda instância, reinício com preservação dos eventos e nova gravação. Usa somente tenants e tokens fictícios. Não precisa de banco ou serviços externos; loopback local pode exigir permissão do ambiente de execução.
 
-O teste com detector de corrida (`go test -race ./...`) continua pendente neste ambiente: a compilação requer CGO e não há compilador C (`gcc`) disponível. Não foi instalado nenhum compilador.
+Para validar o código atual no WSL, execute os comandos de [VALIDACAO-AMANHA.md](VALIDACAO-AMANHA.md). O detector de corrida precisa de `CGO_ENABLED=1` e de um compilador C. Resultados de testes anteriores a uma alteração não validam essa alteração; o roteiro registra o que ainda deve ser executado.
 
 ## Limites
 

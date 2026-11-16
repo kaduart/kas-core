@@ -95,3 +95,38 @@ test('rejects a non-HTTPS remote endpoint before calling fetch', () => {
   assert.equal(client.observe(demoInput), 'invalid_endpoint');
   assert.equal(calls, 0);
 });
+
+test('forwards only correlation IDs accepted by the Go endpoint', async () => {
+  const receivedHeaders = [];
+  const client = createKasConfigShadowClient({
+    env: env(),
+    onObservation: () => {},
+    fetchImpl: async (_url, options) => {
+      receivedHeaders.push(options.headers);
+      return new Response(JSON.stringify({ contract_version: 'v1', tenant_id: 'tenant-demo-a', key: 'logging.max_meta_keys', type: 'integer', value: 10 }), { status: 200 });
+    },
+  });
+
+  for (const [correlationId, expected] of [
+    ['c'.repeat(64), 'c'.repeat(64)],
+    ['c'.repeat(65), undefined],
+    ['invalid correlation', undefined],
+  ]) {
+    assert.equal(client.observe({ ...demoInput, correlationId }), 'scheduled');
+    await client.flush();
+    assert.equal(receivedHeaders.at(-1)['x-correlation-id'], expected);
+  }
+});
+
+test('skips integer values JavaScript cannot compare exactly', async () => {
+  let calls = 0;
+  const client = createKasConfigShadowClient({
+    env: env(),
+    onObservation: () => {},
+    fetchImpl: async () => { calls++; },
+  });
+
+  assert.equal(client.observe({ ...demoInput, localValue: Number.MAX_SAFE_INTEGER + 1 }), 'skipped_context');
+  await client.flush();
+  assert.equal(calls, 0);
+});

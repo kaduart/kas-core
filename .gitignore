@@ -1,0 +1,11 @@
+# Local Go toolchain, build caches and temporary integration data
+.tools/
+
+# Local audit data and locks
+data/
+
+# Node dependencies and local environment files
+node_modules/
+.env
+.env.*
+!.env.example

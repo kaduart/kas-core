@@ -1,0 +1,33 @@
+{
+  "contract_version": "v1",
+  "config_version": "local-demo-2026-11-16",
+  "tenant_registry": [
+    {"id": "tenant-demo-a", "status": "active"},
+    {"id": "tenant-demo-b", "status": "active"}
+  ],
+  "key_schema": {
+    "logging.max_meta_keys": {
+      "type": "integer",
+      "min": 1,
+      "max": 10
+    }
+  },
+  "tenants": {
+    "tenant-demo-a": {
+      "logging.max_meta_keys": 10
+    },
+    "tenant-demo-b": {
+      "logging.max_meta_keys": 4
+    }
+  },
+  "callers": {
+    "fono-node-local": {
+      "token_env": "KAS_CALLER_FONO_NODE_TOKEN",
+      "tenants": ["tenant-demo-a"]
+    },
+    "demo-node-b": {
+      "token_env": "KAS_CALLER_DEMO_NODE_B_TOKEN",
+      "tenants": ["tenant-demo-b"]
+    }
+  }
+}

@@ -159,7 +159,7 @@ func (h *Handler) recordAuditEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	serviceID := r.Header.Get("X-KAS-Service")
 	token := bearerToken(r.Header.Get("Authorization"))
-	if err := h.store.Authorize(serviceID, token, submission.TenantID, configstore.CapabilityAudit); err != nil {
+	if err := h.store.Authorize(serviceID, token, submission.TenantID, configstore.CapabilityAuditWrite); err != nil {
 		h.writeAuthorizationError(w, r, err)
 		return
 	}
@@ -223,7 +223,7 @@ func (h *Handler) evaluate(w http.ResponseWriter, r *http.Request) {
 	}
 	serviceID := r.Header.Get("X-KAS-Service")
 	token := bearerToken(r.Header.Get("Authorization"))
-	if err := h.store.Authorize(serviceID, token, req.TenantID, configstore.CapabilityConfig); err != nil {
+	if err := h.store.Authorize(serviceID, token, req.TenantID, configstore.CapabilityConfigRead); err != nil {
 		h.writeAuthorizationError(w, r, err)
 		return
 	}

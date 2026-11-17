@@ -9,9 +9,9 @@ Authentication headers:
 - `X-KAS-Service: <service-id>`
 - `Authorization: Bearer <64-character hexadecimal token>`
 
-The service ID maps to a token environment-variable name, an explicit tenant allowlist and explicit capabilities in the server's JSON configuration. The token is loaded at startup from that environment variable. The same file contains `tenant_registry`, the central list of tenant IDs and their `active`/`inactive` status. A request succeeds only when its tenant is registered, active and in the authenticated service's allowlist, and the service has the `config` capability. Tenant IDs, statuses and capabilities cannot be changed through request bodies. The file is loaded once at startup; changes require a restart.
+The service ID maps to a token environment-variable name, an explicit tenant allowlist and explicit capabilities in the server's JSON configuration. The token is loaded at startup from that environment variable. The same file contains `tenant_registry`, the central list of tenant IDs and their `active`/`inactive` status. A request succeeds only when its tenant is registered, active and in the authenticated service's allowlist, and the service has the `config:read` capability. Tenant IDs, statuses and capabilities cannot be changed through request bodies. The file is loaded once at startup; changes require a restart.
 
-`callers.<service-id>.capabilities` accepts `config` and/or `audit`. An omitted or empty list grants no business capability and is denied by default. Unknown or duplicate capability names reject startup. Assign only the capabilities each service needs.
+`callers.<service-id>.capabilities` accepts `config:read` and/or `audit:write`. An omitted or empty list grants no business capability and is denied by default. Unknown or duplicate capability names reject startup. Assign only the capabilities each service needs.
 
 ## Request
 
@@ -58,7 +58,7 @@ Every error response has this shape:
 | 401 | `unauthorized` | Unknown service or invalid/missing service credential |
 | 403 | `tenant_forbidden` | Authenticated service is not authorized for the requested tenant |
 | 403 | `tenant_inactive` | Tenant is registered but inactive; existing audit history is retained |
-| 403 | `capability_forbidden` | Authenticated service lacks the `config` capability |
+| 403 | `capability_forbidden` | Authenticated service lacks the `config:read` capability |
 | 404 | `tenant_not_found` | Requested tenant is absent from `tenant_registry` |
 | 404 | `config_not_found` | Tenant has no configured value for the key |
 | 413 | `payload_too_large` | Request body exceeds the size limit |

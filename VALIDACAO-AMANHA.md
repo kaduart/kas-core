@@ -6,7 +6,7 @@ Este arquivo registra resultados locais e comandos reproduzíveis. Ele não repr
 
 - Base: commit `302fbc800672797078b5e35b3d6d4795f5f52c97`.
 - Os quatro resultados de baseline abaixo foram informados pelo usuário para esse commit, antes das alterações desta branch.
-- A validação pós-alterações foi executada no Ubuntu WSL na branch local `kas-core/validacao-core`, com as mudanças de capacidades `config` e `audit`, autorização por tenant, configuração de exemplo e handlers HTTP. O código e os testes correspondem ao commit `761aa4c2ef23a4836a79e9ea169f9c0d82bce54c`; os comandos foram executados na árvore local idêntica antes desse commit. As alterações posteriores neste roteiro são apenas documentação.
+- A validação pós-alterações foi executada no Ubuntu WSL na branch local `kas-core/validacao-core`, sobre a árvore derivada de `0f6b7fd26fbf024c3f41af5a1b6d62962073c153`, já com as capacidades `config:read` e `audit:write`, autorização por tenant, configuração de exemplo e handlers HTTP. Os resultados abaixo correspondem aos arquivos de código e testes registrados nesta entrega. Esta é validação local; não implica aprovação do GitHub Actions.
 
 ## Resultados pós-alterações (Ubuntu WSL)
 
@@ -19,13 +19,13 @@ Este arquivo registra resultados locais e comandos reproduzíveis. Ele não repr
 
 O `npm test` completo foi repetido isoladamente para capturar a saída final depois que a primeira saída conjunta terminou antes de mostrar o resumo Node. A execução final terminou com código 0. Todos os dados e tokens usados são fictícios.
 
-O OpenAPI foi carregado com o parser YAML já disponível no WSL; a sintaxe, os quatro caminhos e o enum de capacidades `config`/`audit` passaram. Esta validação confere YAML e estrutura básica, não substitui uma execução do workflow no GitHub Actions.
+O OpenAPI foi carregado com o parser YAML já disponível no WSL; a sintaxe, os quatro caminhos e o enum de capacidades `config:read`/`audit:write` passaram. Esta validação confere YAML e estrutura básica, não substitui uma execução do workflow no GitHub Actions.
 
 ## O que os testes de capacidades cobrem
 
-- Serviço com `config` e `audit`: acesso autorizado aos dois endpoints.
-- Serviço somente com `config`: configuração permitida e auditoria negada com `capability_forbidden`.
-- Serviço somente com `audit`: auditoria permitida e configuração negada com `capability_forbidden`.
+- Serviço com `config:read` e `audit:write`: acesso autorizado aos dois endpoints.
+- Serviço somente com `config:read`: configuração permitida e auditoria negada com `capability_forbidden`.
+- Serviço somente com `audit:write`: auditoria permitida e configuração negada com `capability_forbidden`.
 - Serviço sem capacidades declaradas: ambos os endpoints negados por padrão.
 - Acesso cruzado continua negado mesmo quando a capacidade da operação existe.
 - Capacidade desconhecida ou duplicada rejeita a configuração na inicialização.

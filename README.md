@@ -21,13 +21,13 @@ O arquivo JSON Lines é validado integralmente na abertura. Um registro parcial,
 
 ## Módulo de configuração
 
-Contrato `v1`: `POST /internal/v1/config/evaluate`, descrito em [contract/v1/config-evaluate.md](contract/v1/config-evaluate.md) e em [openapi.yaml](openapi.yaml). O esquema JSON declara chaves, tipo (`integer`, `boolean`, `string`) e faixa opcional de inteiros. O serviço autenticado precisa estar autorizado para o tenant solicitado e possuir a capacidade `config`. A configuração é somente leitura durante a vida do processo.
+Contrato `v1`: `POST /internal/v1/config/evaluate`, descrito em [contract/v1/config-evaluate.md](contract/v1/config-evaluate.md) e em [openapi.yaml](openapi.yaml). O esquema JSON declara chaves, tipo (`integer`, `boolean`, `string`) e faixa opcional de inteiros. O serviço autenticado precisa estar autorizado para o tenant solicitado e possuir a capacidade `config:read`. A configuração é somente leitura durante a vida do processo.
 
 As respostas de autorização incluem `tenant_not_found` (404) para tenant ausente do registro e `tenant_inactive` (403) para tenant desativado; `tenant_forbidden` (403) continua indicando que o serviço autenticado não tem vínculo com o tenant.
 
 ## Módulo de auditoria
 
-Contrato `v1`: `POST /internal/v1/audit/events`, descrito em [contract/v1/audit-events.md](contract/v1/audit-events.md) e em [openapi.yaml](openapi.yaml). O serviço autenticado precisa estar autorizado para o tenant e possuir a capacidade `audit`. A gravação retorna `201` somente depois de escrever e sincronizar o evento. `service_id` no corpo precisa corresponder ao serviço autenticado. `actor` é uma declaração do serviço emissor, não uma identidade de usuário verificada pela KAS Core.
+Contrato `v1`: `POST /internal/v1/audit/events`, descrito em [contract/v1/audit-events.md](contract/v1/audit-events.md) e em [openapi.yaml](openapi.yaml). O serviço autenticado precisa estar autorizado para o tenant e possuir a capacidade `audit:write`. A gravação retorna `201` somente depois de escrever e sincronizar o evento. `service_id` no corpo precisa corresponder ao serviço autenticado. `actor` é uma declaração do serviço emissor, não uma identidade de usuário verificada pela KAS Core.
 
 Os campos são estruturados e não há campo de payload arbitrário. Não envie tokens, dados pessoais, clínicos ou financeiros. Logs do servidor contêm somente resultado HTTP, código de erro fixo e duração, sem corpo ou credenciais.
 
@@ -56,7 +56,7 @@ Para validar o código atual no WSL, execute os comandos de [VALIDACAO-AMANHA.md
 
 O workflow [KAS Core CI](.github/workflows/ci.yml) executa os mesmos quatro checks em `ubuntu-latest` no push à branch `kas-core/validacao-core`, em pull requests para `main` e sob acionamento manual. Usa apenas tokens fictícios escritos nos testes; não lê segredos do repositório, não acessa produção e não faz deploy.
 
-Serviços recebem capacidades na configuração de inicialização: `config`, `audit` ou ambas. Campo ausente/vazio concede nenhuma capacidade; nomes desconhecidos ou repetidos impedem a inicialização. Para manter o funcionamento do exemplo, `config.example.json` declara explicitamente ambas para os dois serviços fictícios. A autorização por tenant continua obrigatória em conjunto com a capacidade.
+Serviços recebem capacidades na configuração de inicialização: `config:read`, `audit:write` ou ambas. Campo ausente/vazio concede nenhuma capacidade; nomes desconhecidos ou repetidos impedem a inicialização. Para manter o funcionamento do exemplo, `config.example.json` declara explicitamente ambas para os dois serviços fictícios. A autorização por tenant continua obrigatória em conjunto com a capacidade.
 
 ## Limites
 

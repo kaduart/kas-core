@@ -16,8 +16,8 @@ import (
 const ContractVersion = "v1"
 
 const (
-	CapabilityConfig = "config"
-	CapabilityAudit  = "audit"
+	CapabilityConfigRead = "config:read"
+	CapabilityAuditWrite = "audit:write"
 )
 
 var (
@@ -195,7 +195,7 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 		capabilities := make(map[string]struct{}, len(rawCaller.Capabilities))
 		for _, capability := range rawCaller.Capabilities {
 			switch capability {
-			case CapabilityConfig, CapabilityAudit:
+			case CapabilityConfigRead, CapabilityAuditWrite:
 			default:
 				return nil, fmt.Errorf("service caller %q declares an unknown capability", serviceID)
 			}

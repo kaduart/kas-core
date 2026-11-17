@@ -18,7 +18,7 @@ import (
 	"kas-core-pilot/internal/configstore"
 )
 
-const handlerFixture = `{"contract_version":"v1","config_version":"fixture-1","tenant_registry":[{"id":"tenant-demo-a","status":"active"},{"id":"tenant-demo-b","status":"active"}],"key_schema":{"logging.max_meta_keys":{"type":"integer","min":1,"max":10}},"tenants":{"tenant-demo-a":{"logging.max_meta_keys":10},"tenant-demo-b":{"logging.max_meta_keys":4}},"callers":{"node-a":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["config","audit"]},"node-b":{"token_env":"TOKEN_B","tenants":["tenant-demo-b"],"capabilities":["config","audit"]},"node-config":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["config"]},"node-audit":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["audit"]},"node-none":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"]}}}`
+const handlerFixture = `{"contract_version":"v1","config_version":"fixture-1","tenant_registry":[{"id":"tenant-demo-a","status":"active"},{"id":"tenant-demo-b","status":"active"}],"key_schema":{"logging.max_meta_keys":{"type":"integer","min":1,"max":10}},"tenants":{"tenant-demo-a":{"logging.max_meta_keys":10},"tenant-demo-b":{"logging.max_meta_keys":4}},"callers":{"node-a":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["config:read","audit:write"]},"node-b":{"token_env":"TOKEN_B","tenants":["tenant-demo-b"],"capabilities":["config:read","audit:write"]},"node-config":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["config:read"]},"node-audit":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["audit:write"]},"node-none":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"]}}}`
 const handlerTokenA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const handlerTokenB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
@@ -270,11 +270,11 @@ func TestServiceCapabilitiesGateConfigAndAuditEndpoints(t *testing.T) {
 		t.Fatalf("audit-only service could not record audit: %d %s", got.Code, got.Body.String())
 	}
 
-	noCapabilityAudit := strings.Replace(validAuditBody, `"service_id":"node-a"`, `"service_id":"node-none"`, 1)
+	noCapabilityAuditWrite := strings.Replace(validAuditBody, `"service_id":"node-a"`, `"service_id":"node-none"`, 1)
 	if got := call(handler, "node-none", handlerTokenA, "tenant-demo-a", configBody); got.Code != http.StatusForbidden || !strings.Contains(got.Body.String(), `"capability_forbidden"`) {
 		t.Fatalf("service without capabilities config status/body = %d %s", got.Code, got.Body.String())
 	}
-	if got := auditCall(handler, "node-none", handlerTokenA, noCapabilityAudit); got.Code != http.StatusForbidden || !strings.Contains(got.Body.String(), `"capability_forbidden"`) {
+	if got := auditCall(handler, "node-none", handlerTokenA, noCapabilityAuditWrite); got.Code != http.StatusForbidden || !strings.Contains(got.Body.String(), `"capability_forbidden"`) {
 		t.Fatalf("service without capabilities audit status/body = %d %s", got.Code, got.Body.String())
 	}
 

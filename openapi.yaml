@@ -76,7 +76,7 @@ paths:
       summary: Evaluate a tenant configuration value
       description: >-
         Requires a valid service token, an active registered tenant authorized
-        for that service, and the service capability `config`. The tenant in the
+        for that service, and the service capability `config:read`. The tenant in the
         body selects the requested tenant but grants no authority by itself.
         Capabilities are fixed at startup in the server configuration; omitted
         capabilities deny access by default.
@@ -162,7 +162,7 @@ paths:
       summary: Record an audit event
       description: >-
         Requires a valid service token, an active registered tenant authorized
-        for that service, and the service capability `audit`. Body service_id
+        for that service, and the service capability `audit:write`. Body service_id
         must equal authenticated X-KAS-Service. Actor is an emitter assertion,
         not a user identity verified by KAS. The server returns success only
         after a complete JSON Lines record has been synchronized to local disk.
@@ -347,7 +347,7 @@ components:
   schemas:
     ServiceCapability:
       type: string
-      enum: [config, audit]
+      enum: ['config:read', 'audit:write']
       description: >-
         Startup-only capability. Missing/empty caller capability lists grant
         none. Unknown and duplicate values reject configuration loading.

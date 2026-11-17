@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - kas-core/validacao-core
+      - kas-core/operacional
   pull_request:
     branches:
       - main
@@ -63,3 +64,46 @@ jobs:
       - name: Node unit and process integration tests
         working-directory: node-integration
         run: npm test
+
+  docker:
+    name: Docker image and compose stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Build the image
+        run: docker build -t kas-core:ci .
+
+      - name: The image runs as a non-root user
+        run: |
+          user="$(docker image inspect --format '{{.Config.User}}' kas-core:ci)"
+          echo "image user: $user"
+          test "$user" = "65532:65532"
+
+      - name: The static binary starts (a missing configuration exits with code 2)
+        run: |
+          set +e
+          docker run --rm kas-core:ci -config /nonexistent
+          code=$?
+          echo "exit code: $code"
+          test "$code" -eq 2
+
+      - name: The compose file is valid
+        run: |
+          ./scripts/dev-certs.sh
+          docker compose config --quiet
+
+      - name: Start the stack and run the smoke test
+        run: |
+          docker compose up -d --build kas
+          ./scripts/compose-smoke.sh
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

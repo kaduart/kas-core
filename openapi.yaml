@@ -75,6 +75,37 @@ paths:
           $ref: '#/components/responses/MethodNotAllowed'
         '503':
           $ref: '#/components/responses/ServerUnavailable'
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus metrics
+      description: >-
+        Prometheus text exposition (version 0.0.4). Labels are fixed values only:
+        route (a fixed list; anything else is "other"), status code, delivery state
+        and token slot. No tenant, service or token appears in any label. Served
+        before the concurrency limiter and while draining. Present only when the
+        endpoint is enabled (loopback listener, or -metrics-token-env set).
+      operationId: getMetrics
+      security:
+        - {}
+        - MetricsBearer: []
+      responses:
+        '200':
+          description: Metrics in the Prometheus text format.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: A token is required and was missing or wrong.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The endpoint is not enabled.
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
   /internal/v1/config/evaluate:
     post:
       tags: [Configuration]
@@ -538,7 +569,15 @@ components:
       bearerFormat: 64-character hexadecimal token
       description: >-
         Secret loaded from the service's configured token_env variable at startup.
+        During a credential rotation a service may also configure token_env_next;
+        both tokens are accepted until the old one is removed (see RUNBOOK.md).
         Never place the token in the JSON body or logs.
+    MetricsBearer:
+      type: http
+      scheme: bearer
+      description: >-
+        Token named by the -metrics-token-env flag. Without that flag, /metrics is
+        served only on a loopback listener and is not registered otherwise.
   parameters:
     CorrelationID:
       name: X-Correlation-ID

@@ -233,3 +233,63 @@ go test -count=1 ./... && go vet ./... && CGO_ENABLED=1 go test -count=1 -race .
 (cd node-integration && npm test)
 ```
 Para o fluxo manual (publicar, claim, ack/nack, purge), veja `contract/v1/events.md` e a seção do README.
+
+## Rodada operacional (branch `kas-core/operacional`) — resultados no Ubuntu WSL
+
+Base: `main` em `39bb58d` (já tem as fases 1 e 2 do Outbox) **+ o commit da fase 3** (consumo por pull e `-events-purge`), trazido com `cherry-pick` (`6462c3d`, mesmo conteúdo de `fcfce3a`) porque a fase 3 ainda não está em `main` e o runbook precisa da limpeza. Se a fase 3 for mergeada antes, o `cherry-pick` fica como o mesmo patch e não conflita. Sem deploy, produção, merge, CRM ou identidade humana.
+
+**Entregue**
+1. **Dockerfile multi-stage:** compila com `CGO_ENABLED=0` (binário estático) e copia para `gcr.io/distroless/static-debian12:nonroot` (usuário `65532`, sem shell). `.dockerignore`.
+2. **`docker-compose.yml` (só desenvolvimento):** PostgreSQL 16 com TLS e dois papéis (`kas_migrator`, `kas_runtime`), serviço `migrate`, serviço `grants` (`deploy/grants.sql`) e `kas` com o papel restrito e `-audit-auto-migrate=false`. TLS com certificado autoassinado gerado por `scripts/dev-certs.sh` (a KAS exige TLS fora de loopback, inclusive para o banco). Portas presas a `127.0.0.1`, `read_only`, `cap_drop: ALL`. Senhas e tokens padrão são fictícios.
+3. **Rotação de credenciais:** `token_env_next` opcional por serviço; os dois tokens valem ao mesmo tempo, comparados sem parar no primeiro acerto; precisam ser diferentes e em variáveis diferentes. Vale para a autorização normal e a de consumidores pull. Log de início lista os serviços em rotação.
+4. **`GET /metrics`:** formato Prometheus 0.0.4, sem dependência nova. `kas_http_requests_total{route,status}`, `kas_http_request_duration_seconds{route}`, `kas_http_requests_in_flight`, `kas_outbox_deliveries{state}`, `kas_outbox_oldest_due_pending_age_seconds`, `kas_outbox_stats_up`, `kas_service_token_checks_total{slot}`, `kas_services_rotating_tokens`, `kas_process_start_time_seconds`. Rotas de uma lista fixa (o resto vira `other`); nenhum rótulo com tenant, serviço ou token.
+5. **`RUNBOOK.md`:** subir, migrar, limpeza, rotacionar token, tratar `dead`, métricas, backup e restauração.
+6. **CI:** novo job `docker` (build da imagem, usuário não-root, binário inicia, `docker compose config`, pilha completa e `scripts/compose-smoke.sh`).
+
+**Arquivos novos:** `Dockerfile`, `.dockerignore`, `.gitattributes`, `.env.example`, `docker-compose.yml`, `RUNBOOK.md`, `deploy/grants.sql`, `deploy/dev/initdb/10-roles.sh`, `scripts/{dev-certs,compose-smoke}.sh`, `internal/metrics/*`, `internal/httpapi/{metrics,metrics_test}.go`, `internal/events/{metrics,metrics_test}.go`. **Alterados:** `internal/configstore/store.go` (+ testes), `internal/httpapi/handler.go`, `cmd/kas-core/main.go` (+ teste), `.github/workflows/ci.yml`, `.gitignore`, `openapi.yaml`, contrato de configuração, README.
+
+| Comando | Resultado |
+|---|---|
+| `gofmt -l internal cmd` | Sem saída |
+| `go vet ./...` | Aprovado |
+| `go test ./...` sem `KAS_TEST_DATABASE_URL` | Aprovado; testes de banco ficam SKIP |
+| `go test ./...` com banco local | Aprovado: 135 PASS e 2 SKIP |
+| `CGO_ENABLED=1 go test -race ./...` com banco local | Aprovado |
+| `npm test` | 11 testes, 0 falhas |
+| Build estático (`CGO_ENABLED=0`) | `ELF 64-bit ... statically linked` |
+| YAML (OpenAPI, compose, CI) e sintaxe dos scripts | Válidos; 9 caminhos no OpenAPI, nenhuma `$ref` quebrada; scripts sem CRLF e com bit de execução |
+| **Simulação do runbook em dois bancos descartáveis (40 verificações)** | 40 aprovadas, 0 falhas: migrar e `grants.sql` (e repetir), subir com o papel restrito em TLS e modo verificado, `compose-smoke.sh`, rotação (os dois tokens valem; token desconhecido 401; promoção; token antigo 401), `dead` (listar, reenfileirar, voltar a ser entregue), limpeza (simulação e real), `pg_dump`/`pg_restore`, migrar após restaurar, grants após restaurar, reenvio idêntico 200 e evento novo 201 no banco restaurado; bancos e papel removidos no fim |
+
+**Os 2 SKIP** são os testes de papel com menor privilégio, inalterados nesta rodada (precisam criar papéis; validados antes com `CREATEROLE` temporário). Esta rodada não mexeu em privilégios. Na simulação do runbook, o servidor rodou o tempo todo com um papel de runtime criado só com `deploy/grants.sql`, inclusive lendo as estatísticas da Outbox (`kas_outbox_stats_up 1`) e publicando, reivindicando e confirmando eventos.
+
+**A simulação encontrou um erro no meu rascunho do runbook**, já corrigido: `pg_dump` inclui as concessões (ACL) por padrão; o procedimento agora usa `--no-owner --no-acl` e reaplica `deploy/grants.sql` depois de restaurar.
+
+**Não validado**
+- **Docker:** não há Docker neste computador. A imagem, o `docker-compose.yml` (TLS do PostgreSQL por `entrypoint` com cópia da chave, serviços `migrate`/`grants` como tarefas únicas, `depends_on: service_completed_successfully`, `read_only`, usuário `65532` lendo o certificado) **só foram validados por análise do YAML e por reproduzir cada passo com o binário e o PostgreSQL locais**. A prova real é o job `docker` do Actions (ver o resumo de entrega); se ele falhar, o compose precisa de ajuste.
+- Imagens base referenciadas por tag (`golang:1.25`, `postgres:16`, distroless `nonroot`), não por digest.
+- Prometheus real raspando `/metrics` (o formato foi testado por testes e `curl`, não por um Prometheus).
+- Queda e retomada do PostgreSQL com o servidor rodando; TLS contra PostgreSQL remoto com `verify-full`; volume; escalonamento.
+
+**Decisões conservadoras (revisar se discordar)**
+- `/metrics` sem token só em listener de loopback; fora dele fica **desligado** (404) a menos que `-metrics-token-env` esteja definido. É servido antes do limitador de concorrência e durante o encerramento.
+- `kas_service_token_checks_total{slot}` agrega todos os serviços; durante uma rotação de mais de um serviço não dá para saber qual já migrou (o rótulo por serviço foi evitado de propósito).
+- Rotação exige reinício duas vezes (sem recarga dinâmica, como o resto da configuração).
+- O compose usa `sslmode=require` com certificado autoassinado (criptografa, não autentica); o runbook recomenda `verify-full` fora do desenvolvimento.
+- A chave TLS de desenvolvimento fica legível por todos (`0644`) para os contêineres sem privilégio lerem pelo bind mount; o script avisa que nunca deve ser usada fora do desenvolvimento.
+- Sem `HEALTHCHECK` na imagem (distroless não tem shell nem `curl`); use `/readyz` por fora.
+
+**Dúvidas registradas**
+- Onde e como a KAS será hospedada de verdade (a imagem e o compose são só preparação)? Orquestrador, rede, cofre de segredos e TLS definitivo dependem disso.
+- Quem agenda a limpeza e quem recebe o alerta de `dead` e de `kas_outbox_stats_up 0`?
+- Quer rótulo por serviço em `kas_service_token_checks_total`? Aumenta a cardinalidade e expõe nomes de serviços.
+- Fixar as imagens base por digest e escanear vulnerabilidades no CI?
+
+**Roteiro curto de validação (WSL, ~10 min)**
+```bash
+sudo service postgresql start
+cd /mnt/c/Users/User/Documents/projetos/kas-core-pilot
+export KAS_TEST_DATABASE_URL='postgres://kas:kas_teste_local@localhost:5432/kas_core_test?sslmode=disable'
+go test -count=1 ./... && go vet ./... && CGO_ENABLED=1 go test -count=1 -race ./...
+(cd node-integration && npm test)
+```
+Com Docker instalado: `./scripts/dev-certs.sh && docker compose up --build` e, em outro terminal, `./scripts/compose-smoke.sh`.

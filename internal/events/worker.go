@@ -92,7 +92,7 @@ func NewWorker(store DeliveryStore, handlers map[string]Handler, cfg WorkerConfi
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
 	if cfg.Jitter == nil {
-		cfg.Jitter = mrand.Float64
+		cfg.Jitter = defaultJitter
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -238,3 +238,5 @@ func (w *Worker) invoke(ctx context.Context, d Delivery) (code string, err error
 		return "handler_error", err
 	}
 }
+
+func defaultJitter() float64 { return mrand.Float64() }

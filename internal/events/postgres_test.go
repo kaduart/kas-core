@@ -280,6 +280,18 @@ func TestRuntimeRoleHasLeastPrivilege(t *testing.T) {
 	if got := count(t, store, "SELECT count(*) FROM outbox_deliveries WHERE status = 'delivered'"); got != 1 {
 		t.Fatalf("delivered = %d", got)
 	}
+	// Pull consumption also works with the restricted role.
+	if err := store.Publish(ctx, mustEvent(t, "evt.rt-pull"), []string{"pull-a"}); err != nil {
+		t.Fatal(err)
+	}
+	puller := NewPuller(store, PullConfig{Now: func() time.Time { return t0 }})
+	claimed, err := puller.Claim(ctx, "pull-a", []string{"tenant-demo-a"}, []string{"settings.updated"}, 0, 0)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("runtime role must claim for pull consumers: %d, %v", len(claimed), err)
+	}
+	if err := puller.Ack(ctx, "pull-a", claimed[0].DeliveryID, claimed[0].Attempt, claimed[0].LeaseToken); err != nil {
+		t.Fatalf("runtime role must ack: %v", err)
+	}
 	for _, stmt := range []string{
 		"UPDATE outbox_events SET event_type = 'x.y'",
 		"DELETE FROM outbox_events",

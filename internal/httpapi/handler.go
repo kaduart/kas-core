@@ -35,6 +35,7 @@ type Handler struct {
 	store    *configstore.Store
 	audit    *audit.Service
 	events   *events.Service
+	puller   *events.Puller
 	logger   *slog.Logger
 	mux      *http.ServeMux
 	active   atomic.Int64
@@ -86,12 +87,19 @@ func newHandler(store *configstore.Store, auditService *audit.Service, maxConcur
 	h.mux.HandleFunc("/internal/v1/config/evaluate", h.evaluate)
 	h.mux.HandleFunc("/internal/v1/audit/events", h.recordAuditEvent)
 	h.mux.HandleFunc("/internal/v1/events", h.publishEvent)
+	h.mux.HandleFunc("/internal/v1/events/deliveries/claim", h.claimDeliveries)
+	h.mux.HandleFunc("/internal/v1/events/deliveries/ack", h.ackDelivery)
+	h.mux.HandleFunc("/internal/v1/events/deliveries/nack", h.nackDelivery)
 	return h
 }
 
 // EnableEvents turns on event publication. Call it before serving requests.
 // Without it, POST /internal/v1/events answers 503 events_unavailable.
 func (h *Handler) EnableEvents(service *events.Service) { h.events = service }
+
+// EnablePull turns on pull consumption (claim, ack, nack). Call it before
+// serving requests. Without it those endpoints answer 503 events_unavailable.
+func (h *Handler) EnablePull(puller *events.Puller) { h.puller = puller }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	values := r.Header.Values(correlationHeader)
@@ -372,6 +380,8 @@ func (h *Handler) writeAuthorizationError(w http.ResponseWriter, r *http.Request
 		h.writeError(w, r, http.StatusForbidden, "tenant_forbidden", "service is not authorized for this tenant")
 	case errors.Is(err, configstore.ErrCapabilityForbidden):
 		h.writeError(w, r, http.StatusForbidden, "capability_forbidden", "service is not authorized for this capability")
+	case errors.Is(err, configstore.ErrConsumerForbidden):
+		h.writeError(w, r, http.StatusForbidden, "consumer_forbidden", "service is not authorized for this consumer")
 	default:
 		h.writeError(w, r, http.StatusUnauthorized, "unauthorized", "service authentication failed")
 	}
@@ -430,4 +440,155 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, status int,
 	response.Error.Code = code
 	response.Error.Message = message
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+const maxPullRequestBytes = 4 << 10
+
+type claimRequest struct {
+	ContractVersion string `json:"contract_version"`
+	ConsumerID      string `json:"consumer_id"`
+	MaxDeliveries   int    `json:"max_deliveries"`
+	LeaseSeconds    int    `json:"lease_seconds"`
+}
+
+type settleRequest struct {
+	ContractVersion string `json:"contract_version"`
+	ConsumerID      string `json:"consumer_id"`
+	DeliveryID      int64  `json:"delivery_id"`
+	Attempt         int    `json:"attempt"`
+	LeaseToken      string `json:"lease_token"`
+}
+
+type nackRequest struct {
+	settleRequest
+	Permanent bool `json:"permanent"`
+}
+
+// pullPrelude runs the checks shared by claim, ack and nack: method, enabled,
+// media type and strict body. It returns false after writing the error.
+func (h *Handler) pullPrelude(w http.ResponseWriter, r *http.Request, destination any) bool {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		h.writeError(w, r, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		return false
+	}
+	if h.puller == nil {
+		h.writeError(w, r, http.StatusServiceUnavailable, "events_unavailable", "event consumption is unavailable")
+		return false
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		h.writeError(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+		return false
+	}
+	if err := decodeStrictBody(r, maxPullRequestBytes, destination); err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			h.writeError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "request body exceeds the size limit")
+			return false
+		}
+		h.writeError(w, r, http.StatusBadRequest, "invalid_request", "request JSON is invalid")
+		return false
+	}
+	return true
+}
+
+func (h *Handler) authorizeConsumer(w http.ResponseWriter, r *http.Request, contractVersion, consumerID string) (configstore.ConsumerScope, bool) {
+	if contractVersion != events.ContractVersion || consumerID == "" {
+		h.writeError(w, r, http.StatusBadRequest, "invalid_request", "contract version and consumer are required")
+		return configstore.ConsumerScope{}, false
+	}
+	scope, err := h.store.AuthorizeConsumer(r.Header.Get("X-KAS-Service"), bearerToken(r.Header.Get("Authorization")), consumerID)
+	if err != nil {
+		h.writeAuthorizationError(w, r, err)
+		return configstore.ConsumerScope{}, false
+	}
+	return scope, true
+}
+
+func (h *Handler) writePullError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, events.ErrInvalidPullInput):
+		h.writeError(w, r, http.StatusBadRequest, "invalid_request", "request values are invalid")
+	case errors.Is(err, events.ErrLeaseLost):
+		h.writeError(w, r, http.StatusConflict, "lease_lost", "the lease expired or the delivery was already settled")
+	default:
+		h.writeError(w, r, http.StatusServiceUnavailable, "events_unavailable", "event storage is unavailable")
+	}
+}
+
+func (h *Handler) writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func (h *Handler) claimDeliveries(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	var req claimRequest
+	if !h.pullPrelude(w, r, &req) {
+		return
+	}
+	scope, ok := h.authorizeConsumer(w, r, req.ContractVersion, req.ConsumerID)
+	if !ok {
+		return
+	}
+	deliveries, err := h.puller.Claim(r.Context(), scope.ConsumerID, scope.Tenants, scope.EventTypes,
+		req.MaxDeliveries, time.Duration(req.LeaseSeconds)*time.Second)
+	if err != nil {
+		h.writePullError(w, r, err)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, struct {
+		ContractVersion string                   `json:"contract_version"`
+		Deliveries      []events.ClaimedDelivery `json:"deliveries"`
+	}{events.ContractVersion, deliveries})
+	// Fixed fields only: never payloads or lease tokens.
+	h.logger.Info("event_deliveries_claimed", "correlation_id", CorrelationID(r.Context()), "count", len(deliveries), "duration_ms", time.Since(started).Milliseconds())
+}
+
+func (h *Handler) ackDelivery(w http.ResponseWriter, r *http.Request) {
+	var req settleRequest
+	if !h.pullPrelude(w, r, &req) {
+		return
+	}
+	scope, ok := h.authorizeConsumer(w, r, req.ContractVersion, req.ConsumerID)
+	if !ok {
+		return
+	}
+	if err := h.puller.Ack(r.Context(), scope.ConsumerID, req.DeliveryID, req.Attempt, req.LeaseToken); err != nil {
+		h.writePullError(w, r, err)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, struct {
+		ContractVersion string `json:"contract_version"`
+		Status          string `json:"status"`
+	}{events.ContractVersion, "delivered"})
+	h.logger.Info("event_delivery_acked", "correlation_id", CorrelationID(r.Context()))
+}
+
+func (h *Handler) nackDelivery(w http.ResponseWriter, r *http.Request) {
+	var req nackRequest
+	if !h.pullPrelude(w, r, &req) {
+		return
+	}
+	scope, ok := h.authorizeConsumer(w, r, req.ContractVersion, req.ConsumerID)
+	if !ok {
+		return
+	}
+	result, err := h.puller.Nack(r.Context(), scope.ConsumerID, req.DeliveryID, req.Attempt, req.LeaseToken, req.Permanent)
+	if err != nil {
+		h.writePullError(w, r, err)
+		return
+	}
+	response := struct {
+		ContractVersion string `json:"contract_version"`
+		Status          string `json:"status"`
+		NextAttemptAt   string `json:"next_attempt_at,omitempty"`
+	}{ContractVersion: events.ContractVersion, Status: result.Status}
+	if result.Status == "pending" {
+		response.NextAttemptAt = result.NextAttemptAt.Format(time.RFC3339Nano)
+	}
+	h.writeJSON(w, http.StatusOK, response)
+	h.logger.Info("event_delivery_nacked", "correlation_id", CorrelationID(r.Context()), "status", result.Status)
 }

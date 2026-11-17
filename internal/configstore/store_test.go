@@ -277,3 +277,90 @@ func TestInvalidEventConfigurationIsRejected(t *testing.T) {
 		})
 	}
 }
+
+const pullFixture = `{
+  "contract_version":"v1","config_version":"fixture-pull",
+  "tenant_registry":[
+    {"id":"tenant-demo-a","status":"active"},
+    {"id":"tenant-demo-b","status":"active"},
+    {"id":"tenant-demo-c","status":"inactive"}
+  ],
+  "key_schema":{"k.v":{"type":"integer"}},
+  "tenants":{"tenant-demo-a":{"k.v":1}},
+  "event_types":["settings.updated","settings.checked"],
+  "event_consumers":{
+    "pull-a":{"event_types":["settings.updated"],"tenants":["tenant-demo-a","tenant-demo-b","tenant-demo-c"],"service":"node-a"},
+    "pull-b":{"event_types":["settings.checked"],"tenants":["tenant-demo-b"],"service":"node-b"},
+    "in-process":{"event_types":["settings.updated"],"tenants":["tenant-demo-a"]}
+  },
+  "callers":{
+    "node-a":{"token_env":"TOKEN_A","tenants":["tenant-demo-a","tenant-demo-c"],"capabilities":["events:consume"]},
+    "node-b":{"token_env":"TOKEN_B","tenants":["tenant-demo-b"],"capabilities":["events:consume"]},
+    "node-pub":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["events:publish"]}
+  }
+}`
+
+func TestAuthorizeConsumerScopeIsRestrictedToTenantsAndTypes(t *testing.T) {
+	store, err := newTestStore(t, pullFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := store.AuthorizeConsumer("node-a", tokenA, "pull-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// consumer lists a, b and c; the service only has a and c; c is inactive.
+	if strings.Join(scope.Tenants, ",") != "tenant-demo-a" || strings.Join(scope.EventTypes, ",") != "settings.updated" {
+		t.Fatalf("scope = %+v", scope)
+	}
+	if scope, err := store.AuthorizeConsumer("node-b", tokenB, "pull-b"); err != nil || strings.Join(scope.Tenants, ",") != "tenant-demo-b" {
+		t.Fatalf("node-b scope = %+v, %v", scope, err)
+	}
+}
+
+func TestAuthorizeConsumerRejections(t *testing.T) {
+	store, err := newTestStore(t, pullFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name                 string
+		service, token, cons string
+		want                 error
+	}{
+		{"unknown service", "ghost", tokenA, "pull-a", ErrUnauthorized},
+		{"wrong token", "node-a", tokenB, "pull-a", ErrUnauthorized},
+		{"malformed token", "node-a", "short", "pull-a", ErrUnauthorized},
+		{"no consume capability", "node-pub", tokenA, "pull-a", ErrCapabilityForbidden},
+		{"consumer of another service", "node-a", tokenA, "pull-b", ErrConsumerForbidden},
+		{"unknown consumer", "node-a", tokenA, "pull-ghost", ErrConsumerForbidden},
+		{"in-process consumer cannot be pulled", "node-a", tokenA, "in-process", ErrConsumerForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.AuthorizeConsumer(tc.service, tc.token, tc.cons); !errors.Is(err, tc.want) {
+				t.Fatalf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestConsumerBindingMustReferenceAServiceWithTheConsumeCapability(t *testing.T) {
+	for name, mutate := range map[string]func(string) string{
+		"unknown service": func(s string) string {
+			return strings.Replace(s, `"service":"node-b"`, `"service":"ghost"`, 1)
+		},
+		"service without events:consume": func(s string) string {
+			return strings.Replace(s, `"service":"node-b"`, `"service":"node-pub"`, 1)
+		},
+		"invalid service id": func(s string) string {
+			return strings.Replace(s, `"service":"node-b"`, `"service":"Bad Service!"`, 1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := newTestStore(t, mutate(pullFixture)); err == nil {
+				t.Fatal("invalid consumer binding was accepted")
+			}
+		})
+	}
+}

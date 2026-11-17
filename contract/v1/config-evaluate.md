@@ -11,7 +11,7 @@ Authentication headers:
 
 The service ID maps to a token environment-variable name, an explicit tenant allowlist and explicit capabilities in the server's JSON configuration. The token is loaded at startup from that environment variable. The same file contains `tenant_registry`, the central list of tenant IDs and their `active`/`inactive` status. A request succeeds only when its tenant is registered, active and in the authenticated service's allowlist, and the service has the `config:read` capability. Tenant IDs, statuses and capabilities cannot be changed through request bodies. The file is loaded once at startup; changes require a restart.
 
-`callers.<service-id>.capabilities` accepts `config:read`, `audit:write` and/or `events:publish` (see [events.md](events.md)). An omitted or empty list grants no business capability and is denied by default. Unknown or duplicate capability names reject startup. Assign only the capabilities each service needs.
+`callers.<service-id>.capabilities` accepts `config:read`, `audit:write`, `events:publish` and/or `events:consume` (see [events.md](events.md)). An omitted or empty list grants no business capability and is denied by default. Unknown or duplicate capability names reject startup. Assign only the capabilities each service needs.
 
 ## Request
 

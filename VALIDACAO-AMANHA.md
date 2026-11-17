@@ -179,3 +179,57 @@ go test -count=1 ./... && go vet ./... && CGO_ENABLED=1 go test -count=1 -race .
 (cd node-integration && npm test)
 ```
 Para publicar um evento de verdade, veja a seção "Módulo de eventos (Outbox)" no README e o exemplo em `contract/v1/events.md`.
+
+## Rodada Outbox fase 3 (consumo por pull e limpeza) — resultados no Ubuntu WSL
+
+Base: commit `b1360b6` + alterações desta rodada. PostgreSQL 16.15 local descartável, credenciais fictícias. Sem webhook, sem chamada externa, sem identidade humana.
+
+**Entregue**
+- Capacidade `events:consume`. Um consumidor é vinculado a um serviço por `"service"` em `event_consumers`; o serviço autentica com o token de serviço. O escopo é a interseção dos tipos e tenants do consumidor com os tenants do serviço (inativos excluídos) e a requisição não consegue ampliá-lo.
+- `POST /internal/v1/events/deliveries/claim` (lote de 1 a 50, padrão 10; prazo de 5 a 300 s, padrão 60 s; `lease_token` por claim), `.../ack` (idempotente em repetição) e `.../nack` (backoff com jitter; esgotadas as 5 tentativas, ou `"permanent": true`, vira `dead`). `ack`/`nack` só valem com consumidor, `delivery_id`, `attempt` e `lease_token` corretos; senão `409 lease_lost`.
+- `-events-purge` (e `-events-purge-dry-run`) com o papel de migração: entregues após 30 dias, `dead` após 90 dias, e eventos sem entrega recebidos há mais de 30 dias; lotes de 1000; nunca roda sozinho; não toca em `pending`/`in_flight`.
+- Sem reprocessamento: consumidor novo só recebe eventos publicados depois de configurado. Payload continua estrito.
+
+**Arquivos novos:** `internal/events/{pull,purge}.go`, `pull_test.go`, `internal/httpapi/events_pull_test.go`. **Alterados:** `internal/events/postgres.go`, `internal/configstore/store.go` (+ testes), `internal/httpapi/handler.go`, `cmd/kas-core/main.go`, `config.example.json`, `internal/events/worker.go` (só o jitter padrão), `contract/v1/events.md`, `openapi.yaml`, README e contratos de auditoria e configuração.
+
+| Comando | Resultado |
+|---|---|
+| `gofmt -l internal cmd` | Sem saída |
+| `go vet ./...` | Aprovado |
+| `go test ./...` sem `KAS_TEST_DATABASE_URL` | Aprovado; testes de banco ficam SKIP |
+| `go test ./...` com banco local | Aprovado: 114 PASS e 2 SKIP (ver abaixo) |
+| `CGO_ENABLED=1 go test -race ./...` com banco local | Aprovado |
+| `npm test` | 11 testes, 0 falhas |
+| OpenAPI | YAML válido; 8 caminhos; `events:consume` no enum; nenhuma `$ref` quebrada |
+| Binário ponta a ponta | publicar 201; claim 200; ack com token alheio 409 `lease_lost`; ack 200; ack repetido 200; nack 200 `pending`; claim logo após o nack devolve lista vazia (backoff); após ~3 s volta como tentativa 2; nack permanente `dead`; serviço sem `events:consume` 403; lote de 51 retorna 400; estados finais `delivered:1` e `dead:2:consumer_permanent`; SIGTERM com código 0; tokens, senha e payload ausentes do log; purge em simulação conta 1 entregue e 1 `dead` sem apagar; purge real apaga 1 + 1 e os 2 eventos; sem a variável de migração ou com `-events-store none` sai com código 2; nenhum processo restante |
+
+**Os 2 SKIP** são os testes de papel com menor privilégio (precisam criar papéis). Rodei os dois concedendo `CREATEROLE` ao `kas` só durante o teste, no banco local descartável, e revoguei (`rolcreaterole = false`, nenhum papel ou schema de teste restante). Passaram, agora incluindo claim e ack por pull sob o papel restrito (só `INSERT`/`SELECT` em `outbox_events`; `INSERT`/`SELECT`/`UPDATE` em `outbox_deliveries`; sem `DELETE`, `TRUNCATE`, DDL).
+
+**Decisões conservadoras (revisar se discordar)**
+- Consumidores desconhecidos, em processo e de outro serviço respondem o mesmo `403 consumer_forbidden`, para não revelar quais consumidores existem.
+- `nack` não é idempotente (repetir dá `409`); `ack` é. Não há campo de texto livre no `nack`; só códigos curtos.
+- `max_attempts` e backoff do pull usam os padrões fixos (5; 2 s a 5 min), sem flag. O bloqueio é por claim (um token por lote), não por entrega.
+- A limpeza apaga eventos sem entrega com mais de 30 dias de recebidos, inclusive os que nunca tiveram consumidor. Em simulação, a contagem de eventos é um limite inferior.
+- A limpeza usa uma conexão com limite de 30 minutos e lotes de 1000; não há flag para mudar os prazos de retenção (30/90 dias fixos).
+- Tenant inativo deixa de ser entregue ao consumidor pull (as entregas ficam `pending` até o tenant voltar a ficar ativo). Mudar de status exige reinício.
+
+**Não validado**
+- O resultado do GitHub Actions deste commit (ver o resumo de entrega).
+- Queda e retomada do PostgreSQL com o servidor em execução; TLS real contra PostgreSQL remoto; desempenho e volume (a limpeza foi testada com 2500 linhas, não com milhões); relógios desalinhados entre instâncias; um consumidor pull real em outro processo (os testes usam a API HTTP por `curl` e testes Go).
+- A limpeza não foi executada contra um banco com dados reais, nem agendada.
+
+**Dúvidas registradas**
+- Quem agenda a limpeza (cron, tarefa do sistema) e com que frequência? Hoje é manual.
+- Um consumidor pull precisa de renovação do prazo (heartbeat) para tratar lotes longos? Hoje só dá para reivindicar de novo após expirar; o prazo máximo é de 300 s.
+- Deve haver uma forma de listar ou reenfileirar entregas `dead`? Está fora do escopo (veto a edição por API); hoje só por SQL com o papel de migração.
+- Reprocessar eventos antigos para um consumidor novo continua fora do escopo.
+
+**Roteiro curto de validação (WSL, ~10 min)**
+```bash
+sudo service postgresql start
+cd /mnt/c/Users/User/Documents/projetos/kas-core-pilot
+export KAS_TEST_DATABASE_URL='postgres://kas:kas_teste_local@localhost:5432/kas_core_test?sslmode=disable'
+go test -count=1 ./... && go vet ./... && CGO_ENABLED=1 go test -count=1 -race ./...
+(cd node-integration && npm test)
+```
+Para o fluxo manual (publicar, claim, ack/nack, purge), veja `contract/v1/events.md` e a seção do README.

@@ -34,6 +34,8 @@ func run() int {
 	eventsAutoMigrate := flag.Bool("events-auto-migrate", true, "with -events-store postgres: apply pending migrations at startup; set false when the runtime role has no DDL rights")
 	eventsMigrateOnly := flag.Bool("events-migrate-only", false, "apply events PostgreSQL migrations with the migration role and exit")
 	eventsMigrationURLEnv := flag.String("events-migration-database-url-env", "KAS_EVENTS_MIGRATION_DATABASE_URL", "environment variable holding the events migration-role connection string (used with -events-migrate-only)")
+	eventsPurge := flag.Bool("events-purge", false, "delete expired outbox rows (delivered after 30 days, dead after 90 days) with the migration role, then exit; never runs automatically")
+	eventsPurgeDryRun := flag.Bool("events-purge-dry-run", false, "with -events-purge: only count what would be deleted")
 	addr := flag.String("addr", "127.0.0.1:8088", "listen address")
 	maxConcurrent := flag.Int("max-concurrent", 32, "maximum concurrent HTTP requests (1-128)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate path (required for non-loopback listeners)")
@@ -41,7 +43,7 @@ func run() int {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if *auditMigrateOnly || *eventsMigrateOnly {
+	if *auditMigrateOnly || *eventsMigrateOnly || *eventsPurge {
 		if *auditMigrateOnly {
 			if *auditBackend != "postgres" {
 				logger.Error("-audit-migrate-only requires -audit-store postgres")
@@ -73,6 +75,25 @@ func run() int {
 				return 1
 			}
 			logger.Info("events migrations applied")
+		}
+		if *eventsPurge {
+			if *eventsBackend != "postgres" {
+				logger.Error("-events-purge requires -events-store postgres")
+				return 2
+			}
+			dsn, found := os.LookupEnv(*eventsMigrationURLEnv)
+			if !found || dsn == "" {
+				logger.Error("events migration connection variable is not set; purge needs the migration role", "env", *eventsMigrationURLEnv)
+				return 2
+			}
+			result, err := events.PurgePostgres(context.Background(), dsn, time.Now(), events.DeliveredRetention, events.DeadRetention, *eventsPurgeDryRun)
+			if err != nil {
+				logger.Error("events purge failed", "reason", err.Error(), "deliveries_removed", result.Delivered+result.Dead, "events_removed", result.Events)
+				return 1
+			}
+			logger.Info("events purge finished", "dry_run", result.DryRun, "delivered_deliveries", result.Delivered,
+				"dead_deliveries", result.Dead, "events", result.Events,
+				"delivered_cutoff", result.Cutoffs[0].Format(time.RFC3339), "dead_cutoff", result.Cutoffs[1].Format(time.RFC3339))
 		}
 		return 0
 	}
@@ -159,6 +180,7 @@ func run() int {
 			}
 		}()
 		api.EnableEvents(events.NewService(eventStore, store))
+		api.EnablePull(events.NewPuller(eventStore, events.PullConfig{}))
 	default:
 		logger.Error("invalid events store; use none or postgres")
 		return 2

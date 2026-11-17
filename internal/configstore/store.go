@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 const ContractVersion = "v1"
@@ -99,13 +100,18 @@ type KeyRule struct {
 }
 
 type rawCaller struct {
-	TokenEnv     string   `json:"token_env"`
+	TokenEnv string `json:"token_env"`
+	// TokenEnvNext optionally names a second environment variable holding a
+	// second valid token, so a credential can be rotated without downtime: both
+	// tokens are accepted until the old one is removed.
+	TokenEnvNext string   `json:"token_env_next"`
 	Tenants      []string `json:"tenants"`
 	Capabilities []string `json:"capabilities"`
 }
 
 type caller struct {
-	token        []byte
+	// tokens holds the primary token and, during a rotation, the next one.
+	tokens       [][]byte
 	tenants      map[string]struct{}
 	capabilities map[string]struct{}
 }
@@ -119,6 +125,13 @@ type Store struct {
 	// eventTypes and eventConsumers are fixed at startup.
 	eventTypes     map[string]struct{}
 	eventConsumers map[string]eventConsumer
+	// rotating lists services that currently accept two tokens.
+	rotating []string
+	// usedPrimary and usedNext count successful token checks by slot, without
+	// recording which service or token matched; they show whether clients have
+	// moved to the new token.
+	usedPrimary atomic.Uint64
+	usedNext    atomic.Uint64
 }
 
 // Load parses and validates all non-secret data, then loads only the referenced
@@ -253,7 +266,23 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 			capabilities[capability] = struct{}{}
 		}
 		tokenBytes, _ := hex.DecodeString(token)
-		store.callers[serviceID] = caller{token: tokenBytes, tenants: authorizedTenants, capabilities: capabilities}
+		tokens := [][]byte{tokenBytes}
+		if rawCaller.TokenEnvNext != "" {
+			if !envNamePattern.MatchString(rawCaller.TokenEnvNext) || rawCaller.TokenEnvNext == rawCaller.TokenEnv {
+				return nil, errors.New("invalid service caller configuration: token_env_next must name a different environment variable")
+			}
+			next, found := lookupEnv(rawCaller.TokenEnvNext)
+			if !found || !validToken(next) {
+				return nil, fmt.Errorf("service token environment variable %s must contain a 32-byte hex token", rawCaller.TokenEnvNext)
+			}
+			nextBytes, _ := hex.DecodeString(next)
+			if subtle.ConstantTimeCompare(nextBytes, tokenBytes) == 1 {
+				return nil, fmt.Errorf("service %q: token_env_next must hold a different token than token_env", serviceID)
+			}
+			tokens = append(tokens, nextBytes)
+			store.rotating = append(store.rotating, serviceID)
+		}
+		store.callers[serviceID] = caller{tokens: tokens, tenants: authorizedTenants, capabilities: capabilities}
 	}
 	for id, consumer := range store.eventConsumers {
 		if consumer.service == "" {
@@ -346,8 +375,7 @@ func (s *Store) AuthorizeConsumer(serviceID, token, consumerID string) (Consumer
 	if !exists || !validToken(token) {
 		return ConsumerScope{}, ErrUnauthorized
 	}
-	provided, _ := hex.DecodeString(token)
-	if subtle.ConstantTimeCompare(c.token, provided) != 1 {
+	if !s.tokenMatches(c, token) {
 		return ConsumerScope{}, ErrUnauthorized
 	}
 	if _, allowed := c.capabilities[CapabilityEventsConsume]; !allowed {
@@ -369,6 +397,41 @@ func (s *Store) AuthorizeConsumer(serviceID, token, consumerID string) (Consumer
 	sort.Strings(scope.Tenants)
 	sort.Strings(scope.EventTypes)
 	return scope, nil
+}
+
+// tokenMatches compares the presented token with every accepted token without
+// stopping at the first match, and records which slot matched.
+func (s *Store) tokenMatches(c caller, token string) bool {
+	provided, err := hex.DecodeString(token)
+	if err != nil {
+		return false
+	}
+	matched := -1
+	for i, accepted := range c.tokens {
+		if subtle.ConstantTimeCompare(accepted, provided) == 1 && matched < 0 {
+			matched = i
+		}
+	}
+	switch matched {
+	case 0:
+		s.usedPrimary.Add(1)
+	case 1:
+		s.usedNext.Add(1)
+	}
+	return matched >= 0
+}
+
+// RotatingServices returns, sorted, the services that accept two tokens now.
+func (s *Store) RotatingServices() []string {
+	out := append([]string(nil), s.rotating...)
+	sort.Strings(out)
+	return out
+}
+
+// TokenSlotUsage returns how many successful token checks matched the primary
+// token and the next token since startup.
+func (s *Store) TokenSlotUsage() (primary, next uint64) {
+	return s.usedPrimary.Load(), s.usedNext.Load()
 }
 
 func validToken(token string) bool {
@@ -426,8 +489,7 @@ func (s *Store) Authorize(serviceID, token, tenantID, capability string) error {
 	if !exists || !validToken(token) {
 		return ErrUnauthorized
 	}
-	provided, _ := hex.DecodeString(token)
-	if subtle.ConstantTimeCompare(c.token, provided) != 1 {
+	if !s.tokenMatches(c, token) {
 		return ErrUnauthorized
 	}
 	active, registered := s.tenants[tenantID]

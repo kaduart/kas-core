@@ -1,6 +1,6 @@
 # KAS Core — piloto local
 
-Projeto independente em Go, mantido fora dos repositórios do CRM. Esta etapa contém dois módulos reutilizáveis: avaliação de configuração por tenant e registro de auditoria, com capacidades separadas por serviço. Usa a biblioteca padrão Go e um único executável. Nenhum dos módulos está integrado ao CRM ou pronto para produção.
+Projeto independente em Go, mantido fora dos repositórios do CRM. Esta etapa contém dois módulos reutilizáveis: avaliação de configuração por tenant e registro de auditoria, com capacidades separadas por serviço. Usa a biblioteca padrão Go (mais o driver `pgx` para o armazenamento opcional em PostgreSQL) e um único executável. Nenhum dos módulos está integrado ao CRM ou pronto para produção.
 
 O valor fictício `logging.max_meta_keys` foi inspirado em um logger do legado, mas é somente dado de exemplo declarado em `config.example.json`; o núcleo não depende do logger nem de caminhos ou entidades do CRM. Todos os tenants, atores e recursos usados nos exemplos são fictícios.
 
@@ -18,6 +18,23 @@ go run ./cmd/kas-core -config ./config.example.json -audit-data-dir ./data -addr
 Configuração, incluindo o registro central `tenant_registry`, fica em memória e é carregada no início. Cada registro define `id` e `status` (`active` ou `inactive`). IDs duplicados, status inválido e referências de configuração ou serviços a tenants não cadastrados impedem a inicialização. Tanto a avaliação quanto a auditoria exigem tenant cadastrado, ativo e permitido para o serviço autenticado. Alterações no registro exigem reinício; não há endpoint administrativo. Inativar um tenant bloqueia novas operações e preserva eventos históricos. O arquivo da auditoria fica em `./data/audit.jsonl`, separado do código-fonte. O processo mantém `./data/audit.lock`; uma segunda instância usando o mesmo diretório falha ao iniciar. Se o processo terminar abruptamente, o lock pode ficar obsoleto e bloquear a abertura. Confirme que o processo anterior parou antes de remover manualmente `audit.lock`; o programa não o apaga automaticamente.
 
 O arquivo JSON Lines é validado integralmente na abertura. Um registro parcial, inválido ou acima do limite bloqueia o início. Não apague nem edite o arquivo automaticamente para contornar isso; preserve-o e investigue antes de qualquer reparo manual.
+
+## Armazenamento PostgreSQL da auditoria (opcional)
+
+Por padrão a auditoria continua em JSON Lines. Com `-audit-store postgres`, os eventos vão para uma tabela `audit_events` em PostgreSQL. A string de conexão vem de uma variável de ambiente (padrão `KAS_AUDIT_DATABASE_URL`, configurável por `-audit-database-url-env`) e nunca de flag, arquivo de configuração, log ou mensagem de erro.
+
+```bash
+export KAS_AUDIT_DATABASE_URL='postgres://kas:kas_teste_local@localhost:5432/kas_core_test?sslmode=disable'
+go run ./cmd/kas-core -config ./config.example.json -audit-store postgres -addr 127.0.0.1:8088
+```
+
+- As migrações SQL ficam embutidas no executável (`internal/audit/migrations`) e rodam na inicialização, de forma idempotente e serializadas por trava consultiva, então várias instâncias podem iniciar ao mesmo tempo. Cada migração aplicada é registrada em `audit_schema_migrations`. Não há reversão automática.
+- `201` só é devolvido depois que o PostgreSQL confirma o `INSERT` (commit, conforme o `synchronous_commit` do servidor). Falha de banco devolve o mesmo erro genérico de armazenamento indisponível, sem detalhes internos.
+- Os textos originais de `occurred_at` e `received_at` são guardados em colunas `*_raw` (nanossegundos preservados); colunas `timestamptz` servem para consulta.
+- Não há restrição de unicidade em `event_id`: reenviar o mesmo evento grava outra linha, igual ao JSON Lines. Não há promessa de entrega exatamente uma vez, imutabilidade ou proteção contra adulteração; quem tem acesso ao banco pode alterar linhas.
+- Não há pool nem timeouts configuráveis (máximo de 8 conexões; 10 s para abrir; 3 s por gravação).
+- A **configuração continua em arquivo**, carregada na inicialização. Persisti-la no banco exigiria decidir atualização, versionamento e quem edita, o que foi vetado até aqui.
+- Testes de integração com PostgreSQL só rodam se `KAS_TEST_DATABASE_URL` apontar para um banco local descartável (cada teste cria e remove seu próprio schema); sem a variável, eles são ignorados.
 
 ## Módulo de configuração
 

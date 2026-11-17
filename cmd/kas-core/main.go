@@ -23,6 +23,8 @@ func main() {
 func run() int {
 	configPath := flag.String("config", "config.example.json", "path to non-secret KAS configuration JSON")
 	auditDataDir := flag.String("audit-data-dir", "./data", "directory for local JSON Lines audit data")
+	auditBackend := flag.String("audit-store", "jsonl", "audit storage backend: jsonl (default) or postgres")
+	auditDatabaseURLEnv := flag.String("audit-database-url-env", "KAS_AUDIT_DATABASE_URL", "environment variable holding the PostgreSQL connection string (used with -audit-store postgres)")
 	addr := flag.String("addr", "127.0.0.1:8088", "listen address")
 	maxConcurrent := flag.Int("max-concurrent", 32, "maximum concurrent HTTP requests (1-128)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate path (required for non-loopback listeners)")
@@ -55,7 +57,24 @@ func run() int {
 		logger.Error("configuration rejected", "reason", err.Error())
 		return 2
 	}
-	auditStore, err := audit.OpenJSONL(*auditDataDir)
+	var auditStore interface {
+		audit.Repository
+		Close() error
+	}
+	switch *auditBackend {
+	case "jsonl":
+		auditStore, err = audit.OpenJSONL(*auditDataDir)
+	case "postgres":
+		dsn, found := os.LookupEnv(*auditDatabaseURLEnv)
+		if !found || dsn == "" {
+			logger.Error("audit database connection variable is not set", "env", *auditDatabaseURLEnv)
+			return 2
+		}
+		auditStore, err = audit.OpenPostgres(context.Background(), dsn)
+	default:
+		logger.Error("invalid audit store; use jsonl or postgres")
+		return 2
+	}
 	if err != nil {
 		logger.Error("audit store unavailable", "reason", err.Error())
 		return 2

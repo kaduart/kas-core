@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"kas-core-pilot/internal/audit"
@@ -77,7 +78,7 @@ func run() int {
 		MaxHeaderBytes:    8 << 10,
 	}
 	logger.Info("KAS Core pilot listening", "addr", *addr, "config_version", store.Version())
-	shutdownSignal, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
+	shutdownSignal, stopSignals := newShutdownSignalContext()
 	defer stopSignals()
 	serveDone := make(chan error, 1)
 	go func() {
@@ -116,6 +117,10 @@ func run() int {
 		}
 	}
 	return 0
+}
+
+func newShutdownSignalContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
 func isLoopbackAddr(addr string) bool {

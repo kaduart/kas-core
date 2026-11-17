@@ -36,6 +36,7 @@ type Handler struct {
 	audit    *audit.Service
 	events   *events.Service
 	puller   *events.Puller
+	metrics  *metricsState
 	logger   *slog.Logger
 	mux      *http.ServeMux
 	active   atomic.Int64
@@ -102,6 +103,24 @@ func (h *Handler) EnableEvents(service *events.Service) { h.events = service }
 func (h *Handler) EnablePull(puller *events.Puller) { h.puller = puller }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.metrics == nil {
+		h.serve(w, r)
+		return
+	}
+	route := routeLabel(r.URL.Path)
+	recorder := &statusRecorder{ResponseWriter: w}
+	started := time.Now()
+	if route == "/metrics" {
+		// Served before the concurrency limiter and the drain check so that
+		// scraping keeps working exactly when the service is busy.
+		h.serveMetrics(recorder, r)
+	} else {
+		h.serve(recorder, r)
+	}
+	h.metrics.observe(route, recorder.statusCode(), time.Since(started))
+}
+
+func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	values := r.Header.Values(correlationHeader)
 	correlationID := newCorrelationID()
 	invalidCorrelation := len(values) > 1

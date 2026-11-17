@@ -15,6 +15,7 @@ import (
 	"kas-core-pilot/internal/configstore"
 	"kas-core-pilot/internal/events"
 	"kas-core-pilot/internal/httpapi"
+	"kas-core-pilot/internal/metrics"
 )
 
 func main() {
@@ -36,6 +37,7 @@ func run() int {
 	eventsMigrationURLEnv := flag.String("events-migration-database-url-env", "KAS_EVENTS_MIGRATION_DATABASE_URL", "environment variable holding the events migration-role connection string (used with -events-migrate-only)")
 	eventsPurge := flag.Bool("events-purge", false, "delete expired outbox rows (delivered after 30 days, dead after 90 days) with the migration role, then exit; never runs automatically")
 	eventsPurgeDryRun := flag.Bool("events-purge-dry-run", false, "with -events-purge: only count what would be deleted")
+	metricsTokenEnv := flag.String("metrics-token-env", "", "environment variable holding a bearer token that GET /metrics requires; without it /metrics is served only on a loopback listener")
 	addr := flag.String("addr", "127.0.0.1:8088", "listen address")
 	maxConcurrent := flag.Int("max-concurrent", 32, "maximum concurrent HTTP requests (1-128)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate path (required for non-loopback listeners)")
@@ -156,6 +158,7 @@ func run() int {
 	auditService := audit.NewService(auditStore)
 	api := httpapi.NewHandlerWithAudit(store, auditService, *maxConcurrent, logger)
 
+	var eventStore *events.PostgresStore
 	switch *eventsBackend {
 	case "none":
 	case "postgres":
@@ -164,7 +167,6 @@ func run() int {
 			logger.Error("events database connection variable is not set", "env", *eventsDatabaseURLEnv)
 			return 2
 		}
-		var eventStore *events.PostgresStore
 		if *eventsAutoMigrate {
 			eventStore, err = events.OpenPostgres(context.Background(), dsn)
 		} else {
@@ -194,6 +196,12 @@ func run() int {
 		WriteTimeout:      3 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    8 << 10,
+	}
+	if rotating := store.RotatingServices(); len(rotating) > 0 {
+		logger.Info("service token rotation is active: two tokens are accepted", "services", rotating)
+	}
+	if code := setupMetrics(logger, api, store, eventStore, *addr, *metricsTokenEnv); code != 0 {
+		return code
 	}
 	logger.Info("KAS Core pilot listening", "addr", *addr, "config_version", store.Version())
 	shutdownSignal, stopSignals := newShutdownSignalContext()
@@ -251,4 +259,41 @@ func isLoopbackAddr(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// setupMetrics enables GET /metrics. It is served without a token only on a
+// loopback listener; any other listener needs -metrics-token-env. Labels are
+// fixed values only: no tenants, services or tokens.
+func setupMetrics(logger *slog.Logger, api *httpapi.Handler, store *configstore.Store, eventStore *events.PostgresStore, addr, tokenEnv string) int {
+	token := ""
+	if tokenEnv != "" {
+		value, found := os.LookupEnv(tokenEnv)
+		if !found || len(value) < 32 {
+			logger.Error("metrics token variable must be set to a token of at least 32 characters", "env", tokenEnv)
+			return 2
+		}
+		token = value
+	}
+	if token == "" && !isLoopbackAddr(addr) {
+		logger.Warn("metrics are disabled: a non-loopback listener needs -metrics-token-env")
+		return 0
+	}
+	registry := metrics.NewRegistry()
+	api.EnableMetrics(registry, token)
+	started := float64(time.Now().Unix())
+	registry.Register(metrics.NewGaugeFunc("kas_process_start_time_seconds", "Start time of the process in Unix seconds.", nil,
+		func() []metrics.Sample { return []metrics.Sample{{Value: started}} }))
+	registry.Register(metrics.NewCounterFunc("kas_service_token_checks_total",
+		"Successful service token checks by slot (primary or next). During a rotation, a next count that keeps growing while primary stays flat shows clients have moved to the new token.",
+		[]string{"slot"}, func() []metrics.Sample {
+			primary, next := store.TokenSlotUsage()
+			return []metrics.Sample{{LabelValues: []string{"primary"}, Value: float64(primary)}, {LabelValues: []string{"next"}, Value: float64(next)}}
+		}))
+	registry.Register(metrics.NewGaugeFunc("kas_services_rotating_tokens", "Number of services currently accepting two tokens.", nil,
+		func() []metrics.Sample { return []metrics.Sample{{Value: float64(len(store.RotatingServices()))}} }))
+	if eventStore != nil {
+		registry.Register(events.NewStatsCollector(eventStore, 10*time.Second, nil))
+	}
+	logger.Info("metrics endpoint enabled", "path", "/metrics", "token_required", token != "")
+	return 0
 }

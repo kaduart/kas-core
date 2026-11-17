@@ -23,6 +23,7 @@ tags:
   - name: Health
   - name: Configuration
   - name: Audit
+  - name: Events
 paths:
   /healthz:
     get:
@@ -160,6 +161,91 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           $ref: '#/components/responses/ServerUnavailable'
+  /internal/v1/events:
+    post:
+      tags: [Events]
+      summary: Publish an event to the outbox
+      description: >-
+        Requires a valid service token, an active registered tenant authorized
+        for that service, and the capability `events:publish`. Body service_id
+        must equal X-KAS-Service and event_type must be declared in the
+        configuration. The payload is a JSON object of at most 16 KiB containing
+        identifiers only (no clinical or personal data): identifier-shaped
+        strings, 64-bit integers and booleans, no nesting. The event identity is
+        (tenant_id, service_id, event_id): an identical resend returns 200 with the
+        originally stored event and writes nothing; the same identity with
+        different content returns 409 event_conflict. Delivery to consumers is
+        at-least-once and unordered.
+      operationId: publishEvent
+      security:
+        - ServiceIdentity: []
+          ServiceBearer: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+      requestBody:
+        required: true
+        x-max-body-bytes: 20480
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventSubmission'
+      responses:
+        '201':
+          description: Event and its deliveries were committed to PostgreSQL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventResponse'
+        '200':
+          description: Identical resend; nothing was written and the original event is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventResponse'
+        '400':
+          description: invalid_request or invalid_event (including a payload outside the allowed shape).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Tenant/capability denied, tenant inactive, or body service_id mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Tenant is not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          description: The same (tenant_id, service_id, event_id) was already published with different content (event_conflict).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          description: The event type is not declared in the configuration (unknown_event_type).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Publication is disabled, capacity is exhausted, or the event could not be durably stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /internal/v1/audit/events:
     post:
       tags: [Audit]
@@ -376,7 +462,7 @@ components:
   schemas:
     ServiceCapability:
       type: string
-      enum: ['config:read', 'audit:write']
+      enum: ['config:read', 'audit:write', 'events:publish']
       description: >-
         Startup-only capability. Missing/empty caller capability lists grant
         none. Unknown and duplicate values reject configuration loading.
@@ -464,6 +550,102 @@ components:
               format: int64
             - type: boolean
             - type: string
+    EventPayload:
+      type: object
+      maxProperties: 32
+      propertyNames:
+        pattern: '^[a-z][a-z0-9_]{0,63}$'
+      additionalProperties:
+        oneOf:
+          - type: string
+            pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+          - type: integer
+            format: int64
+          - type: boolean
+      description: >-
+        At most 16 KiB. Identifiers only; the contract forbids clinical and
+        personal data. No nesting, arrays, nulls, fractions or free text.
+    EventSubmission:
+      type: object
+      additionalProperties: false
+      required:
+        - contract_version
+        - event_id
+        - tenant_id
+        - service_id
+        - event_type
+        - correlation_id
+        - occurred_at
+        - payload
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        event_id:
+          $ref: '#/components/schemas/EventID'
+        tenant_id:
+          $ref: '#/components/schemas/TenantID'
+        service_id:
+          allOf:
+            - $ref: '#/components/schemas/ServiceID'
+          description: Must exactly match X-KAS-Service.
+        event_type:
+          type: string
+          maxLength: 80
+          pattern: '^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$'
+          description: Must be declared in the configuration event_types.
+        correlation_id:
+          $ref: '#/components/schemas/EventCorrelationID'
+        occurred_at:
+          type: string
+          maxLength: 40
+          format: date-time
+        payload:
+          $ref: '#/components/schemas/EventPayload'
+    EventResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, event]
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        event:
+          type: object
+          additionalProperties: false
+          required:
+            - contract_version
+            - event_id
+            - tenant_id
+            - service_id
+            - event_type
+            - correlation_id
+            - occurred_at
+            - received_at
+            - payload
+          properties:
+            contract_version:
+              type: string
+              const: v1
+            event_id:
+              $ref: '#/components/schemas/EventID'
+            tenant_id:
+              $ref: '#/components/schemas/TenantID'
+            service_id:
+              $ref: '#/components/schemas/ServiceID'
+            event_type:
+              type: string
+            correlation_id:
+              $ref: '#/components/schemas/EventCorrelationID'
+            occurred_at:
+              type: string
+              format: date-time
+            received_at:
+              type: string
+              format: date-time
+              description: Assigned by KAS; for an identical resend, the original value.
+            payload:
+              $ref: '#/components/schemas/EventPayload'
     AuditEventSubmission:
       type: object
       additionalProperties: false

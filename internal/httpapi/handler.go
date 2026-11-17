@@ -16,11 +16,15 @@ import (
 
 	"kas-core-pilot/internal/audit"
 	"kas-core-pilot/internal/configstore"
+	"kas-core-pilot/internal/events"
 	"kas-core-pilot/internal/strictjson"
 )
 
 const maxRequestBytes = 4 << 10
 const maxAuditRequestBytes = 8 << 10
+
+// maxEventRequestBytes leaves room for the envelope around a 16 KiB payload.
+const maxEventRequestBytes = events.MaxPayloadBytes + 4<<10
 
 var (
 	errInvalidJSON  = errors.New("invalid JSON request")
@@ -30,6 +34,7 @@ var (
 type Handler struct {
 	store    *configstore.Store
 	audit    *audit.Service
+	events   *events.Service
 	logger   *slog.Logger
 	mux      *http.ServeMux
 	active   atomic.Int64
@@ -80,8 +85,13 @@ func newHandler(store *configstore.Store, auditService *audit.Service, maxConcur
 	h.mux.HandleFunc("/readyz", h.ready)
 	h.mux.HandleFunc("/internal/v1/config/evaluate", h.evaluate)
 	h.mux.HandleFunc("/internal/v1/audit/events", h.recordAuditEvent)
+	h.mux.HandleFunc("/internal/v1/events", h.publishEvent)
 	return h
 }
+
+// EnableEvents turns on event publication. Call it before serving requests.
+// Without it, POST /internal/v1/events answers 503 events_unavailable.
+func (h *Handler) EnableEvents(service *events.Service) { h.events = service }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	values := r.Header.Values(correlationHeader)
@@ -204,7 +214,81 @@ func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if r.Method == http.MethodGet && h.events != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		err := h.events.Ready(ctx)
+		cancel()
+		if err != nil {
+			h.writeError(w, r, http.StatusServiceUnavailable, "events_unavailable", "event storage is not ready")
+			return
+		}
+	}
 	h.health(w, r)
+}
+
+func (h *Handler) publishEvent(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		h.writeError(w, r, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		return
+	}
+	if h.events == nil {
+		h.writeError(w, r, http.StatusServiceUnavailable, "events_unavailable", "event publication is unavailable")
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		h.writeError(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+		return
+	}
+	var submission events.Submission
+	if err := decodeStrictBody(r, maxEventRequestBytes, &submission); err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			h.writeError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "request body exceeds the size limit")
+			return
+		}
+		h.writeError(w, r, http.StatusBadRequest, "invalid_request", "request JSON is invalid")
+		return
+	}
+	serviceID := r.Header.Get("X-KAS-Service")
+	token := bearerToken(r.Header.Get("Authorization"))
+	if err := h.store.Authorize(serviceID, token, submission.TenantID, configstore.CapabilityEventsPublish); err != nil {
+		h.writeAuthorizationError(w, r, err)
+		return
+	}
+	result, err := h.events.Publish(r.Context(), serviceID, submission)
+	if err != nil {
+		switch {
+		case errors.Is(err, events.ErrEventConflict):
+			h.writeError(w, r, http.StatusConflict, "event_conflict", "event_id was already used with different content")
+		case errors.Is(err, events.ErrServiceMismatch):
+			h.writeError(w, r, http.StatusForbidden, "service_identity_mismatch", "declared service does not match authenticated service")
+		case errors.Is(err, events.ErrUnknownEventType):
+			h.writeError(w, r, http.StatusUnprocessableEntity, "unknown_event_type", "event type is not declared")
+		case errors.Is(err, events.ErrPayloadTooLarge):
+			h.writeError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "event payload exceeds the size limit")
+		case errors.Is(err, events.ErrInvalidEvent):
+			h.writeError(w, r, http.StatusBadRequest, "invalid_event", "event fields or payload are invalid")
+		default:
+			h.writeError(w, r, http.StatusServiceUnavailable, "events_unavailable", "event could not be durably stored")
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	status, logMessage := http.StatusCreated, "event_published"
+	if result.Duplicate {
+		// Identical resend: nothing was written; the original event is returned.
+		status, logMessage = http.StatusOK, "event_duplicate"
+	}
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(struct {
+		ContractVersion string       `json:"contract_version"`
+		Event           events.Event `json:"event"`
+	}{ContractVersion: events.ContractVersion, Event: result.Event})
+	// Log fixed fields only: never the payload.
+	h.logger.Info(logMessage, "correlation_id", CorrelationID(r.Context()), "status", status, "duration_ms", time.Since(started).Milliseconds())
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,6 @@
 # KAS Core — piloto local
 
-Projeto independente em Go, mantido fora dos repositórios do CRM. Esta etapa contém dois módulos reutilizáveis: avaliação de configuração por tenant e registro de auditoria, com capacidades separadas por serviço. Usa a biblioteca padrão Go (mais o driver `pgx` para o armazenamento opcional em PostgreSQL) e um único executável. Nenhum dos módulos está integrado ao CRM ou pronto para produção.
+Projeto independente em Go, mantido fora dos repositórios do CRM. Esta etapa contém três módulos reutilizáveis: avaliação de configuração por tenant, registro de auditoria e publicação de eventos com Outbox (fases 1 e 2), com capacidades separadas por serviço. Usa a biblioteca padrão Go (mais o driver `pgx` para o armazenamento opcional em PostgreSQL) e um único executável. Nenhum dos módulos está integrado ao CRM ou pronto para produção.
 
 O valor fictício `logging.max_meta_keys` foi inspirado em um logger do legado, mas é somente dado de exemplo declarado em `config.example.json`; o núcleo não depende do logger nem de caminhos ou entidades do CRM. Todos os tenants, atores e recursos usados nos exemplos são fictícios.
 
@@ -28,7 +28,7 @@ export KAS_AUDIT_DATABASE_URL='postgres://kas:kas_teste_local@localhost:5432/kas
 go run ./cmd/kas-core -config ./config.example.json -audit-store postgres -addr 127.0.0.1:8088
 ```
 
-**Migrações.** Os arquivos SQL ficam embutidos no executável (`internal/audit/migrations`: `0001` cria a tabela, `0002` cria o índice único de identidade). Rodam de forma idempotente, serializadas por trava consultiva, e cada uma é registrada em `audit_schema_migrations`. Não há reversão automática. Se um banco criado só com a `0001` já tiver identidades duplicadas, a `0002` falha, é desfeita por inteiro e **nenhuma linha é apagada**; resolva as duplicatas manualmente no banco descartável e rode de novo.
+**Migrações.** O executor é o pacote compartilhado `internal/pgmigrate`; cada módulo (auditoria, eventos) tem os próprios arquivos SQL embutidos no executável e a própria tabela de controle, de modo que os módulos continuam independentes. Para a auditoria (`internal/audit/migrations`: `0001` cria a tabela, `0002` cria o índice único de identidade). Rodam de forma idempotente, serializadas por trava consultiva, e cada uma é registrada em `audit_schema_migrations`. Não há reversão automática. Se um banco criado só com a `0001` já tiver identidades duplicadas, a `0002` falha, é desfeita por inteiro e **nenhuma linha é apagada**; resolva as duplicatas manualmente no banco descartável e rode de novo.
 
 **Idempotência.** A identidade de um evento é `(tenant_id, service_id, event_id)`. Reenvio idêntico (todos os campos, comparados exatamente como enviados, inclusive o texto de `occurred_at`) não grava nova linha e devolve `200` com o evento original e o `received_at` original. Mesma identidade com conteúdo diferente devolve `409 event_conflict` e não grava. O mesmo `event_id` em outro tenant ou serviço é outro evento. Isso é deduplicação por identidade, não promessa de entrega exatamente uma vez.
 
@@ -54,6 +54,22 @@ Um teste de integração cria um papel com esses privilégios e confirma que ele
 **Gravação durável e prontidão.** `201` só é devolvido depois que o PostgreSQL confirma o `INSERT` (commit, conforme o `synchronous_commit` do servidor). Falha de banco devolve o erro genérico `audit_unavailable`, sem detalhes internos. `GET /healthz` é apenas liveness. `GET /readyz` também verifica o armazenamento de auditoria (ping ao PostgreSQL com limite de 3 s; no JSON Lines, falha se uma escrita falhou ou o arquivo foi fechado) e devolve `503 audit_unavailable` quando não está pronto.
 
 **Outros limites.** Os textos originais de `occurred_at` e `received_at` ficam em colunas `*_raw` (nanossegundos preservados); colunas `timestamptz` servem para consulta. Máximo de 8 conexões, 10 s para abrir e 3 s por gravação, sem ajuste por configuração. A **configuração continua em arquivo**, carregada na inicialização. Os testes de integração com PostgreSQL só rodam se `KAS_TEST_DATABASE_URL` apontar para um banco local descartável (cada teste cria e remove seu próprio schema); sem a variável, são ignorados.
+
+## Módulo de eventos (Outbox) — fases 1 e 2
+
+Contrato `v1` em [contract/v1/events.md](contract/v1/events.md) e no [openapi.yaml](openapi.yaml). Publicação durável de eventos com idempotência e entrega a consumidores com bloqueio por prazo, retentativas e estado `dead`, sobre PostgreSQL. **A entrega é pelo menos uma vez, sem ordenação**: os consumidores precisam ser idempotentes, deduplicando por `(tenant_id, service_id, event_id)`. Não há promessa de entrega exatamente uma vez.
+
+```bash
+export KAS_EVENTS_DATABASE_URL='postgres://kas:kas_teste_local@localhost:5432/kas_core_test?sslmode=disable'
+go run ./cmd/kas-core -config ./config.example.json -events-store postgres -addr 127.0.0.1:8088
+```
+
+- **Fase 1 — publicação.** `POST /internal/v1/events`, com a capacidade `events:publish` e as mesmas regras de tenant. O tipo de evento precisa estar declarado em `event_types` na configuração. O `payload` é um objeto JSON de até 16 KiB que leva **só identificadores**: o contrato proíbe dado clínico ou pessoal. A KAS aplica um formato restritivo (strings em formato de identificador, inteiros de 64 bits e booleanos, sem aninhamento, listas, `null` nem texto livre), mas **não consegue detectar** dado pessoal escrito em formato de identificador. Primeira publicação devolve `201`; reenvio idêntico devolve `200` com o evento original e não grava nada; mesma identidade com conteúdo diferente devolve `409 event_conflict`. O evento e uma entrega por consumidor correspondente (tipo **e** tenant) são gravados na **mesma transação**.
+- **Fase 2 — trabalhadores.** O pacote `internal/events` tem um `Worker` que pega entregas com `FOR UPDATE SKIP LOCKED` e prazo de bloqueio (padrão 60 s), executa handlers em processo, aplica backoff exponencial com jitter (base 2 s, teto 5 min, 5 tentativas) e move para `dead` após esgotar as tentativas ou em falha permanente. Se um trabalhador cair, o prazo expira e outro refaz a entrega. Um trabalhador atrasado não sobrescreve o resultado. **Os handlers existem só em testes**: o executável não registra nenhum, então as entregas ficam `pending` até uma fase futura (consumo por pull está sendo avaliado). Não há webhook nem chamada externa.
+- **Retenção (documentada, sem exclusão automática):** entregues, 30 dias; `dead`, 90 dias. Nada é apagado nesta etapa e o papel de runtime não tem `DELETE`, então as tabelas crescem sem limite até existir um mecanismo de limpeza.
+- **Papéis do banco.** Migração: `-events-migrate-only` com `KAS_EVENTS_MIGRATION_DATABASE_URL` (dono do esquema). Runtime: `INSERT` e `SELECT` em `outbox_events` (nunca `UPDATE` ou `DELETE`); `INSERT`, `SELECT` e `UPDATE` em `outbox_deliveries` (nunca `DELETE`); `SELECT` em `events_schema_migrations`; mais `USAGE` no schema e `CONNECT` no banco. Inicie com `-events-auto-migrate=false`. A conexão exige TLS fora de loopback, como na auditoria.
+- `GET /readyz` também verifica o armazenamento de eventos quando ele está habilitado.
+- A configuração continua em arquivo: tipos de evento e consumidores só mudam com reinício, e consumidores adicionados depois não recebem entregas de eventos já publicados.
 
 ## Módulo de configuração
 
@@ -92,7 +108,7 @@ Para validar o código atual no WSL, execute os comandos de [VALIDACAO-AMANHA.md
 
 O workflow [KAS Core CI](.github/workflows/ci.yml) executa os mesmos quatro checks em `ubuntu-latest` no push à branch `kas-core/validacao-core`, em pull requests para `main` e sob acionamento manual. Usa apenas tokens fictícios escritos nos testes; não lê segredos do repositório, não acessa produção e não faz deploy.
 
-Serviços recebem capacidades na configuração de inicialização: `config:read`, `audit:write` ou ambas. Campo ausente/vazio concede nenhuma capacidade; nomes desconhecidos ou repetidos impedem a inicialização. Para manter o funcionamento do exemplo, `config.example.json` declara explicitamente ambas para os dois serviços fictícios. A autorização por tenant continua obrigatória em conjunto com a capacidade.
+Serviços recebem capacidades na configuração de inicialização: `config:read`, `audit:write`, `events:publish` ou combinações. Campo ausente/vazio concede nenhuma capacidade; nomes desconhecidos ou repetidos impedem a inicialização. Para manter o funcionamento do exemplo, `config.example.json` declara explicitamente ambas para os dois serviços fictícios. A autorização por tenant continua obrigatória em conjunto com a capacidade.
 
 ## Limites
 

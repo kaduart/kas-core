@@ -20,16 +20,23 @@
       "logging.max_meta_keys": 4
     }
   },
+  "event_types": ["settings.updated"],
+  "event_consumers": {
+    "consumer-demo": {
+      "event_types": ["settings.updated"],
+      "tenants": ["tenant-demo-a"]
+    }
+  },
   "callers": {
     "fono-node-local": {
       "token_env": "KAS_CALLER_FONO_NODE_TOKEN",
       "tenants": ["tenant-demo-a"],
-      "capabilities": ["config:read", "audit:write"]
+      "capabilities": ["config:read", "audit:write", "events:publish"]
     },
     "demo-node-b": {
       "token_env": "KAS_CALLER_DEMO_NODE_B_TOKEN",
       "tenants": ["tenant-demo-b"],
-      "capabilities": ["config:read", "audit:write"]
+      "capabilities": ["config:read", "audit:write", "events:publish"]
     }
   }
 }

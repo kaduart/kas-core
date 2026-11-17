@@ -184,3 +184,96 @@ func TestLoadRejectsOversizedConfiguration(t *testing.T) {
 		t.Fatal("expected configuration over 1 MiB to be rejected")
 	}
 }
+
+const eventsFixture = `{
+  "contract_version":"v1",
+  "config_version":"fixture-events",
+  "tenant_registry":[
+    {"id":"tenant-demo-a","status":"active"},
+    {"id":"tenant-demo-b","status":"active"}
+  ],
+  "key_schema":{"logging.max_meta_keys":{"type":"integer","min":1,"max":10}},
+  "tenants":{"tenant-demo-a":{"logging.max_meta_keys":10}},
+  "event_types":["settings.updated","settings.checked"],
+  "event_consumers":{
+    "consumer-a":{"event_types":["settings.updated"],"tenants":["tenant-demo-a"]},
+    "consumer-ab":{"event_types":["settings.updated","settings.checked"],"tenants":["tenant-demo-a","tenant-demo-b"]}
+  },
+  "callers":{
+    "node-a":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["events:publish"]}
+  }
+}`
+
+func TestEventTypesConsumersAndTenantMatching(t *testing.T) {
+	store, err := newTestStore(t, eventsFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.EventTypeDeclared("settings.updated") || store.EventTypeDeclared("settings.deleted") {
+		t.Fatal("declared event types are not reported correctly")
+	}
+	cases := []struct {
+		tenant, eventType string
+		want              string
+	}{
+		{"tenant-demo-a", "settings.updated", "consumer-a,consumer-ab"},
+		{"tenant-demo-a", "settings.checked", "consumer-ab"},
+		{"tenant-demo-b", "settings.updated", "consumer-ab"}, // consumer-a is not listed for tenant B
+		{"tenant-demo-b", "settings.checked", "consumer-ab"},
+		{"tenant-demo-a", "settings.deleted", ""},
+	}
+	for _, tc := range cases {
+		if got := strings.Join(store.ConsumersFor(tc.tenant, tc.eventType), ","); got != tc.want {
+			t.Fatalf("ConsumersFor(%s, %s) = %q, want %q", tc.tenant, tc.eventType, got, tc.want)
+		}
+	}
+	if err := store.Authorize("node-a", tokenA, "tenant-demo-a", CapabilityEventsPublish); err != nil {
+		t.Fatalf("events:publish must be accepted: %v", err)
+	}
+	if err := store.Authorize("node-a", tokenA, "tenant-demo-a", CapabilityAuditWrite); !errors.Is(err, ErrCapabilityForbidden) {
+		t.Fatalf("a service with only events:publish must not write audit: %v", err)
+	}
+}
+
+func TestConfigurationWithoutEventsStillLoads(t *testing.T) {
+	store, err := newTestStore(t, fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.EventTypeDeclared("settings.updated") || len(store.ConsumersFor("tenant-demo-a", "settings.updated")) != 0 {
+		t.Fatal("no event types or consumers should exist when none are declared")
+	}
+}
+
+func TestInvalidEventConfigurationIsRejected(t *testing.T) {
+	mutations := map[string]func(string) string{
+		"undeclared type in consumer": func(s string) string {
+			return strings.Replace(s, `"event_types":["settings.updated"],"tenants":["tenant-demo-a"]`, `"event_types":["settings.unknown"],"tenants":["tenant-demo-a"]`, 1)
+		},
+		"unknown tenant in consumer": func(s string) string {
+			return strings.Replace(s, `"tenants":["tenant-demo-a"]}`, `"tenants":["tenant-ghost"]}`, 1)
+		},
+		"consumer without tenants": func(s string) string {
+			return strings.Replace(s, `"tenants":["tenant-demo-a"]}`, `"tenants":[]}`, 1)
+		},
+		"duplicate event type": func(s string) string {
+			return strings.Replace(s, `["settings.updated","settings.checked"]`, `["settings.updated","settings.updated"]`, 1)
+		},
+		"invalid event type": func(s string) string {
+			return strings.Replace(s, `"settings.checked"]`, `"Settings Checked"]`, 1)
+		},
+		"invalid consumer id": func(s string) string {
+			return strings.Replace(s, `"consumer-a"`, `"Consumer A!"`, 1)
+		},
+		"unknown field": func(s string) string {
+			return strings.Replace(s, `"event_consumers"`, `"event_consumerz"`, 1)
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			if _, err := newTestStore(t, mutate(eventsFixture)); err == nil {
+				t.Fatal("invalid event configuration was accepted")
+			}
+		})
+	}
+}

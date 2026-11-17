@@ -12,7 +12,7 @@ Headers:
 
 Authentication and tenant authorization use the same service allowlist, credentials and central `tenant_registry` as the configuration endpoint. The tenant must be registered, active and allowed for the authenticated service, and the service must explicitly have the `audit:write` capability. The body `service_id` must exactly match the authenticated `X-KAS-Service`; it cannot replace that identity. Registry state and capabilities are loaded at startup and changes require restart. Deactivating a tenant blocks new events but does not delete or alter previously stored events.
 
-`callers.<service-id>.capabilities` accepts `config:read` and/or `audit:write`. An omitted or empty list grants no business capability and is denied by default. Unknown or duplicate capability names reject startup.
+`callers.<service-id>.capabilities` accepts `config:read`, `audit:write` and/or `events:publish` (see [events.md](events.md)). An omitted or empty list grants no business capability and is denied by default. Unknown or duplicate capability names reject startup.
 
 ## Request
 

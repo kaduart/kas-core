@@ -10,6 +10,7 @@ import (
 	"io"
 	"kas-core-pilot/internal/strictjson"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -18,6 +19,8 @@ const ContractVersion = "v1"
 const (
 	CapabilityConfigRead = "config:read"
 	CapabilityAuditWrite = "audit:write"
+	// CapabilityEventsPublish lets a service publish events through the outbox.
+	CapabilityEventsPublish = "events:publish"
 )
 
 var (
@@ -33,6 +36,8 @@ var (
 	serviceIDPattern       = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 	envNamePattern         = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
 	keyPattern             = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
+	eventTypePattern       = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
+	consumerIDPattern      = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
 )
 
 type rawConfig struct {
@@ -42,6 +47,22 @@ type rawConfig struct {
 	KeySchema       map[string]KeyRule                    `json:"key_schema"`
 	Tenants         map[string]map[string]json.RawMessage `json:"tenants"`
 	Callers         map[string]rawCaller                  `json:"callers"`
+	// EventTypes declares the event types the outbox accepts. Optional: when
+	// empty, event publication rejects every type.
+	EventTypes []string `json:"event_types"`
+	// EventConsumers declares outbox consumers; deliveries are created at
+	// publication time for each consumer that matches the event's type and tenant.
+	EventConsumers map[string]rawEventConsumer `json:"event_consumers"`
+}
+
+type rawEventConsumer struct {
+	EventTypes []string `json:"event_types"`
+	Tenants    []string `json:"tenants"`
+}
+
+type eventConsumer struct {
+	types   map[string]struct{}
+	tenants map[string]struct{}
 }
 
 type tenantRegistration struct {
@@ -75,6 +96,9 @@ type Store struct {
 	rules   map[string]KeyRule
 	values  map[string]map[string]json.RawMessage
 	callers map[string]caller
+	// eventTypes and eventConsumers are fixed at startup.
+	eventTypes     map[string]struct{}
+	eventConsumers map[string]eventConsumer
 }
 
 // Load parses and validates all non-secret data, then loads only the referenced
@@ -171,6 +195,10 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 		store.values[tenantID] = values
 	}
 
+	if err := store.loadEvents(raw); err != nil {
+		return nil, err
+	}
+
 	for serviceID, rawCaller := range raw.Callers {
 		if !serviceIDPattern.MatchString(serviceID) || !envNamePattern.MatchString(rawCaller.TokenEnv) {
 			return nil, errors.New("invalid service caller configuration")
@@ -195,7 +223,7 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 		capabilities := make(map[string]struct{}, len(rawCaller.Capabilities))
 		for _, capability := range rawCaller.Capabilities {
 			switch capability {
-			case CapabilityConfigRead, CapabilityAuditWrite:
+			case CapabilityConfigRead, CapabilityAuditWrite, CapabilityEventsPublish:
 			default:
 				return nil, fmt.Errorf("service caller %q declares an unknown capability", serviceID)
 			}
@@ -208,6 +236,70 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 		store.callers[serviceID] = caller{token: tokenBytes, tenants: authorizedTenants, capabilities: capabilities}
 	}
 	return store, nil
+}
+
+func (s *Store) loadEvents(raw rawConfig) error {
+	s.eventTypes = make(map[string]struct{}, len(raw.EventTypes))
+	for _, eventType := range raw.EventTypes {
+		if !eventTypePattern.MatchString(eventType) || len(eventType) > 80 {
+			return errors.New("invalid event type in event_types")
+		}
+		if _, duplicate := s.eventTypes[eventType]; duplicate {
+			return errors.New("duplicate event type in event_types")
+		}
+		s.eventTypes[eventType] = struct{}{}
+	}
+	s.eventConsumers = make(map[string]eventConsumer, len(raw.EventConsumers))
+	for id, rawConsumer := range raw.EventConsumers {
+		if !consumerIDPattern.MatchString(id) {
+			return errors.New("invalid event consumer identifier")
+		}
+		if len(rawConsumer.EventTypes) == 0 || len(rawConsumer.Tenants) == 0 {
+			return fmt.Errorf("event consumer %q needs at least one event type and one tenant", id)
+		}
+		consumer := eventConsumer{types: map[string]struct{}{}, tenants: map[string]struct{}{}}
+		for _, eventType := range rawConsumer.EventTypes {
+			if _, declared := s.eventTypes[eventType]; !declared {
+				return fmt.Errorf("event consumer %q references an undeclared event type", id)
+			}
+			if _, duplicate := consumer.types[eventType]; duplicate {
+				return fmt.Errorf("event consumer %q repeats an event type", id)
+			}
+			consumer.types[eventType] = struct{}{}
+		}
+		for _, tenantID := range rawConsumer.Tenants {
+			if _, registered := s.tenants[tenantID]; !registered {
+				return fmt.Errorf("event consumer %q references an unknown tenant", id)
+			}
+			if _, duplicate := consumer.tenants[tenantID]; duplicate {
+				return fmt.Errorf("event consumer %q repeats a tenant", id)
+			}
+			consumer.tenants[tenantID] = struct{}{}
+		}
+		s.eventConsumers[id] = consumer
+	}
+	return nil
+}
+
+// EventTypeDeclared reports whether the event type is declared in the configuration.
+func (s *Store) EventTypeDeclared(eventType string) bool {
+	_, declared := s.eventTypes[eventType]
+	return declared
+}
+
+// ConsumersFor returns, sorted, the consumers subscribed to the event type for
+// the tenant. A consumer never receives events of a tenant it is not listed for.
+func (s *Store) ConsumersFor(tenantID, eventType string) []string {
+	var ids []string
+	for id, consumer := range s.eventConsumers {
+		_, typeOK := consumer.types[eventType]
+		_, tenantOK := consumer.tenants[tenantID]
+		if typeOK && tenantOK {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func validToken(token string) bool {

@@ -13,6 +13,7 @@ import (
 
 	"kas-core-pilot/internal/audit"
 	"kas-core-pilot/internal/configstore"
+	"kas-core-pilot/internal/events"
 	"kas-core-pilot/internal/httpapi"
 )
 
@@ -23,6 +24,16 @@ func main() {
 func run() int {
 	configPath := flag.String("config", "config.example.json", "path to non-secret KAS configuration JSON")
 	auditDataDir := flag.String("audit-data-dir", "./data", "directory for local JSON Lines audit data")
+	auditBackend := flag.String("audit-store", "jsonl", "audit storage backend: jsonl (default) or postgres")
+	auditDatabaseURLEnv := flag.String("audit-database-url-env", "KAS_AUDIT_DATABASE_URL", "environment variable holding the PostgreSQL connection string (used with -audit-store postgres)")
+	auditAutoMigrate := flag.Bool("audit-auto-migrate", true, "with -audit-store postgres: apply pending migrations at startup; set false when the runtime role has no DDL rights")
+	auditMigrateOnly := flag.Bool("audit-migrate-only", false, "apply audit PostgreSQL migrations with the migration role and exit")
+	auditMigrationURLEnv := flag.String("audit-migration-database-url-env", "KAS_AUDIT_MIGRATION_DATABASE_URL", "environment variable holding the migration-role PostgreSQL connection string (used with -audit-migrate-only)")
+	eventsBackend := flag.String("events-store", "none", "event outbox storage: none (default, publication answers 503) or postgres")
+	eventsDatabaseURLEnv := flag.String("events-database-url-env", "KAS_EVENTS_DATABASE_URL", "environment variable holding the events PostgreSQL connection string (used with -events-store postgres)")
+	eventsAutoMigrate := flag.Bool("events-auto-migrate", true, "with -events-store postgres: apply pending migrations at startup; set false when the runtime role has no DDL rights")
+	eventsMigrateOnly := flag.Bool("events-migrate-only", false, "apply events PostgreSQL migrations with the migration role and exit")
+	eventsMigrationURLEnv := flag.String("events-migration-database-url-env", "KAS_EVENTS_MIGRATION_DATABASE_URL", "environment variable holding the events migration-role connection string (used with -events-migrate-only)")
 	addr := flag.String("addr", "127.0.0.1:8088", "listen address")
 	maxConcurrent := flag.Int("max-concurrent", 32, "maximum concurrent HTTP requests (1-128)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate path (required for non-loopback listeners)")
@@ -30,6 +41,41 @@ func run() int {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if *auditMigrateOnly || *eventsMigrateOnly {
+		if *auditMigrateOnly {
+			if *auditBackend != "postgres" {
+				logger.Error("-audit-migrate-only requires -audit-store postgres")
+				return 2
+			}
+			dsn, found := os.LookupEnv(*auditMigrationURLEnv)
+			if !found || dsn == "" {
+				logger.Error("audit migration connection variable is not set", "env", *auditMigrationURLEnv)
+				return 2
+			}
+			if err := audit.MigratePostgres(context.Background(), dsn); err != nil {
+				logger.Error("audit migration failed", "reason", err.Error())
+				return 1
+			}
+			logger.Info("audit migrations applied")
+		}
+		if *eventsMigrateOnly {
+			if *eventsBackend != "postgres" {
+				logger.Error("-events-migrate-only requires -events-store postgres")
+				return 2
+			}
+			dsn, found := os.LookupEnv(*eventsMigrationURLEnv)
+			if !found || dsn == "" {
+				logger.Error("events migration connection variable is not set", "env", *eventsMigrationURLEnv)
+				return 2
+			}
+			if err := events.MigratePostgres(context.Background(), dsn); err != nil {
+				logger.Error("events migration failed", "reason", err.Error())
+				return 1
+			}
+			logger.Info("events migrations applied")
+		}
+		return 0
+	}
 	if *maxConcurrent < 1 || *maxConcurrent > 128 {
 		logger.Error("invalid server concurrency limit")
 		return 2
@@ -55,7 +101,28 @@ func run() int {
 		logger.Error("configuration rejected", "reason", err.Error())
 		return 2
 	}
-	auditStore, err := audit.OpenJSONL(*auditDataDir)
+	var auditStore interface {
+		audit.Repository
+		Close() error
+	}
+	switch *auditBackend {
+	case "jsonl":
+		auditStore, err = audit.OpenJSONL(*auditDataDir)
+	case "postgres":
+		dsn, found := os.LookupEnv(*auditDatabaseURLEnv)
+		if !found || dsn == "" {
+			logger.Error("audit database connection variable is not set", "env", *auditDatabaseURLEnv)
+			return 2
+		}
+		if *auditAutoMigrate {
+			auditStore, err = audit.OpenPostgres(context.Background(), dsn)
+		} else {
+			auditStore, err = audit.OpenPostgresVerified(context.Background(), dsn)
+		}
+	default:
+		logger.Error("invalid audit store; use jsonl or postgres")
+		return 2
+	}
 	if err != nil {
 		logger.Error("audit store unavailable", "reason", err.Error())
 		return 2
@@ -67,6 +134,35 @@ func run() int {
 	}()
 	auditService := audit.NewService(auditStore)
 	api := httpapi.NewHandlerWithAudit(store, auditService, *maxConcurrent, logger)
+
+	switch *eventsBackend {
+	case "none":
+	case "postgres":
+		dsn, found := os.LookupEnv(*eventsDatabaseURLEnv)
+		if !found || dsn == "" {
+			logger.Error("events database connection variable is not set", "env", *eventsDatabaseURLEnv)
+			return 2
+		}
+		var eventStore *events.PostgresStore
+		if *eventsAutoMigrate {
+			eventStore, err = events.OpenPostgres(context.Background(), dsn)
+		} else {
+			eventStore, err = events.OpenPostgresVerified(context.Background(), dsn)
+		}
+		if err != nil {
+			logger.Error("event store unavailable", "reason", err.Error())
+			return 2
+		}
+		defer func() {
+			if err := eventStore.Close(); err != nil {
+				logger.Error("event store close failed", "error", err.Error())
+			}
+		}()
+		api.EnableEvents(events.NewService(eventStore, store))
+	default:
+		logger.Error("invalid events store; use none or postgres")
+		return 2
+	}
 
 	server := &http.Server{
 		Addr:              *addr,

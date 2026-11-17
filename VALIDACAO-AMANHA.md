@@ -54,3 +54,128 @@ O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) configura os q
 - A configuração e o registro de tenants são lidos no início; mudanças exigem reinício.
 - A auditoria é JSON Lines local, de processo único, e confirma após sincronização. Não oferece imutabilidade, proteção contra adulteração ou entrega exatamente uma vez; retentativas podem duplicar eventos.
 - O piloto não inclui banco, painel, busca/edição/exclusão por API, retenção automatizada, backup, replicação ou recuperação automatizada, e não está pronto para produção.
+
+## Rodada PostgreSQL (auditoria) — resultados no Ubuntu WSL
+
+Base: branch `kas-core/validacao-core`, commit `5236b37` + alterações desta rodada (ainda sem commit no momento deste registro). PostgreSQL 16.15 local, banco descartável `kas_core_test`, credenciais fictícias.
+
+**O que mudou:** novo `internal/audit/postgres.go` e migração `internal/audit/migrations/0001_audit_events.sql`; flags `-audit-store` e `-audit-database-url-env` em `cmd/kas-core/main.go`; novo `internal/audit/postgres_test.go`; serviço PostgreSQL com credenciais fictícias em `.github/workflows/ci.yml`; `go.mod` (diretiva `go` subiu de 1.22 para 1.25.0 por exigência do driver `pgx/v5`) e novo `go.sum`; README.
+
+| Comando | Resultado |
+|---|---|
+| `go test ./...` sem `KAS_TEST_DATABASE_URL` | Aprovado; os 5 testes/subtestes de PostgreSQL ficaram como SKIP |
+| `go test ./...` com banco local | Aprovado, incluindo 6 testes de PostgreSQL |
+| `go vet ./...` | Aprovado, sem diagnósticos; `gofmt -l internal cmd` sem saída |
+| `CGO_ENABLED=1 go test -race ./...` com banco local | Aprovado |
+| `npm test` | 11 testes, 0 falhas (8 + 1 + 1 + 1). Esses testes usam o armazenamento JSON Lines, não o PostgreSQL |
+| Teste manual do binário com `-audit-store postgres` | `201` para tenant autorizado; `403` para acesso cruzado; 1 linha gravada em `audit_events`; SIGTERM encerrou com código 0; senha ausente do log |
+
+Os testes de PostgreSQL cobrem: campos preservados (incluindo nanossegundos), migração repetida e iniciada por 6 aberturas simultâneas, 60 gravações concorrentes, evento inválido, contexto cancelado, armazenamento fechado, falha de banco sem vazar detalhes e erro de conexão sem vazar a senha.
+
+**Não validado:** o workflow do GitHub Actions com o novo serviço PostgreSQL (nenhuma execução remota foi feita nesta rodada); desempenho; queda e retomada do servidor PostgreSQL com o processo em execução; PostgreSQL com TLS; versões do PostgreSQL diferentes da 16.
+
+**Limitações e dúvidas de negócio**
+- A configuração continua só em arquivo. Persistir no banco exige decisão sobre edição, versionamento e atualização, hoje fora do escopo.
+- ~~`event_id` não é único: reenvio grava nova linha.~~ Superado na rodada de idempotência abaixo.
+- Sem retenção, particionamento, backup ou consulta de eventos.
+- Quem acessa o banco pode alterar ou apagar linhas; nenhuma proteção contra adulteração é prometida.
+- Não é pronto para produção.
+
+**Roteiro curto de validação (WSL, ~5 min)**
+```bash
+sudo service postgresql start
+cd /mnt/c/Users/User/Documents/projetos/kas-core-pilot
+export KAS_TEST_DATABASE_URL='postgres://kas:kas_teste_local@localhost:5432/kas_core_test?sslmode=disable'
+go test -count=1 ./... && go vet ./... && CGO_ENABLED=1 go test -count=1 -race ./...
+(cd node-integration && npm test)
+```
+Para rodar o servidor: veja a seção "Armazenamento PostgreSQL" no README. Se um schema de teste ficar para trás após uma falha, remova os schemas `kas_test_*` no banco descartável.
+
+## Rodada de idempotência, TLS e prontidão — resultados no Ubuntu WSL
+
+Base: commit `d14d3fe` + alterações desta rodada. PostgreSQL 16.15 local descartável, credenciais fictícias.
+
+**Decisões do usuário implementadas:** `pgx/v5` mantido; identidade `(tenant_id, service_id, event_id)` com índice único (migração `0002`); reenvio idêntico → `200` com o evento original sem nova linha; mesmo `event_id` com conteúdo diferente → `409 event_conflict`; mesma regra no JSON Lines (índice em memória); TLS obrigatório fora de loopback; `/readyz` verifica a auditoria; usuário de runtime com só `INSERT`/`SELECT`, separado do de migração; configuração continua em arquivo.
+
+**Para tornar o usuário de runtime utilizável** (não só documentado) acrescentei `-audit-migrate-only`, `-audit-migration-database-url-env` e `-audit-auto-migrate=false` (modo que só verifica migrações, sem DDL). Sem isso a KAS não iniciaria com um usuário sem direito de DDL.
+
+**Arquivos alterados:** `internal/audit/{event,service,jsonl,postgres}.go`, `internal/audit/migrations/0002_audit_events_identity.sql` (novo), `internal/httpapi/handler.go`, `cmd/kas-core/main.go`, testes `internal/audit/{idempotency,postgres}_test.go` e `internal/httpapi/handler_test.go`, `contract/v1/{audit-events,config-evaluate}.md`, `openapi.yaml`, README e este arquivo.
+
+| Comando | Resultado |
+|---|---|
+| `gofmt -l internal cmd` | Sem saída |
+| `go vet ./...` | Aprovado |
+| `go test ./...` sem `KAS_TEST_DATABASE_URL` | Aprovado; testes que precisam de banco ficaram como SKIP, e os de política de TLS rodaram |
+| `go test ./...` com banco local | Aprovado; 27 testes de PASS e 1 SKIP no pacote `audit` |
+| `CGO_ENABLED=1 go test -race ./...` com banco local | Aprovado |
+| `npm test` | 11 testes, 0 falhas |
+| Binário ponta a ponta (`-audit-migrate-only`, servidor com `-audit-auto-migrate=false`) | `/readyz` 200; primeiro envio 201; reenvio idêntico 200 com o mesmo `received_at`; conteúdo alterado 409; 1 linha no banco; SIGTERM com código 0; senha ausente dos logs; DSN remoto com `sslmode=disable` recusado com código 2; nenhum processo restante |
+
+**O 1 SKIP** é `TestPostgresRuntimeRoleWithInsertSelectOnly`: o usuário de teste `kas` não pode criar papéis. Eu o executei separadamente concedendo `CREATEROLE` ao `kas` apenas durante o teste, no banco local descartável, e revoguei em seguida (`rolcreaterole = false`; nenhum papel `kas_rt_*` nem schema de teste restante). Resultado: PASS — o papel só com `INSERT`/`SELECT` abriu em modo verificado, gravou, detectou duplicata e **não** conseguiu `UPDATE`, `DELETE`, `DROP` nem criar tabela. Nas execuções comuns ele é ignorado. No CI o usuário do serviço PostgreSQL é superusuário, então o teste deve rodar lá (não confirmado).
+
+Durante o primeiro desses testes um papel de teste ficou órfão por erro de ordem de limpeza; corrigi o teste, removi o papel e repeti o ciclo até a limpeza funcionar sozinha.
+
+**Não validado:** o resultado do GitHub Actions deste commit (ver o resumo de entrega); queda e retomada do PostgreSQL com o servidor em execução; conexão TLS real com um PostgreSQL remoto (a política foi testada sobre a configuração analisada, sem servidor com TLS); desempenho; outras versões do PostgreSQL.
+
+**Limitações**
+- Reenvio só é "idêntico" se todos os campos forem iguais como enviados; o mesmo instante escrito em outro formato em `occurred_at` conta como conteúdo diferente (409).
+- O índice em memória do JSON Lines cresce com o arquivo.
+- Se um banco já tiver identidades duplicadas, a migração `0002` falha e nada é apagado; é preciso resolver manualmente.
+- `sslmode=require` criptografa sem autenticar o servidor; `verify-full` é o recomendado.
+- Sem retenção, backup, particionamento ou consulta. Quem administra o banco pode alterar linhas. Não é pronto para produção.
+
+## Rodada Outbox (migrações compartilhadas, fases 1 e 2) — resultados no Ubuntu WSL
+
+Base: commit `7870f1f` + alterações desta rodada. PostgreSQL 16.15 local descartável, credenciais fictícias. Sem webhook, sem chamada externa, sem identidade humana.
+
+**Entregue**
+1. **Migrações compartilhadas:** `internal/pgmigrate` (executor com tabela de controle própria por módulo, trava consultiva, transação por migração, verificação sem DDL) e `internal/pgdb` (abertura de pool com a política de TLS). A auditoria passou a usá-los mantendo a tabela `audit_schema_migrations` e a chave de trava, então bancos já migrados continuam compatíveis. `internal/pgtest` isola um schema por teste.
+2. **Fase 1:** `POST /internal/v1/events` com a capacidade `events:publish`; tipos de evento e consumidores declarados na configuração (`event_types`, `event_consumers`); idempotência `201` / `200` / `409` por `(tenant_id, service_id, event_id)`; evento e entregas gravados na mesma transação.
+3. **Fase 2:** `events.Worker` com `FOR UPDATE SKIP LOCKED`, prazo de bloqueio, backoff exponencial com jitter, estado `dead`, tratamento de pânico e de timeout, e impedimento de sobrescrita por trabalhador atrasado.
+4. `/readyz` verifica o armazenamento de eventos quando habilitado. Flags novas: `-events-store`, `-events-database-url-env`, `-events-auto-migrate`, `-events-migrate-only`, `-events-migration-database-url-env`.
+
+**Arquivos novos:** `internal/{pgdb,pgmigrate,pgtest}/*`, `internal/events/{event,service,postgres,worker}.go` e `migrations/0001_outbox.sql`, testes de cada pacote, `internal/httpapi/events_test.go`, `contract/v1/events.md`. **Alterados:** `internal/audit/postgres.go` (e seus testes), `internal/configstore/store.go` (+ testes), `internal/httpapi/handler.go`, `cmd/kas-core/main.go`, `config.example.json`, `openapi.yaml`, README, contratos de auditoria e configuração.
+
+| Comando | Resultado |
+|---|---|
+| `gofmt -l internal cmd` | Sem saída |
+| `go vet ./...` | Aprovado |
+| `go test ./...` sem `KAS_TEST_DATABASE_URL` | Aprovado; os testes que exigem banco ficam como SKIP |
+| `go test ./...` com banco local | Aprovado: 95 PASS e 2 SKIP (ver abaixo) |
+| `CGO_ENABLED=1 go test -race ./...` com banco local | Aprovado |
+| `npm test` | 11 testes, 0 falhas |
+| OpenAPI | YAML válido; os 5 caminhos e a capacidade `events:publish` presentes; nenhuma referência `$ref` quebrada |
+| Binário ponta a ponta | Padrão (`-events-store none`) devolve `503 events_unavailable`; modo verificado em schema vazio sai com código 2; `-events-migrate-only` sai com 0; DSN remoto sem TLS sai com 2; `/readyz` 200; 201 → 200 (mesmo `received_at`) → 409; payload aninhado `400 invalid_event`; tipo não declarado `422`; acesso cruzado `403`; evento do tenant B (sem consumidor) grava 201 e **nenhuma** entrega; SIGTERM com código 0; senha e payload ausentes dos logs; nenhum processo restante |
+
+**Os 2 SKIP** (`TestPostgresRuntimeRoleWithInsertSelectOnly`, `TestRuntimeRoleHasLeastPrivilege`) exigem que o usuário de teste crie papéis. Executei os dois concedendo `CREATEROLE` ao `kas` só durante o teste, no banco local descartável, e revoguei depois (`rolcreaterole = false`, nenhum papel `kas_rt_*`/`kas_ev_*` nem schema `kas_*` restante). Os dois passaram: o papel de eventos publica, detecta duplicata, pega e conclui entregas, e **não** consegue `UPDATE`/`DELETE` em `outbox_events`, `DELETE`/`TRUNCATE`/`DROP` em `outbox_deliveries`, criar tabelas nem alterar a tabela de migrações. No primeiro ciclo houve uma falha de limpeza (`tuple concurrently updated`) por uma concessão no nível do banco usada em paralelo pelos dois pacotes; removi essa concessão dos testes, limpei o papel órfão e repeti. No CI o usuário do serviço PostgreSQL é superusuário, então esses testes devem rodar lá (não confirmado).
+
+**Decisões conservadoras que tomei (revisar se discordar)**
+- **Formato do payload mais estrito que "objeto JSON":** só strings em formato de identificador, inteiros de 64 bits e booleanos, até 32 chaves, sem aninhamento, listas, `null` nem texto livre. É a forma técnica de reforçar "só identificadores". Não detecta dado pessoal escrito como identificador (por exemplo, um número de documento). Relaxar é uma mudança pequena em `CanonicalPayload`.
+- Payload acima de 16 KiB devolve `413 payload_too_large`; formato inválido devolve `400 invalid_event`. Tipo não declarado devolve `422 unknown_event_type`.
+- Reenvio idêntico devolve `200` (mesma convenção da auditoria), comparando o conteúdo exatamente como enviado.
+- Consumidores declarados na configuração com lista obrigatória de tipos **e** tenants; assinatura vale no momento da publicação (consumidor novo não recebe eventos antigos).
+- O executável **não inicia trabalhadores** nem registra handlers: eles existem só nos testes, conforme combinado. Eventos publicados pelo binário ficam `pending`.
+- Eventos exigem PostgreSQL; o padrão é desligado (`-events-store none`).
+- Tempo de `next_attempt_at` e dos bloqueios vem do relógio do processo (não do banco); diferença de relógio entre instâncias afeta os prazos.
+- Padrões do trabalhador: bloqueio 60 s, timeout do handler 30 s, 5 tentativas, backoff 2 s a 5 min, lote 10.
+
+**Não validado**
+- O resultado do GitHub Actions deste commit (ver o resumo de entrega).
+- Queda e retomada do PostgreSQL com o servidor ou o trabalhador em execução; TLS real contra um PostgreSQL remoto; desempenho e volume; relógios desalinhados entre instâncias.
+- Nenhuma limpeza de retenção foi implementada ou testada.
+
+**Dúvidas registradas (sem bloquear o trabalho)**
+- Fase 3 (consumo por pull): o consumidor precisará de um endpoint de busca e confirmação. Isso exige decidir autenticação do consumidor, formato de lote e como ficar dentro do veto a "busca/edição por API".
+- Quem fará a limpeza de retenção? Precisará de um papel com `DELETE`, separado do runtime.
+- Consumidor adicionado depois deve receber os eventos já publicados (reprocessamento)? Hoje não.
+- Limite de crescimento das tabelas sem limpeza automática.
+
+**Roteiro curto de validação (WSL, ~8 min)**
+```bash
+sudo service postgresql start
+cd /mnt/c/Users/User/Documents/projetos/kas-core-pilot
+export KAS_TEST_DATABASE_URL='postgres://kas:kas_teste_local@localhost:5432/kas_core_test?sslmode=disable'
+go test -count=1 ./... && go vet ./... && CGO_ENABLED=1 go test -count=1 -race ./...
+(cd node-integration && npm test)
+```
+Para publicar um evento de verdade, veja a seção "Módulo de eventos (Outbox)" no README e o exemplo em `contract/v1/events.md`.

@@ -17,6 +17,23 @@ jobs:
     name: Go and Node integration checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kas
+          POSTGRES_PASSWORD: kas_teste_ci
+          POSTGRES_DB: kas_core_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kas -d kas_core_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Disposable CI database with fictitious credentials; no external data.
+      KAS_TEST_DATABASE_URL: postgres://kas:kas_teste_ci@localhost:5432/kas_core_test?sslmode=disable
     steps:
       - name: Check out source
         uses: actions/checkout@v7

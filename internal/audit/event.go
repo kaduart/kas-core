@@ -13,9 +13,12 @@ var (
 	ErrInvalidEvent     = errors.New("invalid audit event")
 	ErrServiceMismatch  = errors.New("audit service identity mismatch")
 	ErrStoreUnavailable = errors.New("audit store unavailable")
-	identifierPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
-	actorPattern        = regexp.MustCompile(`^(user|service|system)\.[a-z0-9][a-z0-9._-]{0,95}$`)
-	actionPattern       = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
+	// ErrEventConflict means the same (tenant_id, service_id, event_id) was
+	// already stored with different content.
+	ErrEventConflict  = errors.New("audit event conflict")
+	identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	actorPattern      = regexp.MustCompile(`^(user|service|system)\.[a-z0-9][a-z0-9._-]{0,95}$`)
+	actionPattern     = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
 )
 
 // Submission is the v1 request declaration from an authenticated service.
@@ -82,4 +85,25 @@ func ValidateEvent(e Event) error {
 		return ErrInvalidEvent
 	}
 	return nil
+}
+
+// DuplicateError reports that an identical event was already stored under the
+// same (tenant_id, service_id, event_id). Nothing new was written; Stored is the
+// event as originally recorded, including its original received_at.
+type DuplicateError struct{ Stored Event }
+
+func (*DuplicateError) Error() string { return "audit event already stored" }
+
+// eventKey is the identity of an event: one event_id per tenant and service.
+type eventKey struct{ tenantID, serviceID, eventID string }
+
+func keyOf(e Event) eventKey { return eventKey{e.TenantID, e.ServiceID, e.EventID} }
+
+// sameContent compares every emitter-supplied field. ReceivedAt is assigned by
+// the server on each attempt and is intentionally excluded. Timestamps are
+// compared as sent: the same instant written in a different format counts as
+// different content.
+func sameContent(a, b Event) bool {
+	a.ReceivedAt, b.ReceivedAt = "", ""
+	return a == b
 }

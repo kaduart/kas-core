@@ -21,6 +21,9 @@ const (
 	CapabilityAuditWrite = "audit:write"
 	// CapabilityEventsPublish lets a service publish events through the outbox.
 	CapabilityEventsPublish = "events:publish"
+	// CapabilityEventsConsume lets a service claim, ack and nack deliveries of
+	// the consumers bound to it.
+	CapabilityEventsConsume = "events:consume"
 )
 
 var (
@@ -32,12 +35,15 @@ var (
 	ErrTenantNotFound      = errors.New("tenant_not_found")
 	ErrTenantInactive      = errors.New("tenant_inactive")
 	ErrCapabilityForbidden = errors.New("capability_forbidden")
-	tenantIDPattern        = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
-	serviceIDPattern       = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
-	envNamePattern         = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
-	keyPattern             = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
-	eventTypePattern       = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
-	consumerIDPattern      = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
+	// ErrConsumerForbidden covers an unknown consumer and a consumer that is not
+	// bound to the authenticated service; callers cannot tell them apart.
+	ErrConsumerForbidden = errors.New("consumer_forbidden")
+	tenantIDPattern      = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+	serviceIDPattern     = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+	envNamePattern       = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
+	keyPattern           = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
+	eventTypePattern     = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
+	consumerIDPattern    = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
 )
 
 type rawConfig struct {
@@ -58,11 +64,25 @@ type rawConfig struct {
 type rawEventConsumer struct {
 	EventTypes []string `json:"event_types"`
 	Tenants    []string `json:"tenants"`
+	// Service binds the consumer to one caller (a service ID with the
+	// events:consume capability) so it can pull deliveries over HTTP. A consumer
+	// without it is for in-process handlers only.
+	Service string `json:"service"`
 }
 
 type eventConsumer struct {
 	types   map[string]struct{}
 	tenants map[string]struct{}
+	service string
+}
+
+// ConsumerScope is what an authenticated service may pull for one consumer: the
+// consumer's tenants that the service is also authorized for and that are
+// currently active, and the consumer's event types.
+type ConsumerScope struct {
+	ConsumerID string
+	Tenants    []string
+	EventTypes []string
 }
 
 type tenantRegistration struct {
@@ -223,7 +243,7 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 		capabilities := make(map[string]struct{}, len(rawCaller.Capabilities))
 		for _, capability := range rawCaller.Capabilities {
 			switch capability {
-			case CapabilityConfigRead, CapabilityAuditWrite, CapabilityEventsPublish:
+			case CapabilityConfigRead, CapabilityAuditWrite, CapabilityEventsPublish, CapabilityEventsConsume:
 			default:
 				return nil, fmt.Errorf("service caller %q declares an unknown capability", serviceID)
 			}
@@ -234,6 +254,18 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 		}
 		tokenBytes, _ := hex.DecodeString(token)
 		store.callers[serviceID] = caller{token: tokenBytes, tenants: authorizedTenants, capabilities: capabilities}
+	}
+	for id, consumer := range store.eventConsumers {
+		if consumer.service == "" {
+			continue
+		}
+		bound, exists := store.callers[consumer.service]
+		if !exists {
+			return nil, fmt.Errorf("event consumer %q is bound to an unknown service", id)
+		}
+		if _, allowed := bound.capabilities[CapabilityEventsConsume]; !allowed {
+			return nil, fmt.Errorf("event consumer %q is bound to a service without the events:consume capability", id)
+		}
 	}
 	return store, nil
 }
@@ -257,7 +289,10 @@ func (s *Store) loadEvents(raw rawConfig) error {
 		if len(rawConsumer.EventTypes) == 0 || len(rawConsumer.Tenants) == 0 {
 			return fmt.Errorf("event consumer %q needs at least one event type and one tenant", id)
 		}
-		consumer := eventConsumer{types: map[string]struct{}{}, tenants: map[string]struct{}{}}
+		if rawConsumer.Service != "" && !serviceIDPattern.MatchString(rawConsumer.Service) {
+			return fmt.Errorf("event consumer %q has an invalid service binding", id)
+		}
+		consumer := eventConsumer{types: map[string]struct{}{}, tenants: map[string]struct{}{}, service: rawConsumer.Service}
 		for _, eventType := range rawConsumer.EventTypes {
 			if _, declared := s.eventTypes[eventType]; !declared {
 				return fmt.Errorf("event consumer %q references an undeclared event type", id)
@@ -300,6 +335,40 @@ func (s *Store) ConsumersFor(tenantID, eventType string) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// AuthorizeConsumer authenticates the service and returns the scope it may pull
+// for the consumer. The service needs the events:consume capability and the
+// consumer must be bound to it. The scope never exceeds the consumer's declared
+// tenants and types, nor the service's own tenants; inactive tenants are excluded.
+func (s *Store) AuthorizeConsumer(serviceID, token, consumerID string) (ConsumerScope, error) {
+	c, exists := s.callers[serviceID]
+	if !exists || !validToken(token) {
+		return ConsumerScope{}, ErrUnauthorized
+	}
+	provided, _ := hex.DecodeString(token)
+	if subtle.ConstantTimeCompare(c.token, provided) != 1 {
+		return ConsumerScope{}, ErrUnauthorized
+	}
+	if _, allowed := c.capabilities[CapabilityEventsConsume]; !allowed {
+		return ConsumerScope{}, ErrCapabilityForbidden
+	}
+	consumer, exists := s.eventConsumers[consumerID]
+	if !exists || consumer.service == "" || consumer.service != serviceID {
+		return ConsumerScope{}, ErrConsumerForbidden
+	}
+	scope := ConsumerScope{ConsumerID: consumerID}
+	for tenantID := range consumer.tenants {
+		if _, allowed := c.tenants[tenantID]; allowed && s.tenants[tenantID] {
+			scope.Tenants = append(scope.Tenants, tenantID)
+		}
+	}
+	for eventType := range consumer.types {
+		scope.EventTypes = append(scope.EventTypes, eventType)
+	}
+	sort.Strings(scope.Tenants)
+	sort.Strings(scope.EventTypes)
+	return scope, nil
 }
 
 func validToken(token string) bool {

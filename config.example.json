@@ -24,14 +24,15 @@
   "event_consumers": {
     "consumer-demo": {
       "event_types": ["settings.updated"],
-      "tenants": ["tenant-demo-a"]
+      "tenants": ["tenant-demo-a"],
+      "service": "fono-node-local"
     }
   },
   "callers": {
     "fono-node-local": {
       "token_env": "KAS_CALLER_FONO_NODE_TOKEN",
       "tenants": ["tenant-demo-a"],
-      "capabilities": ["config:read", "audit:write", "events:publish"]
+      "capabilities": ["config:read", "audit:write", "events:publish", "events:consume"]
     },
     "demo-node-b": {
       "token_env": "KAS_CALLER_DEMO_NODE_B_TOKEN",

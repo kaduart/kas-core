@@ -246,6 +246,176 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /internal/v1/events/deliveries/claim:
+    post:
+      tags: [Events]
+      summary: Claim due deliveries for a pull consumer
+      description: >-
+        Requires events:consume and a consumer bound to the authenticated service.
+        The scope is the consumer's event types and tenants intersected with the
+        service's own tenants (inactive tenants excluded); the request cannot widen
+        it. Up to 50 deliveries are leased for 5 to 300 seconds. Claiming counts as
+        an attempt. The lease_token is a secret for this claim. Delivery is
+        at-least-once and unordered.
+      operationId: claimEventDeliveries
+      security:
+        - ServiceIdentity: []
+          ServiceBearer: []
+      requestBody:
+        required: true
+        x-max-body-bytes: 4096
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimRequest'
+      responses:
+        '200':
+          description: Leased deliveries; the list is empty when nothing is due.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimResponse'
+        '400':
+          description: invalid_request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: capability_forbidden or consumer_forbidden (unknown, unbound, or another service's consumer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '503':
+          description: events_unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/v1/events/deliveries/ack:
+    post:
+      tags: [Events]
+      summary: Confirm a claimed delivery
+      description: >-
+        Applies only when delivery_id, attempt, consumer_id and lease_token match
+        the current lease. A repeated ack of an already delivered attempt returns 200.
+      operationId: ackEventDelivery
+      security:
+        - ServiceIdentity: []
+          ServiceBearer: []
+      requestBody:
+        required: true
+        x-max-body-bytes: 4096
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettleRequest'
+      responses:
+        '200':
+          description: The delivery is delivered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettleResponse'
+        '400':
+          description: invalid_request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: capability_forbidden or consumer_forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          description: lease_lost; nothing changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '503':
+          description: events_unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/v1/events/deliveries/nack:
+    post:
+      tags: [Events]
+      summary: Reject a claimed delivery
+      description: >-
+        Returns the delivery to pending after exponential backoff with jitter, or
+        marks it dead when permanent is true or the attempts are used up. Applies
+        only for the current lease; a repeat answers 409 lease_lost.
+      operationId: nackEventDelivery
+      security:
+        - ServiceIdentity: []
+          ServiceBearer: []
+      requestBody:
+        required: true
+        x-max-body-bytes: 4096
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NackRequest'
+      responses:
+        '200':
+          description: The delivery is pending again (with next_attempt_at) or dead.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettleResponse'
+        '400':
+          description: invalid_request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: capability_forbidden or consumer_forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          description: lease_lost; nothing changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '503':
+          description: events_unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /internal/v1/audit/events:
     post:
       tags: [Audit]
@@ -462,7 +632,7 @@ components:
   schemas:
     ServiceCapability:
       type: string
-      enum: ['config:read', 'audit:write', 'events:publish']
+      enum: ['config:read', 'audit:write', 'events:publish', 'events:consume']
       description: >-
         Startup-only capability. Missing/empty caller capability lists grant
         none. Unknown and duplicate values reject configuration loading.
@@ -550,6 +720,124 @@ components:
               format: int64
             - type: boolean
             - type: string
+    ClaimRequest:
+      type: object
+      additionalProperties: false
+      required: [contract_version, consumer_id]
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        consumer_id:
+          type: string
+        max_deliveries:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+        lease_seconds:
+          type: integer
+          minimum: 5
+          maximum: 300
+          default: 60
+    SettleRequest:
+      type: object
+      additionalProperties: false
+      required: [contract_version, consumer_id, delivery_id, attempt, lease_token]
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        consumer_id:
+          type: string
+        delivery_id:
+          type: integer
+          format: int64
+          minimum: 1
+        attempt:
+          type: integer
+          minimum: 1
+        lease_token:
+          type: string
+          pattern: '^[0-9a-f]{32}$'
+          description: Secret returned by the claim; do not log it.
+    NackRequest:
+      allOf:
+        - $ref: '#/components/schemas/SettleRequest'
+        - type: object
+          properties:
+            permanent:
+              type: boolean
+              description: Send the delivery straight to dead.
+    SettleResponse:
+      type: object
+      required: [contract_version, status]
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        status:
+          type: string
+          enum: [delivered, pending, dead]
+        next_attempt_at:
+          type: string
+          format: date-time
+          description: Present only when status is pending.
+    ClaimResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, deliveries]
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        deliveries:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            additionalProperties: false
+            required: [delivery_id, attempt, lease_token, lease_expires_at, event]
+            properties:
+              delivery_id:
+                type: integer
+                format: int64
+              attempt:
+                type: integer
+              lease_token:
+                type: string
+                pattern: '^[0-9a-f]{32}$'
+              lease_expires_at:
+                type: string
+                format: date-time
+              event:
+                $ref: '#/components/schemas/StoredEvent'
+    StoredEvent:
+      type: object
+      additionalProperties: false
+      required: [contract_version, event_id, tenant_id, service_id, event_type, correlation_id, occurred_at, received_at, payload]
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        event_id:
+          $ref: '#/components/schemas/EventID'
+        tenant_id:
+          $ref: '#/components/schemas/TenantID'
+        service_id:
+          $ref: '#/components/schemas/ServiceID'
+        event_type:
+          type: string
+        correlation_id:
+          $ref: '#/components/schemas/EventCorrelationID'
+        occurred_at:
+          type: string
+          format: date-time
+        received_at:
+          type: string
+          format: date-time
+        payload:
+          $ref: '#/components/schemas/EventPayload'
     EventPayload:
       type: object
       maxProperties: 32

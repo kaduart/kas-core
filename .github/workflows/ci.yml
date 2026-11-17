@@ -1,0 +1,48 @@
+name: KAS Core CI
+
+on:
+  push:
+    branches:
+      - kas-core/validacao-core
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Go and Node integration checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Go tests
+        run: go test ./...
+
+      - name: Static analysis
+        run: go vet ./...
+
+      - name: Go race detector
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./...
+
+      - name: Node unit and process integration tests
+        working-directory: node-integration
+        run: npm test

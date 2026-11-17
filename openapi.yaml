@@ -1,0 +1,617 @@
+openapi: 3.1.0
+info:
+  title: KAS Core Pilot API
+  version: v1
+  description: >-
+    Local pilot API for shared tenant configuration and audit recording. Service
+    access requires both tenant authorization and an explicit service capability
+    in the startup JSON configuration. This document describes the behavior in
+    the current Go executable; it is not a production-readiness claim.
+x-server-limits:
+  max-concurrent-default: 32
+  max-concurrent-minimum: 1
+  max-concurrent-maximum: 128
+  max-header-bytes: 8192
+  read-header-timeout: 2s
+  read-timeout: 3s
+  write-timeout: 3s
+  idle-timeout: 30s
+servers:
+  - url: http://127.0.0.1:8088
+    description: Local loopback default; non-loopback listeners require TLS.
+tags:
+  - name: Health
+  - name: Configuration
+  - name: Audit
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness response
+      description: Returns a static status response; no authentication is required.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+      responses:
+        '200':
+          description: Process is serving HTTP requests.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '400':
+          $ref: '#/components/responses/InvalidCorrelation'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          $ref: '#/components/responses/ServerUnavailable'
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness response
+      description: Currently returns the same static response as /healthz; no authentication is required.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+      responses:
+        '200':
+          description: Process is serving HTTP requests.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '400':
+          $ref: '#/components/responses/InvalidCorrelation'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          $ref: '#/components/responses/ServerUnavailable'
+  /internal/v1/config/evaluate:
+    post:
+      tags: [Configuration]
+      summary: Evaluate a tenant configuration value
+      description: >-
+        Requires a valid service token, an active registered tenant authorized
+        for that service, and the service capability `config`. The tenant in the
+        body selects the requested tenant but grants no authority by itself.
+        Capabilities are fixed at startup in the server configuration; omitted
+        capabilities deny access by default.
+      operationId: evaluateConfig
+      security:
+        - ServiceIdentity: []
+          ServiceBearer: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+      requestBody:
+        required: true
+        description: Strict JSON; unknown and duplicate keys are rejected. Global request concurrency is configured by max-concurrent (default 32, allowed range 1–128).
+        x-max-body-bytes: 4096
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigEvaluationRequest'
+      responses:
+        '200':
+          description: Value was evaluated from the in-memory configuration snapshot.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigEvaluationResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Tenant or requested capability is not authorized, or the tenant is inactive.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Tenant is unknown or has no value for the requested key.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          description: Key is unknown or the requested type differs from the declared type.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected evaluation failure.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/ServerUnavailable'
+  /internal/v1/audit/events:
+    post:
+      tags: [Audit]
+      summary: Record an audit event
+      description: >-
+        Requires a valid service token, an active registered tenant authorized
+        for that service, and the service capability `audit`. Body service_id
+        must equal authenticated X-KAS-Service. Actor is an emitter assertion,
+        not a user identity verified by KAS. The server returns success only
+        after a complete JSON Lines record has been synchronized to local disk.
+        The HTTP X-Correlation-ID is diagnostic and is independent of the event's
+        correlation_id field.
+      operationId: recordAuditEvent
+      security:
+        - ServiceIdentity: []
+          ServiceBearer: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+      requestBody:
+        required: true
+        description: Strict JSON with no arbitrary payload or extra properties.
+        x-max-body-bytes: 8192
+        content:
+          application/json:
+            schema:
+                $ref: '#/components/schemas/AuditEventSubmission'
+      responses:
+        '201':
+          description: Event was appended and synchronized to local JSON Lines storage.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventResponse'
+        '400':
+          description: Request JSON or event fields are invalid.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Tenant/capability denied, tenant inactive, or body service_id mismatch.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Tenant is not registered.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '503':
+          description: Capacity limit reached or audit storage could not be durably written.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  securitySchemes:
+    ServiceIdentity:
+      type: apiKey
+      in: header
+      name: X-KAS-Service
+      description: Configured service ID; authorization also requires the caller token.
+    ServiceBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: 64-character hexadecimal token
+      description: >-
+        Secret loaded from the service's configured token_env variable at startup.
+        Never place the token in the JSON body or logs.
+  parameters:
+    CorrelationID:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: >-
+        Optional diagnostic ID. If absent, the server generates 32 lowercase
+        hexadecimal characters. If invalid or repeated, the server returns 400
+        invalid_correlation_id and supplies a safe generated ID in the response.
+        It never affects authentication, authorization, or tenant selection.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+  headers:
+    CorrelationID:
+      description: Preserved valid caller ID or server-generated 32-character hex ID.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+  responses:
+    InvalidCorrelation:
+      description: Invalid or repeated X-Correlation-ID header.
+      headers:
+        X-Correlation-ID:
+          $ref: '#/components/headers/CorrelationID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InvalidRequest:
+      description: Invalid or repeated X-Correlation-ID, invalid JSON, duplicate/unknown properties, wrong contract version or missing fields.
+      headers:
+        X-Correlation-ID:
+          $ref: '#/components/headers/CorrelationID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Service is unknown or the bearer token is missing/invalid.
+      headers:
+        X-Correlation-ID:
+          $ref: '#/components/headers/CorrelationID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    MethodNotAllowed:
+      description: Method is not supported; response includes Allow.
+      headers:
+        X-Correlation-ID:
+          $ref: '#/components/headers/CorrelationID'
+        Allow:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PayloadTooLarge:
+      description: Request exceeds the endpoint-specific byte limit.
+      headers:
+        X-Correlation-ID:
+          $ref: '#/components/headers/CorrelationID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnsupportedMediaType:
+      description: Content-Type must be application/json.
+      headers:
+        X-Correlation-ID:
+          $ref: '#/components/headers/CorrelationID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServerUnavailable:
+      description: Concurrency limit reached, server is draining, or endpoint dependency is unavailable.
+      headers:
+        X-Correlation-ID:
+          $ref: '#/components/headers/CorrelationID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ServiceCapability:
+      type: string
+      enum: [config, audit]
+      description: >-
+        Startup-only capability. Missing/empty caller capability lists grant
+        none. Unknown and duplicate values reject configuration loading.
+    ServiceCallerConfiguration:
+      type: object
+      additionalProperties: false
+      required: [token_env, tenants]
+      properties:
+        token_env:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{0,127}$'
+          description: Name of an environment variable containing the 64-hex service token; the token itself is not stored here.
+        tenants:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/TenantID'
+        capabilities:
+          type: array
+          uniqueItems: true
+          default: []
+          items:
+            $ref: '#/components/schemas/ServiceCapability'
+          description: Omitted or empty means no operation capability is granted.
+    TenantRegistration:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id:
+          $ref: '#/components/schemas/TenantID'
+        status:
+          type: string
+          enum: [active, inactive]
+      description: Inactive tenants deny new business operations; audit history is retained.
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status, contract_version]
+      properties:
+        status:
+          type: string
+          const: ok
+        contract_version:
+          type: string
+          const: v1
+    ConfigEvaluationRequest:
+      type: object
+      additionalProperties: false
+      required: [contract_version, tenant_id, key, expected_type]
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        tenant_id:
+          $ref: '#/components/schemas/TenantID'
+        key:
+          type: string
+          minLength: 1
+        expected_type:
+          type: string
+          enum: [integer, boolean, string]
+    ConfigEvaluationResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, config_version, tenant_id, key, type, value]
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        config_version:
+          type: string
+          maxLength: 80
+        tenant_id:
+          $ref: '#/components/schemas/TenantID'
+        key:
+          type: string
+        type:
+          type: string
+          enum: [integer, boolean, string]
+        value:
+          oneOf:
+            - type: integer
+              format: int64
+            - type: boolean
+            - type: string
+    AuditEventSubmission:
+      type: object
+      additionalProperties: false
+      required:
+        - contract_version
+        - event_id
+        - tenant_id
+        - service_id
+        - actor
+        - action
+        - resource
+        - result
+        - correlation_id
+        - occurred_at
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        event_id:
+          $ref: '#/components/schemas/EventID'
+        tenant_id:
+          $ref: '#/components/schemas/TenantID'
+        service_id:
+          allOf:
+            - $ref: '#/components/schemas/ServiceID'
+          description: Must exactly match X-KAS-Service.
+        actor:
+          type: string
+          minLength: 6
+          maxLength: 104
+          pattern: '^(user|service|system)\.[a-z0-9][a-z0-9._-]{0,95}$'
+          description: Opaque issuer assertion; KAS does not verify a human identity.
+        action:
+          type: string
+          pattern: '^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$'
+        resource:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+        result:
+          type: string
+          enum: [success, failure, denied]
+        correlation_id:
+          $ref: '#/components/schemas/EventCorrelationID'
+          description: Event-declared correlation; separate from HTTP X-Correlation-ID.
+        occurred_at:
+          type: string
+          maxLength: 40
+          format: date-time
+          description: Emitter-supplied RFC3339 time, not independently verified.
+    AuditEventResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, event]
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        event:
+          $ref: '#/components/schemas/AuditEvent'
+    AuditEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - contract_version
+        - event_id
+        - tenant_id
+        - service_id
+        - actor
+        - action
+        - resource
+        - result
+        - correlation_id
+        - occurred_at
+        - received_at
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        event_id:
+          $ref: '#/components/schemas/EventID'
+        tenant_id:
+          $ref: '#/components/schemas/TenantID'
+        service_id:
+          $ref: '#/components/schemas/ServiceID'
+        actor:
+          type: string
+          minLength: 6
+          maxLength: 104
+          pattern: '^(user|service|system)\.[a-z0-9][a-z0-9._-]{0,95}$'
+          description: Opaque issuer assertion; KAS does not verify a human identity.
+        action:
+          type: string
+          pattern: '^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$'
+        resource:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+        result:
+          type: string
+          enum: [success, failure, denied]
+        correlation_id:
+          $ref: '#/components/schemas/EventCorrelationID'
+        occurred_at:
+          type: string
+          maxLength: 40
+          format: date-time
+          description: Emitter-supplied RFC3339 time, not independently verified.
+        received_at:
+          type: string
+          maxLength: 40
+          format: date-time
+          description: Time assigned by the KAS process on receipt.
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, error]
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - invalid_correlation_id
+                - server_shutting_down
+                - capacity_exceeded
+                - audit_unavailable
+                - unsupported_media_type
+                - payload_too_large
+                - invalid_request
+                - unauthorized
+                - tenant_not_found
+                - tenant_inactive
+                - tenant_forbidden
+                - capability_forbidden
+                - service_identity_mismatch
+                - invalid_event
+                - unknown_key
+                - type_mismatch
+                - config_not_found
+                - internal_error
+            message:
+              type: string
+    TenantID:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    ServiceID:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    EventID:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+    EventCorrelationID:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+x-startup-configuration:
+  tenant_registry:
+    type: array
+    items:
+      $ref: '#/components/schemas/TenantRegistration'
+  callers:
+    type: object
+    additionalProperties:
+      $ref: '#/components/schemas/ServiceCallerConfiguration'

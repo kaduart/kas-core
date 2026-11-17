@@ -1,6 +1,6 @@
 # KAS Core — piloto local
 
-Projeto independente em Go, mantido fora dos repositórios do CRM. Esta etapa contém dois módulos reutilizáveis: avaliação de configuração por tenant e registro de auditoria. Usa a biblioteca padrão Go e um único executável. Nenhum dos módulos está integrado ao CRM ou pronto para produção.
+Projeto independente em Go, mantido fora dos repositórios do CRM. Esta etapa contém dois módulos reutilizáveis: avaliação de configuração por tenant e registro de auditoria, com capacidades separadas por serviço. Usa a biblioteca padrão Go e um único executável. Nenhum dos módulos está integrado ao CRM ou pronto para produção.
 
 O valor fictício `logging.max_meta_keys` foi inspirado em um logger do legado, mas é somente dado de exemplo declarado em `config.example.json`; o núcleo não depende do logger nem de caminhos ou entidades do CRM. Todos os tenants, atores e recursos usados nos exemplos são fictícios.
 
@@ -21,13 +21,13 @@ O arquivo JSON Lines é validado integralmente na abertura. Um registro parcial,
 
 ## Módulo de configuração
 
-Contrato `v1`: `POST /internal/v1/config/evaluate`, descrito em [contract/v1/config-evaluate.md](contract/v1/config-evaluate.md). O esquema JSON declara chaves, tipo (`integer`, `boolean`, `string`) e faixa opcional de inteiros. O serviço autenticado precisa estar autorizado para o tenant solicitado. A configuração é somente leitura durante a vida do processo.
+Contrato `v1`: `POST /internal/v1/config/evaluate`, descrito em [contract/v1/config-evaluate.md](contract/v1/config-evaluate.md) e em [openapi.yaml](openapi.yaml). O esquema JSON declara chaves, tipo (`integer`, `boolean`, `string`) e faixa opcional de inteiros. O serviço autenticado precisa estar autorizado para o tenant solicitado e possuir a capacidade `config`. A configuração é somente leitura durante a vida do processo.
 
 As respostas de autorização incluem `tenant_not_found` (404) para tenant ausente do registro e `tenant_inactive` (403) para tenant desativado; `tenant_forbidden` (403) continua indicando que o serviço autenticado não tem vínculo com o tenant.
 
 ## Módulo de auditoria
 
-Contrato `v1`: `POST /internal/v1/audit/events`, descrito em [contract/v1/audit-events.md](contract/v1/audit-events.md). A gravação retorna `201` somente depois de escrever e sincronizar o evento. `service_id` no corpo precisa corresponder ao serviço autenticado. `actor` é uma declaração do serviço emissor, não uma identidade de usuário verificada pela KAS Core.
+Contrato `v1`: `POST /internal/v1/audit/events`, descrito em [contract/v1/audit-events.md](contract/v1/audit-events.md) e em [openapi.yaml](openapi.yaml). O serviço autenticado precisa estar autorizado para o tenant e possuir a capacidade `audit`. A gravação retorna `201` somente depois de escrever e sincronizar o evento. `service_id` no corpo precisa corresponder ao serviço autenticado. `actor` é uma declaração do serviço emissor, não uma identidade de usuário verificada pela KAS Core.
 
 Os campos são estruturados e não há campo de payload arbitrário. Não envie tokens, dados pessoais, clínicos ou financeiros. Logs do servidor contêm somente resultado HTTP, código de erro fixo e duração, sem corpo ou credenciais.
 
@@ -39,10 +39,13 @@ Ambos os endpoints de negócio aceitam o cabeçalho opcional `X-Correlation-ID`.
 
 ## Testes reproduzíveis
 
-No diretório do projeto:
+No Ubuntu WSL, a partir do diretório do projeto:
 
-```powershell
+```bash
+cd /mnt/c/Users/User/Documents/projetos/kas-core-pilot
 go test ./...
+go vet ./...
+CGO_ENABLED=1 go test -race ./...
 cd node-integration
 npm test
 ```
@@ -50,6 +53,10 @@ npm test
 `npm test` compila o executável localmente e executa testes do cliente Node, a integração Go–Node já existente e um teste HTTP real da auditoria. O teste da auditoria valida envio autorizado, negação de acesso cruzado, bloqueio da segunda instância, reinício com preservação dos eventos e nova gravação. Usa somente tenants e tokens fictícios. Não precisa de banco ou serviços externos; loopback local pode exigir permissão do ambiente de execução.
 
 Para validar o código atual no WSL, execute os comandos de [VALIDACAO-AMANHA.md](VALIDACAO-AMANHA.md). O detector de corrida precisa de `CGO_ENABLED=1` e de um compilador C. Resultados de testes anteriores a uma alteração não validam essa alteração; o roteiro registra o que ainda deve ser executado.
+
+O workflow [KAS Core CI](.github/workflows/ci.yml) executa os mesmos quatro checks em `ubuntu-latest` no push à branch `kas-core/validacao-core`, em pull requests para `main` e sob acionamento manual. Usa apenas tokens fictícios escritos nos testes; não lê segredos do repositório, não acessa produção e não faz deploy.
+
+Serviços recebem capacidades na configuração de inicialização: `config`, `audit` ou ambas. Campo ausente/vazio concede nenhuma capacidade; nomes desconhecidos ou repetidos impedem a inicialização. Para manter o funcionamento do exemplo, `config.example.json` declara explicitamente ambas para os dois serviços fictícios. A autorização por tenant continua obrigatória em conjunto com a capacidade.
 
 ## Limites
 

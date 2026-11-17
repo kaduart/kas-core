@@ -76,10 +76,10 @@ func newHandler(store *configstore.Store, auditService *audit.Service, maxConcur
 		logger = slog.Default()
 	}
 	h := &Handler{store: store, audit: auditService, logger: logger, limit: int64(maxConcurrent), mux: http.NewServeMux()}
-	h.mux.HandleFunc("GET /healthz", h.health)
-	h.mux.HandleFunc("GET /readyz", h.health)
+	h.mux.HandleFunc("/healthz", h.health)
+	h.mux.HandleFunc("/readyz", h.health)
 	h.mux.HandleFunc("/internal/v1/config/evaluate", h.evaluate)
-	h.mux.HandleFunc("POST /internal/v1/audit/events", h.recordAuditEvent)
+	h.mux.HandleFunc("/internal/v1/audit/events", h.recordAuditEvent)
 	return h
 }
 
@@ -134,6 +134,11 @@ func (h *Handler) WaitForRequests() {
 
 func (h *Handler) recordAuditEvent(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		h.writeError(w, r, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		return
+	}
 	if h.audit == nil {
 		h.writeError(w, r, http.StatusServiceUnavailable, "audit_unavailable", "audit recording is unavailable")
 		return
@@ -154,7 +159,7 @@ func (h *Handler) recordAuditEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	serviceID := r.Header.Get("X-KAS-Service")
 	token := bearerToken(r.Header.Get("Authorization"))
-	if err := h.store.Authorize(serviceID, token, submission.TenantID); err != nil {
+	if err := h.store.Authorize(serviceID, token, submission.TenantID, configstore.CapabilityAudit); err != nil {
 		h.writeAuthorizationError(w, r, err)
 		return
 	}
@@ -218,7 +223,7 @@ func (h *Handler) evaluate(w http.ResponseWriter, r *http.Request) {
 	}
 	serviceID := r.Header.Get("X-KAS-Service")
 	token := bearerToken(r.Header.Get("Authorization"))
-	if err := h.store.Authorize(serviceID, token, req.TenantID); err != nil {
+	if err := h.store.Authorize(serviceID, token, req.TenantID, configstore.CapabilityConfig); err != nil {
 		h.writeAuthorizationError(w, r, err)
 		return
 	}
@@ -259,6 +264,8 @@ func (h *Handler) writeAuthorizationError(w http.ResponseWriter, r *http.Request
 		h.writeError(w, r, http.StatusForbidden, "tenant_inactive", "tenant is inactive")
 	case errors.Is(err, configstore.ErrTenantForbidden):
 		h.writeError(w, r, http.StatusForbidden, "tenant_forbidden", "service is not authorized for this tenant")
+	case errors.Is(err, configstore.ErrCapabilityForbidden):
+		h.writeError(w, r, http.StatusForbidden, "capability_forbidden", "service is not authorized for this capability")
 	default:
 		h.writeError(w, r, http.StatusUnauthorized, "unauthorized", "service authentication failed")
 	}

@@ -9,7 +9,9 @@ Authentication headers:
 - `X-KAS-Service: <service-id>`
 - `Authorization: Bearer <64-character hexadecimal token>`
 
-The service ID maps to a token environment-variable name and an explicit tenant allowlist in the server's JSON configuration. The token is loaded at startup from that environment variable. The same file contains `tenant_registry`, the central list of tenant IDs and their `active`/`inactive` status. A request succeeds only when its tenant is registered, active and in the authenticated service's allowlist. Tenant IDs and statuses cannot be changed through request bodies. The file is loaded once at startup; registry changes require a restart.
+The service ID maps to a token environment-variable name, an explicit tenant allowlist and explicit capabilities in the server's JSON configuration. The token is loaded at startup from that environment variable. The same file contains `tenant_registry`, the central list of tenant IDs and their `active`/`inactive` status. A request succeeds only when its tenant is registered, active and in the authenticated service's allowlist, and the service has the `config` capability. Tenant IDs, statuses and capabilities cannot be changed through request bodies. The file is loaded once at startup; changes require a restart.
+
+`callers.<service-id>.capabilities` accepts `config` and/or `audit`. An omitted or empty list grants no business capability and is denied by default. Unknown or duplicate capability names reject startup. Assign only the capabilities each service needs.
 
 ## Request
 
@@ -56,6 +58,7 @@ Every error response has this shape:
 | 401 | `unauthorized` | Unknown service or invalid/missing service credential |
 | 403 | `tenant_forbidden` | Authenticated service is not authorized for the requested tenant |
 | 403 | `tenant_inactive` | Tenant is registered but inactive; existing audit history is retained |
+| 403 | `capability_forbidden` | Authenticated service lacks the `config` capability |
 | 404 | `tenant_not_found` | Requested tenant is absent from `tenant_registry` |
 | 404 | `config_not_found` | Tenant has no configured value for the key |
 | 413 | `payload_too_large` | Request body exceeds the size limit |
@@ -63,6 +66,7 @@ Every error response has this shape:
 | 422 | `unknown_key` | Key is absent from `key_schema` |
 | 422 | `type_mismatch` | Requested type differs from the declared key type |
 | 503 | `capacity_exceeded` | Concurrent request limit was reached |
+| 503 | `server_shutting_down` | Server is draining and has stopped accepting new requests |
 | 500 | `internal_error` | Unexpected evaluation failure |
 
 Health endpoints `GET /healthz` and `GET /readyz` return a small `v1` status response and do not expose configuration values. The example config and tenant data are fictitious; credentials are supplied only via environment variables.

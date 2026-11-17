@@ -18,7 +18,7 @@ import (
 	"kas-core-pilot/internal/configstore"
 )
 
-const handlerFixture = `{"contract_version":"v1","config_version":"fixture-1","tenant_registry":[{"id":"tenant-demo-a","status":"active"},{"id":"tenant-demo-b","status":"active"}],"key_schema":{"logging.max_meta_keys":{"type":"integer","min":1,"max":10}},"tenants":{"tenant-demo-a":{"logging.max_meta_keys":10},"tenant-demo-b":{"logging.max_meta_keys":4}},"callers":{"node-a":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"]},"node-b":{"token_env":"TOKEN_B","tenants":["tenant-demo-b"]}}}`
+const handlerFixture = `{"contract_version":"v1","config_version":"fixture-1","tenant_registry":[{"id":"tenant-demo-a","status":"active"},{"id":"tenant-demo-b","status":"active"}],"key_schema":{"logging.max_meta_keys":{"type":"integer","min":1,"max":10}},"tenants":{"tenant-demo-a":{"logging.max_meta_keys":10},"tenant-demo-b":{"logging.max_meta_keys":4}},"callers":{"node-a":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["config:read","audit:write"]},"node-b":{"token_env":"TOKEN_B","tenants":["tenant-demo-b"],"capabilities":["config:read","audit:write"]},"node-config":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["config:read"]},"node-audit":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["audit:write"]},"node-none":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"]}}}`
 const handlerTokenA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const handlerTokenB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
@@ -243,6 +243,52 @@ func TestAuditUnknownServiceIsUnauthorized(t *testing.T) {
 	}
 }
 
+func TestServiceCapabilitiesGateConfigAndAuditEndpoints(t *testing.T) {
+	handler := auditTestHandler(t, &memoryAuditRepository{})
+	configBody := `{"contract_version":"v1","tenant_id":"tenant-demo-a","key":"logging.max_meta_keys","expected_type":"integer"}`
+
+	if got := call(handler, "node-a", handlerTokenA, "tenant-demo-a", configBody); got.Code != http.StatusOK {
+		t.Fatalf("service with both capabilities could not evaluate config: %d %s", got.Code, got.Body.String())
+	}
+	if got := auditCall(handler, "node-a", handlerTokenA, validAuditBody); got.Code != http.StatusCreated {
+		t.Fatalf("service with both capabilities could not record audit: %d %s", got.Code, got.Body.String())
+	}
+
+	if got := call(handler, "node-config", handlerTokenA, "tenant-demo-a", configBody); got.Code != http.StatusOK {
+		t.Fatalf("config-only service could not evaluate config: %d %s", got.Code, got.Body.String())
+	}
+	configOnlyAudit := strings.Replace(validAuditBody, `"service_id":"node-a"`, `"service_id":"node-config"`, 1)
+	if got := auditCall(handler, "node-config", handlerTokenA, configOnlyAudit); got.Code != http.StatusForbidden || !strings.Contains(got.Body.String(), `"capability_forbidden"`) {
+		t.Fatalf("config-only service audit status/body = %d %s", got.Code, got.Body.String())
+	}
+
+	if got := call(handler, "node-audit", handlerTokenA, "tenant-demo-a", configBody); got.Code != http.StatusForbidden || !strings.Contains(got.Body.String(), `"capability_forbidden"`) {
+		t.Fatalf("audit-only service config status/body = %d %s", got.Code, got.Body.String())
+	}
+	auditOnlyBody := strings.Replace(validAuditBody, `"service_id":"node-a"`, `"service_id":"node-audit"`, 1)
+	if got := auditCall(handler, "node-audit", handlerTokenA, auditOnlyBody); got.Code != http.StatusCreated {
+		t.Fatalf("audit-only service could not record audit: %d %s", got.Code, got.Body.String())
+	}
+
+	noCapabilityAuditWrite := strings.Replace(validAuditBody, `"service_id":"node-a"`, `"service_id":"node-none"`, 1)
+	if got := call(handler, "node-none", handlerTokenA, "tenant-demo-a", configBody); got.Code != http.StatusForbidden || !strings.Contains(got.Body.String(), `"capability_forbidden"`) {
+		t.Fatalf("service without capabilities config status/body = %d %s", got.Code, got.Body.String())
+	}
+	if got := auditCall(handler, "node-none", handlerTokenA, noCapabilityAuditWrite); got.Code != http.StatusForbidden || !strings.Contains(got.Body.String(), `"capability_forbidden"`) {
+		t.Fatalf("service without capabilities audit status/body = %d %s", got.Code, got.Body.String())
+	}
+
+	// Possessing the operation capability does not grant access to another tenant.
+	configCrossTenant := strings.Replace(configBody, "tenant-demo-a", "tenant-demo-b", 1)
+	if got := call(handler, "node-config", handlerTokenA, "tenant-demo-b", configCrossTenant); got.Code != http.StatusForbidden || !strings.Contains(got.Body.String(), `"tenant_forbidden"`) {
+		t.Fatalf("cross-tenant config access status/body = %d %s", got.Code, got.Body.String())
+	}
+	auditCrossTenant := strings.Replace(auditOnlyBody, `"tenant-demo-a"`, `"tenant-demo-b"`, 1)
+	if got := auditCall(handler, "node-audit", handlerTokenA, auditCrossTenant); got.Code != http.StatusForbidden || !strings.Contains(got.Body.String(), `"tenant_forbidden"`) {
+		t.Fatalf("cross-tenant audit access status/body = %d %s", got.Code, got.Body.String())
+	}
+}
+
 func TestInternalMethodsRejectDuplicatesAndOversizedBodies(t *testing.T) {
 	configHandler := testHandler(t)
 	getConfig := httptest.NewRequest(http.MethodGet, "/internal/v1/config/evaluate", nil)
@@ -270,8 +316,15 @@ func TestInternalMethodsRejectDuplicatesAndOversizedBodies(t *testing.T) {
 	wrongMethod := httptest.NewRequest(http.MethodGet, "/internal/v1/audit/events", nil)
 	wrongMethodResponse := httptest.NewRecorder()
 	auditHandler.ServeHTTP(wrongMethodResponse, wrongMethod)
-	if wrongMethodResponse.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("GET audit status = %d", wrongMethodResponse.Code)
+	if wrongMethodResponse.Code != http.StatusMethodNotAllowed || wrongMethodResponse.Header().Get("Allow") != http.MethodPost || !strings.Contains(wrongMethodResponse.Body.String(), `"invalid_request"`) {
+		t.Fatalf("GET audit response = %d Allow=%q body=%s", wrongMethodResponse.Code, wrongMethodResponse.Header().Get("Allow"), wrongMethodResponse.Body.String())
+	}
+
+	wrongHealthMethod := httptest.NewRequest(http.MethodPost, "/healthz", nil)
+	wrongHealthResponse := httptest.NewRecorder()
+	auditHandler.ServeHTTP(wrongHealthResponse, wrongHealthMethod)
+	if wrongHealthResponse.Code != http.StatusMethodNotAllowed || wrongHealthResponse.Header().Get("Allow") != http.MethodGet || !strings.Contains(wrongHealthResponse.Body.String(), `"invalid_request"`) {
+		t.Fatalf("POST health response = %d Allow=%q body=%s", wrongHealthResponse.Code, wrongHealthResponse.Header().Get("Allow"), wrongHealthResponse.Body.String())
 	}
 }
 

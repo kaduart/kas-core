@@ -10,7 +10,9 @@ Headers:
 - `Authorization: Bearer <64-character hexadecimal token>`
 - `Content-Type: application/json`
 
-Authentication and tenant authorization use the same service allowlist, credentials and central `tenant_registry` as the configuration endpoint. The tenant must be registered, active and allowed for the authenticated service. The body `service_id` must exactly match the authenticated `X-KAS-Service`; it cannot replace that identity. Registry state is loaded at startup and changes require restart. Deactivating a tenant blocks new events but does not delete or alter previously stored events.
+Authentication and tenant authorization use the same service allowlist, credentials and central `tenant_registry` as the configuration endpoint. The tenant must be registered, active and allowed for the authenticated service, and the service must explicitly have the `audit:write` capability. The body `service_id` must exactly match the authenticated `X-KAS-Service`; it cannot replace that identity. Registry state and capabilities are loaded at startup and changes require restart. Deactivating a tenant blocks new events but does not delete or alter previously stored events.
+
+`callers.<service-id>.capabilities` accepts `config:read` and/or `audit:write`. An omitted or empty list grants no business capability and is denied by default. Unknown or duplicate capability names reject startup.
 
 ## Request
 
@@ -69,6 +71,7 @@ Errors use `{ "contract_version": "v1", "error": { "code": "...", "message": "..
 | 401 | `unauthorized` | Unknown service or invalid/missing credential |
 | 403 | `tenant_forbidden` | Authenticated service is not allowed for the requested tenant |
 | 403 | `tenant_inactive` | Tenant is registered but inactive; new audit events are denied |
+| 403 | `capability_forbidden` | Authenticated service lacks the `audit:write` capability |
 | 404 | `tenant_not_found` | Requested tenant is absent from `tenant_registry` |
 | 403 | `service_identity_mismatch` | Body service ID differs from authenticated service |
 | 413 | `payload_too_large` | Request exceeds 8 KiB |

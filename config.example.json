@@ -23,11 +23,13 @@
   "callers": {
     "fono-node-local": {
       "token_env": "KAS_CALLER_FONO_NODE_TOKEN",
-      "tenants": ["tenant-demo-a"]
+      "tenants": ["tenant-demo-a"],
+      "capabilities": ["config:read", "audit:write"]
     },
     "demo-node-b": {
       "token_env": "KAS_CALLER_DEMO_NODE_B_TOKEN",
-      "tenants": ["tenant-demo-b"]
+      "tenants": ["tenant-demo-b"],
+      "capabilities": ["config:read", "audit:write"]
     }
   }
 }

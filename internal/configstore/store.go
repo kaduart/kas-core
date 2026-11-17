@@ -15,18 +15,24 @@ import (
 
 const ContractVersion = "v1"
 
+const (
+	CapabilityConfigRead = "config:read"
+	CapabilityAuditWrite = "audit:write"
+)
+
 var (
-	ErrUnauthorized    = errors.New("unauthorized")
-	ErrTenantForbidden = errors.New("tenant_forbidden")
-	ErrUnknownKey      = errors.New("unknown_key")
-	ErrTypeMismatch    = errors.New("type_mismatch")
-	ErrConfigNotFound  = errors.New("config_not_found")
-	ErrTenantNotFound  = errors.New("tenant_not_found")
-	ErrTenantInactive  = errors.New("tenant_inactive")
-	tenantIDPattern    = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
-	serviceIDPattern   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
-	envNamePattern     = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
-	keyPattern         = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
+	ErrUnauthorized        = errors.New("unauthorized")
+	ErrTenantForbidden     = errors.New("tenant_forbidden")
+	ErrUnknownKey          = errors.New("unknown_key")
+	ErrTypeMismatch        = errors.New("type_mismatch")
+	ErrConfigNotFound      = errors.New("config_not_found")
+	ErrTenantNotFound      = errors.New("tenant_not_found")
+	ErrTenantInactive      = errors.New("tenant_inactive")
+	ErrCapabilityForbidden = errors.New("capability_forbidden")
+	tenantIDPattern        = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+	serviceIDPattern       = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+	envNamePattern         = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
+	keyPattern             = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
 )
 
 type rawConfig struct {
@@ -52,13 +58,15 @@ type KeyRule struct {
 }
 
 type rawCaller struct {
-	TokenEnv string   `json:"token_env"`
-	Tenants  []string `json:"tenants"`
+	TokenEnv     string   `json:"token_env"`
+	Tenants      []string `json:"tenants"`
+	Capabilities []string `json:"capabilities"`
 }
 
 type caller struct {
-	token   []byte
-	tenants map[string]struct{}
+	token        []byte
+	tenants      map[string]struct{}
+	capabilities map[string]struct{}
 }
 
 type Store struct {
@@ -184,8 +192,20 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 			}
 			authorizedTenants[tenantID] = struct{}{}
 		}
+		capabilities := make(map[string]struct{}, len(rawCaller.Capabilities))
+		for _, capability := range rawCaller.Capabilities {
+			switch capability {
+			case CapabilityConfigRead, CapabilityAuditWrite:
+			default:
+				return nil, fmt.Errorf("service caller %q declares an unknown capability", serviceID)
+			}
+			if _, duplicate := capabilities[capability]; duplicate {
+				return nil, errors.New("duplicate service caller capability")
+			}
+			capabilities[capability] = struct{}{}
+		}
 		tokenBytes, _ := hex.DecodeString(token)
-		store.callers[serviceID] = caller{token: tokenBytes, tenants: authorizedTenants}
+		store.callers[serviceID] = caller{token: tokenBytes, tenants: authorizedTenants, capabilities: capabilities}
 	}
 	return store, nil
 }
@@ -240,7 +260,7 @@ func validateValue(rule KeyRule, rawValue json.RawMessage) error {
 	return nil
 }
 
-func (s *Store) Authorize(serviceID, token, tenantID string) error {
+func (s *Store) Authorize(serviceID, token, tenantID, capability string) error {
 	c, exists := s.callers[serviceID]
 	if !exists || !validToken(token) {
 		return ErrUnauthorized
@@ -258,6 +278,9 @@ func (s *Store) Authorize(serviceID, token, tenantID string) error {
 	}
 	if _, allowed := c.tenants[tenantID]; !allowed {
 		return ErrTenantForbidden
+	}
+	if _, allowed := c.capabilities[capability]; !allowed {
+		return ErrCapabilityForbidden
 	}
 	return nil
 }

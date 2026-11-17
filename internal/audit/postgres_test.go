@@ -13,37 +13,15 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"kas-core-pilot/internal/pgtest"
 )
 
 // Integration tests run only when KAS_TEST_DATABASE_URL points to a disposable
 // local PostgreSQL database. Each test creates and drops its own schema.
 func postgresTestDSN(t *testing.T) string {
 	t.Helper()
-	base := os.Getenv("KAS_TEST_DATABASE_URL")
-	if base == "" {
-		t.Skip("KAS_TEST_DATABASE_URL is not set; skipping PostgreSQL integration tests")
-	}
-	admin, err := pgxpool.New(context.Background(), base)
-	if err != nil {
-		t.Fatalf("connect test database: %v", err)
-	}
-	schema := fmt.Sprintf("kas_test_%d", time.Now().UnixNano())
-	if _, err := admin.Exec(context.Background(), "CREATE SCHEMA "+schema); err != nil {
-		admin.Close()
-		t.Fatalf("create schema: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
-		admin.Close()
-	})
-	u, err := url.Parse(base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	q := u.Query()
-	q.Set("search_path", schema)
-	u.RawQuery = q.Encode()
-	return u.String()
+	return pgtest.SchemaDSN(t)
 }
 
 func openTestPostgres(t *testing.T, dsn string) *PostgresStore {
@@ -308,7 +286,7 @@ func TestPostgresReadiness(t *testing.T) {
 
 func TestPostgresVerifiedOpenRequiresAppliedMigrations(t *testing.T) {
 	dsn := postgresTestDSN(t)
-	if _, err := OpenPostgresVerified(context.Background(), dsn); err == nil || !strings.Contains(err.Error(), "-audit-migrate-only") {
+	if _, err := OpenPostgresVerified(context.Background(), dsn); err == nil || !strings.Contains(err.Error(), "migration role") {
 		t.Fatalf("verified open on an empty schema error = %v, want guidance to run migrations", err)
 	}
 	if err := MigratePostgres(context.Background(), dsn); err != nil {
@@ -395,7 +373,6 @@ func TestPostgresRuntimeRoleWithInsertSelectOnly(t *testing.T) {
 			fmt.Sprintf("REVOKE ALL ON %s.audit_events FROM %s", schema, role),
 			fmt.Sprintf("REVOKE ALL ON %s.audit_schema_migrations FROM %s", schema, role),
 			fmt.Sprintf("REVOKE ALL ON SCHEMA %s FROM %s", schema, role),
-			fmt.Sprintf("REVOKE ALL ON DATABASE %s FROM %s", currentDB(t, admin), role),
 			fmt.Sprintf("DROP ROLE IF EXISTS %s", role),
 		} {
 			if _, err := admin.Exec(ctx, revoke); err != nil {
@@ -404,7 +381,6 @@ func TestPostgresRuntimeRoleWithInsertSelectOnly(t *testing.T) {
 		}
 	})
 	for _, grant := range []string{
-		fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s", currentDB(t, admin), role),
 		fmt.Sprintf("GRANT USAGE ON SCHEMA %s TO %s", schema, role),
 		fmt.Sprintf("GRANT INSERT, SELECT ON %s.audit_events TO %s", schema, role),
 		fmt.Sprintf("GRANT SELECT ON %s.audit_schema_migrations TO %s", schema, role),
@@ -442,13 +418,4 @@ func TestPostgresRuntimeRoleWithInsertSelectOnly(t *testing.T) {
 			t.Fatalf("runtime role must not be able to run: %s", stmt)
 		}
 	}
-}
-
-func currentDB(t *testing.T, pool *pgxpool.Pool) string {
-	t.Helper()
-	var name string
-	if err := pool.QueryRow(context.Background(), "SELECT current_database()").Scan(&name); err != nil {
-		t.Fatal(err)
-	}
-	return name
 }

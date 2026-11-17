@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func countLines(t *testing.T, dir string) int {
@@ -160,37 +158,6 @@ func TestJSONLReadiness(t *testing.T) {
 	}
 	if err := NewService(store).Ready(context.Background()); !errors.Is(err, ErrStoreUnavailable) {
 		t.Fatalf("closed store must not be ready: %v", err)
-	}
-}
-
-func TestPostgresTransportPolicy(t *testing.T) {
-	cases := []struct {
-		name, dsn string
-		wantErr   bool
-	}{
-		{"remote disable", "postgres://u:p@db.example.com/x?sslmode=disable", true},
-		{"remote prefer (plaintext fallback)", "postgres://u:p@db.example.com/x?sslmode=prefer", true},
-		{"remote allow", "postgres://u:p@db.example.com/x?sslmode=allow", true},
-		{"remote ip disable", "postgres://u:p@10.0.0.5/x?sslmode=disable", true},
-		{"remote require", "postgres://u:p@db.example.com/x?sslmode=require", false},
-		{"remote verify-full", "postgres://u:p@db.example.com/x?sslmode=verify-full", false},
-		{"one remote host without tls among several", "postgres://u:p@localhost,db.example.com/x?sslmode=disable", true},
-		{"loopback disable", "postgres://u:p@127.0.0.1/x?sslmode=disable", false},
-		{"localhost disable", "postgres://u:p@localhost/x?sslmode=disable", false},
-		{"ipv6 loopback disable", "postgres://u:p@[::1]/x?sslmode=disable", false},
-		{"unix socket", "postgres://u:p@/x?host=/var/run/postgresql", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			config, err := pgxpool.ParseConfig(tc.dsn)
-			if err != nil {
-				t.Fatal(err)
-			}
-			err = requireSecureTransport(config)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("requireSecureTransport error = %v, wantErr %v", err, tc.wantErr)
-			}
-		})
 	}
 }
 

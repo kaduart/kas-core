@@ -3,29 +3,29 @@ package audit
 import (
 	"context"
 	"embed"
-	"errors"
 	"fmt"
-	"io/fs"
-	"net"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"kas-core-pilot/internal/pgdb"
+	"kas-core-pilot/internal/pgmigrate"
 )
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-// migrationLockID is an arbitrary application-level advisory lock key that
-// serializes schema migration across concurrently starting KAS processes.
-const migrationLockID int64 = 0x4b415341554449 // "KASAUDI"
+// auditMigrator keeps the tracking table and lock key used before migrations
+// were shared, so databases migrated by earlier builds remain compatible.
+var auditMigrator = pgmigrate.Migrator{
+	FS:     migrationFiles,
+	Dir:    "migrations",
+	Table:  "audit_schema_migrations",
+	LockID: 0x4b415341554449, // "KASAUDI"
+}
 
-const (
-	postgresOpenTimeout   = 10 * time.Second
-	postgresAppendTimeout = 3 * time.Second
-)
+const postgresAppendTimeout = 3 * time.Second
 
 // PostgresStore appends audit events to PostgreSQL. Append returns only after
 // the INSERT is committed under the server's synchronous_commit setting, so a
@@ -66,167 +66,22 @@ func MigratePostgres(ctx context.Context, connString string) error {
 }
 
 func openPostgres(ctx context.Context, connString string, applyMigrations bool) (*PostgresStore, error) {
-	if strings.TrimSpace(connString) == "" {
-		return nil, errors.New("audit database connection string is required")
-	}
-	ctx, cancel := context.WithTimeout(ctx, postgresOpenTimeout)
+	ctx, cancel := context.WithTimeout(ctx, pgdb.OpenTimeout)
 	defer cancel()
-	config, err := pgxpool.ParseConfig(connString)
+	pool, err := pgdb.Open(ctx, "audit", connString)
 	if err != nil {
-		return nil, errors.New("audit database connection string is invalid")
-	}
-	if err := requireSecureTransport(config); err != nil {
 		return nil, err
 	}
-	if config.MaxConns > 8 || config.MaxConns < 2 {
-		config.MaxConns = 8
-	}
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		return nil, errors.New("audit database connection could not be created")
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, errors.New("audit database is unreachable")
-	}
 	if applyMigrations {
-		err = migrate(ctx, pool)
+		err = auditMigrator.Apply(ctx, pool)
 	} else {
-		err = verifyMigrations(ctx, pool)
+		err = auditMigrator.Verify(ctx, pool)
 	}
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("audit database schema: %w", err)
 	}
 	return &PostgresStore{pool: pool}, nil
-}
-
-// requireSecureTransport rejects any connection attempt to a non-loopback host
-// that could run without TLS (sslmode=disable, allow or prefer). TLS modes
-// require, verify-ca and verify-full pass; verify-full is recommended because
-// require encrypts without authenticating the server.
-func requireSecureTransport(config *pgxpool.Config) error {
-	cc := config.ConnConfig
-	if !isLocalDatabaseHost(cc.Host) && cc.TLSConfig == nil {
-		return errTLSRequired
-	}
-	for _, fallback := range cc.Fallbacks {
-		if !isLocalDatabaseHost(fallback.Host) && fallback.TLSConfig == nil {
-			return errTLSRequired
-		}
-	}
-	return nil
-}
-
-var errTLSRequired = errors.New("TLS is required for a non-loopback audit database host; use sslmode=require, verify-ca or verify-full")
-
-func isLocalDatabaseHost(host string) bool {
-	if host == "" || strings.HasPrefix(host, "/") || strings.EqualFold(host, "localhost") {
-		return true // empty means the default local socket
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-func verifyMigrations(ctx context.Context, pool *pgxpool.Pool) error {
-	names, err := embeddedMigrationNames()
-	if err != nil {
-		return err
-	}
-	rows, err := pool.Query(ctx, "SELECT name FROM audit_schema_migrations")
-	if err != nil {
-		return errors.New("migration table is not readable; run migrations with the migration role (-audit-migrate-only)")
-	}
-	defer rows.Close()
-	applied := map[string]bool{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return err
-		}
-		applied[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	var pending []string
-	for _, name := range names {
-		if !applied[name] {
-			pending = append(pending, name)
-		}
-	}
-	if len(pending) > 0 {
-		return fmt.Errorf("pending migrations %s; run migrations with the migration role (-audit-migrate-only)", strings.Join(pending, ", "))
-	}
-	return nil
-}
-
-func embeddedMigrationNames() ([]string, error) {
-	entries, err := fs.ReadDir(migrationFiles, "migrations")
-	if err != nil {
-		return nil, err
-	}
-	names := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		names = append(names, entry.Name())
-	}
-	sort.Strings(names)
-	return names, nil
-}
-
-func migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Release()
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLockID); err != nil {
-		return err
-	}
-	defer func() {
-		// Use a fresh context so the lock is released even after cancellation.
-		unlockCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_, _ = conn.Exec(unlockCtx, "SELECT pg_advisory_unlock($1)", migrationLockID)
-	}()
-	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS audit_schema_migrations (
-		name TEXT PRIMARY KEY,
-		applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); err != nil {
-		return err
-	}
-	names, err := embeddedMigrationNames()
-	if err != nil {
-		return err
-	}
-	for _, name := range names {
-		var applied bool
-		if err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM audit_schema_migrations WHERE name = $1)", name).Scan(&applied); err != nil {
-			return err
-		}
-		if applied {
-			continue
-		}
-		sql, err := migrationFiles.ReadFile("migrations/" + name)
-		if err != nil {
-			return err
-		}
-		tx, err := conn.Begin(ctx)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, string(sql)); err != nil {
-			_ = tx.Rollback(ctx)
-			return fmt.Errorf("%s: %w", name, err)
-		}
-		if _, err := tx.Exec(ctx, "INSERT INTO audit_schema_migrations (name) VALUES ($1)", name); err != nil {
-			_ = tx.Rollback(ctx)
-			return err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (s *PostgresStore) Append(ctx context.Context, event Event) error {

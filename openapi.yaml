@@ -51,7 +51,11 @@ paths:
     get:
       tags: [Health]
       summary: Readiness response
-      description: Currently returns the same static response as /healthz; no authentication is required.
+      description: >-
+        Same response as /healthz while audit storage is ready; no authentication
+        is required. When audit is enabled and its storage is not ready (a failed
+        JSON Lines write, a closed store, or a PostgreSQL ping that fails or exceeds
+        3 seconds) it returns 503 audit_unavailable without storage details.
       parameters:
         - $ref: '#/components/parameters/CorrelationID'
       responses:
@@ -167,7 +171,10 @@ paths:
         not a user identity verified by KAS. The server returns success only
         after a complete JSON Lines record has been synchronized to local disk.
         The HTTP X-Correlation-ID is diagnostic and is independent of the event's
-        correlation_id field.
+        correlation_id field. The event identity is (tenant_id, service_id,
+        event_id): an identical resend returns 200 with the originally stored
+        event and writes nothing; the same identity with different content
+        returns 409 event_conflict.
       operationId: recordAuditEvent
       security:
         - ServiceIdentity: []
@@ -184,7 +191,20 @@ paths:
                 $ref: '#/components/schemas/AuditEventSubmission'
       responses:
         '201':
-          description: Event was appended and synchronized to local JSON Lines storage.
+          description: Event was stored durably (JSON Lines record synchronized, or PostgreSQL INSERT committed).
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventResponse'
+        '200':
+          description: Identical resend of an already stored event; nothing was written and the original event, with its original received_at, is returned.
           headers:
             X-Correlation-ID:
               $ref: '#/components/headers/CorrelationID'
@@ -207,6 +227,15 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: The same (tenant_id, service_id, event_id) was already stored with different content (event_conflict).
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Tenant/capability denied, tenant inactive, or body service_id mismatch.
           headers:

@@ -77,7 +77,7 @@ func newHandler(store *configstore.Store, auditService *audit.Service, maxConcur
 	}
 	h := &Handler{store: store, audit: auditService, logger: logger, limit: int64(maxConcurrent), mux: http.NewServeMux()}
 	h.mux.HandleFunc("/healthz", h.health)
-	h.mux.HandleFunc("/readyz", h.health)
+	h.mux.HandleFunc("/readyz", h.ready)
 	h.mux.HandleFunc("/internal/v1/config/evaluate", h.evaluate)
 	h.mux.HandleFunc("/internal/v1/audit/events", h.recordAuditEvent)
 	return h
@@ -163,9 +163,11 @@ func (h *Handler) recordAuditEvent(w http.ResponseWriter, r *http.Request) {
 		h.writeAuthorizationError(w, r, err)
 		return
 	}
-	event, err := h.audit.Record(r.Context(), serviceID, submission)
+	result, err := h.audit.Submit(r.Context(), serviceID, submission)
 	if err != nil {
 		switch {
+		case errors.Is(err, audit.ErrEventConflict):
+			h.writeError(w, r, http.StatusConflict, "event_conflict", "event_id was already used with different content")
 		case errors.Is(err, audit.ErrServiceMismatch):
 			h.writeError(w, r, http.StatusForbidden, "service_identity_mismatch", "declared service does not match authenticated service")
 		case errors.Is(err, audit.ErrInvalidEvent):
@@ -177,12 +179,32 @@ func (h *Handler) recordAuditEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusCreated)
+	status, logMessage := http.StatusCreated, "audit_event_recorded"
+	if result.Duplicate {
+		// Identical resend: nothing was written; the original event is returned.
+		status, logMessage = http.StatusOK, "audit_event_duplicate"
+	}
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(struct {
 		ContractVersion string      `json:"contract_version"`
 		Event           audit.Event `json:"event"`
-	}{ContractVersion: audit.ContractVersion, Event: event})
-	h.logger.Info("audit_event_recorded", "correlation_id", CorrelationID(r.Context()), "status", http.StatusCreated, "duration_ms", time.Since(started).Milliseconds())
+	}{ContractVersion: audit.ContractVersion, Event: result.Event})
+	h.logger.Info(logMessage, "correlation_id", CorrelationID(r.Context()), "status", status, "duration_ms", time.Since(started).Milliseconds())
+}
+
+// ready is liveness plus audit storage readiness. It never exposes storage
+// details; a failing check returns 503 audit_unavailable.
+func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet && h.audit != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		err := h.audit.Ready(ctx)
+		cancel()
+		if err != nil {
+			h.writeError(w, r, http.StatusServiceUnavailable, "audit_unavailable", "audit storage is not ready")
+			return
+		}
+	}
+	h.health(w, r)
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {

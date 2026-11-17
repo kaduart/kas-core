@@ -69,4 +69,4 @@ Every error response has this shape:
 | 503 | `server_shutting_down` | Server is draining and has stopped accepting new requests |
 | 500 | `internal_error` | Unexpected evaluation failure |
 
-Health endpoints `GET /healthz` and `GET /readyz` return a small `v1` status response and do not expose configuration values. The example config and tenant data are fictitious; credentials are supplied only via environment variables.
+Health endpoints `GET /healthz` and `GET /readyz` return a small `v1` status response and do not expose configuration values. `/healthz` is liveness only. `/readyz` also checks audit storage when audit is enabled (a JSON Lines store that failed a write or was closed, or a PostgreSQL database that does not answer a ping within 3 seconds) and returns `503 audit_unavailable` without storage details when it is not ready. The example config and tenant data are fictitious; credentials are supplied only via environment variables.

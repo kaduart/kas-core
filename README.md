@@ -21,20 +21,39 @@ O arquivo JSON Lines é validado integralmente na abertura. Um registro parcial,
 
 ## Armazenamento PostgreSQL da auditoria (opcional)
 
-Por padrão a auditoria continua em JSON Lines. Com `-audit-store postgres`, os eventos vão para uma tabela `audit_events` em PostgreSQL. A string de conexão vem de uma variável de ambiente (padrão `KAS_AUDIT_DATABASE_URL`, configurável por `-audit-database-url-env`) e nunca de flag, arquivo de configuração, log ou mensagem de erro.
+Por padrão a auditoria continua em JSON Lines. Com `-audit-store postgres`, os eventos vão para a tabela `audit_events` em PostgreSQL. A string de conexão vem de uma variável de ambiente (padrão `KAS_AUDIT_DATABASE_URL`, configurável por `-audit-database-url-env`) e nunca de flag, arquivo de configuração, log ou mensagem de erro.
 
 ```bash
 export KAS_AUDIT_DATABASE_URL='postgres://kas:kas_teste_local@localhost:5432/kas_core_test?sslmode=disable'
 go run ./cmd/kas-core -config ./config.example.json -audit-store postgres -addr 127.0.0.1:8088
 ```
 
-- As migrações SQL ficam embutidas no executável (`internal/audit/migrations`) e rodam na inicialização, de forma idempotente e serializadas por trava consultiva, então várias instâncias podem iniciar ao mesmo tempo. Cada migração aplicada é registrada em `audit_schema_migrations`. Não há reversão automática.
-- `201` só é devolvido depois que o PostgreSQL confirma o `INSERT` (commit, conforme o `synchronous_commit` do servidor). Falha de banco devolve o mesmo erro genérico de armazenamento indisponível, sem detalhes internos.
-- Os textos originais de `occurred_at` e `received_at` são guardados em colunas `*_raw` (nanossegundos preservados); colunas `timestamptz` servem para consulta.
-- Não há restrição de unicidade em `event_id`: reenviar o mesmo evento grava outra linha, igual ao JSON Lines. Não há promessa de entrega exatamente uma vez, imutabilidade ou proteção contra adulteração; quem tem acesso ao banco pode alterar linhas.
-- Não há pool nem timeouts configuráveis (máximo de 8 conexões; 10 s para abrir; 3 s por gravação).
-- A **configuração continua em arquivo**, carregada na inicialização. Persisti-la no banco exigiria decidir atualização, versionamento e quem edita, o que foi vetado até aqui.
-- Testes de integração com PostgreSQL só rodam se `KAS_TEST_DATABASE_URL` apontar para um banco local descartável (cada teste cria e remove seu próprio schema); sem a variável, eles são ignorados.
+**Migrações.** Os arquivos SQL ficam embutidos no executável (`internal/audit/migrations`: `0001` cria a tabela, `0002` cria o índice único de identidade). Rodam de forma idempotente, serializadas por trava consultiva, e cada uma é registrada em `audit_schema_migrations`. Não há reversão automática. Se um banco criado só com a `0001` já tiver identidades duplicadas, a `0002` falha, é desfeita por inteiro e **nenhuma linha é apagada**; resolva as duplicatas manualmente no banco descartável e rode de novo.
+
+**Idempotência.** A identidade de um evento é `(tenant_id, service_id, event_id)`. Reenvio idêntico (todos os campos, comparados exatamente como enviados, inclusive o texto de `occurred_at`) não grava nova linha e devolve `200` com o evento original e o `received_at` original. Mesma identidade com conteúdo diferente devolve `409 event_conflict` e não grava. O mesmo `event_id` em outro tenant ou serviço é outro evento. Isso é deduplicação por identidade, não promessa de entrega exatamente uma vez.
+
+O JSON Lines aplica a mesma regra, com um índice em memória reconstruído a partir do arquivo inteiro na abertura (a memória cresce com o arquivo). Arquivos antigos com duplicatas continuam abrindo: vale o primeiro registro e nada no arquivo é alterado.
+
+**TLS.** Para qualquer host que não seja loopback (`localhost`, `127.0.0.0/8`, `::1` ou socket Unix), a KAS recusa iniciar se a conexão puder ocorrer sem TLS: `sslmode=disable`, `allow` e `prefer` são rejeitados. Use `require`, `verify-ca` ou, de preferência, `verify-full` (o `require` criptografa, mas não autentica o servidor). Em loopback, `sslmode=disable` continua permitido para desenvolvimento.
+
+**Usuários do banco (menor privilégio).** Use dois usuários:
+
+- *Migração* (dono do esquema): cria e altera tabelas. Roda `-audit-migrate-only`, que lê `KAS_AUDIT_MIGRATION_DATABASE_URL` (ajustável por `-audit-migration-database-url-env`), aplica as migrações pendentes e encerra, sem exigir configuração nem tokens.
+- *Runtime* (o processo da KAS): somente `INSERT` e `SELECT` em `audit_events` e `SELECT` em `audit_schema_migrations`, mais `USAGE` no schema e `CONNECT` no banco. Sem `UPDATE`, `DELETE`, `TRUNCATE` ou DDL. Inicie com `-audit-auto-migrate=false`: a KAS só verifica que todas as migrações embutidas já foram aplicadas e falha se houver alguma pendente.
+
+```sql
+-- como o usuário de migração (nomes e senha fictícios)
+GRANT CONNECT ON DATABASE kas_core_test TO kas_runtime;
+GRANT USAGE ON SCHEMA public TO kas_runtime;
+GRANT INSERT, SELECT ON audit_events TO kas_runtime;
+GRANT SELECT ON audit_schema_migrations TO kas_runtime;
+```
+
+Um teste de integração cria um papel com esses privilégios e confirma que ele insere, detecta duplicatas, e não consegue `UPDATE`, `DELETE`, `DROP` nem criar tabelas (ele é ignorado se o usuário de teste não puder criar papéis). Mesmo assim, quem administra o banco pode alterar linhas: não há promessa de imutabilidade nem de proteção contra adulteração.
+
+**Gravação durável e prontidão.** `201` só é devolvido depois que o PostgreSQL confirma o `INSERT` (commit, conforme o `synchronous_commit` do servidor). Falha de banco devolve o erro genérico `audit_unavailable`, sem detalhes internos. `GET /healthz` é apenas liveness. `GET /readyz` também verifica o armazenamento de auditoria (ping ao PostgreSQL com limite de 3 s; no JSON Lines, falha se uma escrita falhou ou o arquivo foi fechado) e devolve `503 audit_unavailable` quando não está pronto.
+
+**Outros limites.** Os textos originais de `occurred_at` e `received_at` ficam em colunas `*_raw` (nanossegundos preservados); colunas `timestamptz` servem para consulta. Máximo de 8 conexões, 10 s para abrir e 3 s por gravação, sem ajuste por configuração. A **configuração continua em arquivo**, carregada na inicialização. Os testes de integração com PostgreSQL só rodam se `KAS_TEST_DATABASE_URL` apontar para um banco local descartável (cada teste cria e remove seu próprio schema); sem a variável, são ignorados.
 
 ## Módulo de configuração
 
@@ -44,7 +63,7 @@ As respostas de autorização incluem `tenant_not_found` (404) para tenant ausen
 
 ## Módulo de auditoria
 
-Contrato `v1`: `POST /internal/v1/audit/events`, descrito em [contract/v1/audit-events.md](contract/v1/audit-events.md) e em [openapi.yaml](openapi.yaml). O serviço autenticado precisa estar autorizado para o tenant e possuir a capacidade `audit:write`. A gravação retorna `201` somente depois de escrever e sincronizar o evento. `service_id` no corpo precisa corresponder ao serviço autenticado. `actor` é uma declaração do serviço emissor, não uma identidade de usuário verificada pela KAS Core.
+Contrato `v1`: `POST /internal/v1/audit/events`, descrito em [contract/v1/audit-events.md](contract/v1/audit-events.md) e em [openapi.yaml](openapi.yaml). O serviço autenticado precisa estar autorizado para o tenant e possuir a capacidade `audit:write`. A gravação retorna `201` somente depois de escrever e sincronizar o evento (ou confirmar o `INSERT` no PostgreSQL). Reenvio idêntico devolve `200` sem gravar de novo; mesmo `event_id` com conteúdo diferente devolve `409 event_conflict` (veja a seção PostgreSQL abaixo). `service_id` no corpo precisa corresponder ao serviço autenticado. `actor` é uma declaração do serviço emissor, não uma identidade de usuário verificada pela KAS Core.
 
 Os campos são estruturados e não há campo de payload arbitrário. Não envie tokens, dados pessoais, clínicos ou financeiros. Logs do servidor contêm somente resultado HTTP, código de erro fixo e duração, sem corpo ou credenciais.
 

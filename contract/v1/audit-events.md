@@ -37,7 +37,7 @@ All identifiers in this example are fictional. `actor` must use an opaque refere
 
 ## Success
 
-HTTP `201 Created` is returned only after the JSON Lines record has been written and `Sync` has succeeded:
+HTTP `201 Created` is returned only after the event is durably stored: the JSON Lines record has been written and `Sync` has succeeded, or the PostgreSQL `INSERT` has been committed:
 
 ```json
 {
@@ -58,6 +58,10 @@ HTTP `201 Created` is returned only after the JSON Lines record has been written
 }
 ```
 
+### Idempotency
+
+An event's identity is `(tenant_id, service_id, event_id)`; the same `event_id` under another tenant or service is a different event. Sending the same identity again with identical content (every field, compared exactly as sent, including the `occurred_at` text) writes nothing and returns HTTP `200 OK` with the originally stored event, including its original `received_at`. Sending the same identity with different content returns `409 event_conflict` and writes nothing. A client whose response was lost can therefore retry safely with the same body. This is deduplication by identity, not an exactly-once delivery guarantee.
+
 `occurred_at` is the emitter's claimed time. `received_at` is assigned by the KAS process in UTC when it accepts the event for recording. They are separate values and neither is cryptographic proof of time.
 
 ## Errors
@@ -74,6 +78,7 @@ Errors use `{ "contract_version": "v1", "error": { "code": "...", "message": "..
 | 403 | `capability_forbidden` | Authenticated service lacks the `audit:write` capability |
 | 404 | `tenant_not_found` | Requested tenant is absent from `tenant_registry` |
 | 403 | `service_identity_mismatch` | Body service ID differs from authenticated service |
+| 409 | `event_conflict` | The same `(tenant_id, service_id, event_id)` was already stored with different content |
 | 413 | `payload_too_large` | Request exceeds 8 KiB |
 | 415 | `unsupported_media_type` | Content type is not JSON |
 | 503 | `audit_unavailable` | Audit storage is missing or failed to write/sync |
@@ -85,4 +90,8 @@ The executable defaults to `./data/audit.jsonl`; override with `-audit-data-dir`
 
 At startup, the entire existing JSON Lines file is validated. A malformed, oversized or incomplete line prevents opening; no records are skipped or discarded automatically. Preserve the file and investigate before manual repair. A valid file can be reopened after process restart and new records appended.
 
-The store serializes writes within one process and synchronizes each complete line before acknowledging it. It is local append-only storage, not tamper-evident or immutable storage. It does not guarantee exactly-once delivery; retries after an uncertain response can create duplicates. There is no search, edit or delete API, retention, backup, replication or recovery automation. This contract is a local pilot, not a production readiness claim.
+The store serializes writes within one process and synchronizes each complete line before acknowledging it. It is local append-only storage, not tamper-evident or immutable storage. At startup it builds an in-memory index of event identities from the whole file (memory grows with the file), so idempotency also holds after a restart. Files written before uniqueness existed may contain duplicate identities; they still open, the first record wins for duplicate detection, and nothing in the file is changed. There is no search, edit or delete API, retention, backup, replication or recovery automation. This contract is a local pilot, not a production readiness claim.
+
+## PostgreSQL storage (optional)
+
+`-audit-store postgres` stores events in `audit_events` (see the README for flags, migrations, TLS and database roles). Uniqueness is enforced by the unique index `audit_events_identity_uidx` on `(tenant_id, service_id, event_id)`. Concurrent identical submissions result in one row. The connection string is read from an environment variable and is never logged. For a host other than loopback, TLS is mandatory (`sslmode=require`, `verify-ca` or `verify-full`; `verify-full` is recommended because `require` does not authenticate the server).

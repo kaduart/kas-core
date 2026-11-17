@@ -76,7 +76,7 @@ Os testes de PostgreSQL cobrem: campos preservados (incluindo nanossegundos), mi
 
 **Limitações e dúvidas de negócio**
 - A configuração continua só em arquivo. Persistir no banco exige decisão sobre edição, versionamento e atualização, hoje fora do escopo.
-- `event_id` não é único: reenvio grava nova linha. Decidir se o contrato deve rejeitar ou ignorar duplicatas.
+- ~~`event_id` não é único: reenvio grava nova linha.~~ Superado na rodada de idempotência abaixo.
 - Sem retenção, particionamento, backup ou consulta de eventos.
 - Quem acessa o banco pode alterar ou apagar linhas; nenhuma proteção contra adulteração é prometida.
 - Não é pronto para produção.
@@ -90,3 +90,36 @@ go test -count=1 ./... && go vet ./... && CGO_ENABLED=1 go test -count=1 -race .
 (cd node-integration && npm test)
 ```
 Para rodar o servidor: veja a seção "Armazenamento PostgreSQL" no README. Se um schema de teste ficar para trás após uma falha, remova os schemas `kas_test_*` no banco descartável.
+
+## Rodada de idempotência, TLS e prontidão — resultados no Ubuntu WSL
+
+Base: commit `d14d3fe` + alterações desta rodada. PostgreSQL 16.15 local descartável, credenciais fictícias.
+
+**Decisões do usuário implementadas:** `pgx/v5` mantido; identidade `(tenant_id, service_id, event_id)` com índice único (migração `0002`); reenvio idêntico → `200` com o evento original sem nova linha; mesmo `event_id` com conteúdo diferente → `409 event_conflict`; mesma regra no JSON Lines (índice em memória); TLS obrigatório fora de loopback; `/readyz` verifica a auditoria; usuário de runtime com só `INSERT`/`SELECT`, separado do de migração; configuração continua em arquivo.
+
+**Para tornar o usuário de runtime utilizável** (não só documentado) acrescentei `-audit-migrate-only`, `-audit-migration-database-url-env` e `-audit-auto-migrate=false` (modo que só verifica migrações, sem DDL). Sem isso a KAS não iniciaria com um usuário sem direito de DDL.
+
+**Arquivos alterados:** `internal/audit/{event,service,jsonl,postgres}.go`, `internal/audit/migrations/0002_audit_events_identity.sql` (novo), `internal/httpapi/handler.go`, `cmd/kas-core/main.go`, testes `internal/audit/{idempotency,postgres}_test.go` e `internal/httpapi/handler_test.go`, `contract/v1/{audit-events,config-evaluate}.md`, `openapi.yaml`, README e este arquivo.
+
+| Comando | Resultado |
+|---|---|
+| `gofmt -l internal cmd` | Sem saída |
+| `go vet ./...` | Aprovado |
+| `go test ./...` sem `KAS_TEST_DATABASE_URL` | Aprovado; testes que precisam de banco ficaram como SKIP, e os de política de TLS rodaram |
+| `go test ./...` com banco local | Aprovado; 27 testes de PASS e 1 SKIP no pacote `audit` |
+| `CGO_ENABLED=1 go test -race ./...` com banco local | Aprovado |
+| `npm test` | 11 testes, 0 falhas |
+| Binário ponta a ponta (`-audit-migrate-only`, servidor com `-audit-auto-migrate=false`) | `/readyz` 200; primeiro envio 201; reenvio idêntico 200 com o mesmo `received_at`; conteúdo alterado 409; 1 linha no banco; SIGTERM com código 0; senha ausente dos logs; DSN remoto com `sslmode=disable` recusado com código 2; nenhum processo restante |
+
+**O 1 SKIP** é `TestPostgresRuntimeRoleWithInsertSelectOnly`: o usuário de teste `kas` não pode criar papéis. Eu o executei separadamente concedendo `CREATEROLE` ao `kas` apenas durante o teste, no banco local descartável, e revoguei em seguida (`rolcreaterole = false`; nenhum papel `kas_rt_*` nem schema de teste restante). Resultado: PASS — o papel só com `INSERT`/`SELECT` abriu em modo verificado, gravou, detectou duplicata e **não** conseguiu `UPDATE`, `DELETE`, `DROP` nem criar tabela. Nas execuções comuns ele é ignorado. No CI o usuário do serviço PostgreSQL é superusuário, então o teste deve rodar lá (não confirmado).
+
+Durante o primeiro desses testes um papel de teste ficou órfão por erro de ordem de limpeza; corrigi o teste, removi o papel e repeti o ciclo até a limpeza funcionar sozinha.
+
+**Não validado:** o resultado do GitHub Actions deste commit (ver o resumo de entrega); queda e retomada do PostgreSQL com o servidor em execução; conexão TLS real com um PostgreSQL remoto (a política foi testada sobre a configuração analisada, sem servidor com TLS); desempenho; outras versões do PostgreSQL.
+
+**Limitações**
+- Reenvio só é "idêntico" se todos os campos forem iguais como enviados; o mesmo instante escrito em outro formato em `occurred_at` conta como conteúdo diferente (409).
+- O índice em memória do JSON Lines cresce com o arquivo.
+- Se um banco já tiver identidades duplicadas, a migração `0002` falha e nada é apagado; é preciso resolver manualmente.
+- `sslmode=require` criptografa sem autenticar o servidor; `verify-full` é o recomendado.
+- Sem retenção, backup, particionamento ou consulta. Quem administra o banco pode alterar linhas. Não é pronto para produção.

@@ -25,6 +25,9 @@ func run() int {
 	auditDataDir := flag.String("audit-data-dir", "./data", "directory for local JSON Lines audit data")
 	auditBackend := flag.String("audit-store", "jsonl", "audit storage backend: jsonl (default) or postgres")
 	auditDatabaseURLEnv := flag.String("audit-database-url-env", "KAS_AUDIT_DATABASE_URL", "environment variable holding the PostgreSQL connection string (used with -audit-store postgres)")
+	auditAutoMigrate := flag.Bool("audit-auto-migrate", true, "with -audit-store postgres: apply pending migrations at startup; set false when the runtime role has no DDL rights")
+	auditMigrateOnly := flag.Bool("audit-migrate-only", false, "apply audit PostgreSQL migrations with the migration role and exit")
+	auditMigrationURLEnv := flag.String("audit-migration-database-url-env", "KAS_AUDIT_MIGRATION_DATABASE_URL", "environment variable holding the migration-role PostgreSQL connection string (used with -audit-migrate-only)")
 	addr := flag.String("addr", "127.0.0.1:8088", "listen address")
 	maxConcurrent := flag.Int("max-concurrent", 32, "maximum concurrent HTTP requests (1-128)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate path (required for non-loopback listeners)")
@@ -32,6 +35,23 @@ func run() int {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if *auditMigrateOnly {
+		if *auditBackend != "postgres" {
+			logger.Error("-audit-migrate-only requires -audit-store postgres")
+			return 2
+		}
+		dsn, found := os.LookupEnv(*auditMigrationURLEnv)
+		if !found || dsn == "" {
+			logger.Error("audit migration connection variable is not set", "env", *auditMigrationURLEnv)
+			return 2
+		}
+		if err := audit.MigratePostgres(context.Background(), dsn); err != nil {
+			logger.Error("audit migration failed", "reason", err.Error())
+			return 1
+		}
+		logger.Info("audit migrations applied")
+		return 0
+	}
 	if *maxConcurrent < 1 || *maxConcurrent > 128 {
 		logger.Error("invalid server concurrency limit")
 		return 2
@@ -70,7 +90,11 @@ func run() int {
 			logger.Error("audit database connection variable is not set", "env", *auditDatabaseURLEnv)
 			return 2
 		}
-		auditStore, err = audit.OpenPostgres(context.Background(), dsn)
+		if *auditAutoMigrate {
+			auditStore, err = audit.OpenPostgres(context.Background(), dsn)
+		} else {
+			auditStore, err = audit.OpenPostgresVerified(context.Background(), dsn)
+		}
 	default:
 		logger.Error("invalid audit store; use jsonl or postgres")
 		return 2

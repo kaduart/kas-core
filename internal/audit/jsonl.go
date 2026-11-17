@@ -24,6 +24,10 @@ type JSONLStore struct {
 	lockPath string
 	poison   error
 	closed   bool
+	// index holds one stored event per identity so retries are idempotent.
+	// It is rebuilt from the whole file on open (memory grows with the file);
+	// if historical duplicates exist, the first record is kept.
+	index map[eventKey]Event
 }
 
 type durableFile interface {
@@ -55,7 +59,8 @@ func OpenJSONL(dataDir string) (*JSONLStore, error) {
 		_ = os.Remove(lockPath)
 		return nil, fmt.Errorf("sync audit lock: %w", err)
 	}
-	if err := validateExistingFile(path); err != nil {
+	index, err := validateExistingFile(path)
+	if err != nil {
 		_ = lock.Close()
 		_ = os.Remove(lockPath)
 		return nil, fmt.Errorf("existing audit file rejected: %w", err)
@@ -66,59 +71,64 @@ func OpenJSONL(dataDir string) (*JSONLStore, error) {
 		_ = os.Remove(lockPath)
 		return nil, fmt.Errorf("open audit file: %w", err)
 	}
-	return &JSONLStore{file: file, lock: lock, lockPath: lockPath}, nil
+	return &JSONLStore{file: file, lock: lock, lockPath: lockPath, index: index}, nil
 }
 
-func validateExistingFile(path string) error {
+func validateExistingFile(path string) (map[eventKey]Event, error) {
+	index := make(map[eventKey]Event)
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return index, nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer file.Close()
 
 	info, err := file.Stat()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if info.Size() > 0 {
 		last := make([]byte, 1)
 		if _, err := file.ReadAt(last, info.Size()-1); err != nil {
-			return err
+			return nil, err
 		}
 		if last[0] != '\n' {
-			return errors.New("last record is incomplete")
+			return nil, errors.New("last record is incomplete")
 		}
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return err
+		return nil, err
 	}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 1024), maxStoredLineBytes)
 	lineNumber := 0
 	for scanner.Scan() {
 		lineNumber++
-		if !validStoredLine(bytes.TrimSuffix(scanner.Bytes(), []byte{'\r'})) {
-			return fmt.Errorf("line %d is invalid", lineNumber)
+		event, ok := parseStoredLine(bytes.TrimSuffix(scanner.Bytes(), []byte{'\r'}))
+		if !ok {
+			return nil, fmt.Errorf("line %d is invalid", lineNumber)
+		}
+		if _, exists := index[keyOf(event)]; !exists {
+			index[keyOf(event)] = event
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("audit line exceeds size limit or cannot be read: %w", err)
+		return nil, fmt.Errorf("audit line exceeds size limit or cannot be read: %w", err)
 	}
-	return nil
+	return index, nil
 }
 
-func validStoredLine(line []byte) bool {
+func parseStoredLine(line []byte) (Event, bool) {
 	decoder := json.NewDecoder(bytes.NewReader(line))
 	decoder.DisallowUnknownFields()
 	var event Event
 	if decoder.Decode(&event) != nil || ValidateEvent(event) != nil {
-		return false
+		return Event{}, false
 	}
 	var trailing any
-	return decoder.Decode(&trailing) == io.EOF
+	return event, decoder.Decode(&trailing) == io.EOF
 }
 
 func (s *JSONLStore) Append(ctx context.Context, event Event) error {
@@ -145,6 +155,12 @@ func (s *JSONLStore) Append(ctx context.Context, event Event) error {
 	if s.poison != nil {
 		return ErrStoreUnavailable
 	}
+	if stored, exists := s.index[keyOf(event)]; exists {
+		if sameContent(stored, event) {
+			return &DuplicateError{Stored: stored}
+		}
+		return ErrEventConflict
+	}
 	n, err := s.file.Write(line)
 	if err != nil || n != len(line) {
 		if err == nil {
@@ -156,6 +172,21 @@ func (s *JSONLStore) Append(ctx context.Context, event Event) error {
 	if err := s.file.Sync(); err != nil {
 		s.poison = err
 		return err
+	}
+	if s.index == nil {
+		s.index = make(map[eventKey]Event)
+	}
+	s.index[keyOf(event)] = event
+	return nil
+}
+
+// Ready reports whether the store is open and has not been poisoned by a
+// failed write or sync.
+func (s *JSONLStore) Ready(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.file == nil || s.poison != nil {
+		return ErrStoreUnavailable
 	}
 	return nil
 }

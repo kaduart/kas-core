@@ -532,3 +532,63 @@ func TestCorrelationIsIsolatedAcrossConcurrentRequestsAndNotAuditCorrelation(t *
 		}
 	}
 }
+
+type scriptedAuditRepository struct {
+	appendErr error
+	readyErr  error
+}
+
+func (r scriptedAuditRepository) Append(context.Context, audit.Event) error { return r.appendErr }
+func (r scriptedAuditRepository) Ready(context.Context) error               { return r.readyErr }
+
+func TestAuditIdenticalResendReturnsOriginalEventWithOK(t *testing.T) {
+	original := audit.Event{
+		ContractVersion: "v1", EventID: "evt.demo-1", TenantID: "tenant-demo-a", ServiceID: "node-a",
+		Actor: "user.demo-01", Action: "settings.updated", Resource: "setting.max_meta_keys", Result: "success",
+		CorrelationID: "corr.demo-1", OccurredAt: "2026-11-16T12:00:00Z", ReceivedAt: "2026-11-16T10:00:00Z",
+	}
+	handler := auditTestHandler(t, scriptedAuditRepository{appendErr: &audit.DuplicateError{Stored: original}})
+	got := auditCall(handler, "node-a", handlerTokenA, validAuditBody)
+	if got.Code != http.StatusOK {
+		t.Fatalf("identical resend status = %d %s, want 200", got.Code, got.Body.String())
+	}
+	if !strings.Contains(got.Body.String(), `"received_at":"2026-11-16T10:00:00Z"`) {
+		t.Fatalf("resend must return the originally stored event: %s", got.Body.String())
+	}
+}
+
+func TestAuditConflictingEventReturns409(t *testing.T) {
+	handler := auditTestHandler(t, scriptedAuditRepository{appendErr: audit.ErrEventConflict})
+	got := auditCall(handler, "node-a", handlerTokenA, validAuditBody)
+	if got.Code != http.StatusConflict || !strings.Contains(got.Body.String(), `"event_conflict"`) {
+		t.Fatalf("conflict response = %d %s", got.Code, got.Body.String())
+	}
+}
+
+func TestReadyzChecksAuditStorageWhileHealthzStaysLive(t *testing.T) {
+	get := func(h http.Handler, path string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		return response
+	}
+	ready := auditTestHandler(t, scriptedAuditRepository{})
+	if got := get(ready, "/readyz"); got.Code != http.StatusOK {
+		t.Fatalf("ready storage /readyz = %d", got.Code)
+	}
+	failing := auditTestHandler(t, scriptedAuditRepository{readyErr: errors.New("password=secret host=db.internal")})
+	got := get(failing, "/readyz")
+	if got.Code != http.StatusServiceUnavailable || !strings.Contains(got.Body.String(), `"audit_unavailable"`) {
+		t.Fatalf("failing storage /readyz = %d %s", got.Code, got.Body.String())
+	}
+	if strings.Contains(got.Body.String(), "secret") || strings.Contains(got.Body.String(), "db.internal") {
+		t.Fatalf("/readyz leaks storage details: %s", got.Body.String())
+	}
+	if live := get(failing, "/healthz"); live.Code != http.StatusOK {
+		t.Fatalf("/healthz must stay live when storage fails, got %d", live.Code)
+	}
+	post := httptest.NewRecorder()
+	failing.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/readyz", nil))
+	if post.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /readyz = %d, want 405", post.Code)
+	}
+}

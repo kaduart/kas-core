@@ -48,3 +48,19 @@ O lado da KAS já está pronto para o protocolo cercado. Se um documento tiver `
 1. Ao reivindicar, gravar `processingToken` (aleatório) e `processingStartedAt` com `updateOne({eventId, status:{$ne:'processing'}}, ...)`.
 2. Concluir e falhar com `updateOne({eventId, processingToken: meuToken}, ...)`. Se não casar, a execução perdeu a posse e não grava.
 3. O reaper passa a medir a idade por `processingStartedAt`, o que corrige L-1. Essa troca seria uma mudança de comportamento explícita, ligada por flag.
+
+**Atualização (18/11, tarde):** F-1 foi implementado no CRM na branch `feat/eventstore-posse` (fora do PR #9). O desenho final usa prazo de posse renovado (`leaseExpiresAt`) em vez de `processingStartedAt`; ver [PROTOCOLO_V2.md](PROTOCOLO_V2.md).
+
+## Protocolo v2 (CRM com posse de execução)
+
+O binário aceita `-protocol v1|v2`. **v1** reproduz o reaper que está em produção hoje. **v2** reproduz o reaper da branch `feat/eventstore-posse` do CRM. O protocolo precisa ser igual ao do CRM implantado; trocar exige OK do Kadu.
+
+| Id | Node v2 (CRM) | Go v2 | Por quê |
+|---|---|---|---|
+| DV-5 | No limite de recuperações, chama `sendAlert` (canal de alertas do CRM) | Registra `ERROR event_reaper_recovery_limit` no log e soma em `dead_letter` nas métricas; **não chama** o canal do CRM | A KAS não deve depender do serviço de alertas do CRM. Antes da troca de dono, decidir se o alerta da KAS vai para o mesmo canal |
+| DV-6 | Não guarda `attempts` | Exige também `attempts` igual ao observado | Mais estrito. `attempts` só muda numa nova reivindicação, que já troca o token. Sem efeito no oráculo. |
+| DV-7 | Conta e avisa os eventos sem posse que esperam a cerca (`legacyAwaiting`, log `reaper_legacy_awaiting_fence`) | Não conta. A decisão por evento aparece como `legacy_awaiting_fence` só se o evento for lido, e ele não é lido sem a cerca. | Antes da troca de dono, decidir se a KAS precisa dessa contagem. Até lá, o Node é o dono e faz o aviso. |
+
+Defeitos L-1 e L-2 deixam de valer no v2: a idade vem do prazo de posse, e `recoveryCount` leva ao estado terminal `dead_letter` na 3ª recuperação. Eventos gravados por código antigo (sem posse) continuam no critério legado de 15 min por `createdAt`.
+
+**Equivalência v2 (oráculo em `a84a644`):** três cenários de cerca, vencida (10.000 eventos), ausente e futura (3.333 cada). Em todos, com todas as formas de prazo, token e `recoveryCount` (inclusive `null`, texto e tipos inesperados): 0 divergências, mesmas contagens de `pending`, `failed` e `dead_letter`, e um alerta no Node para cada `dead_letter`. Vale também só sem disputa entre escritores. A disputa é coberta por `TestV2RenewalBetweenReadAndWriteIsNotOverwritten` (Go) e pelos testes de posse do CRM.

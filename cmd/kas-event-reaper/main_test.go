@@ -56,6 +56,15 @@ func TestRejectsBadModeAndConfig(t *testing.T) {
 	if code, _ := runWith(t, env); code != 2 {
 		t.Fatal("missing -db accepted")
 	}
+	if code, _ := runWith(t, env, "-db", "x", "-protocol", "v3"); code != 2 {
+		t.Fatal("unknown protocol accepted")
+	}
+	if code, _ := runWith(t, env, "-db", "x", "-protocol", "v2", "-legacy-fence", "amanha"); code != 2 {
+		t.Fatal("bad legacy fence accepted")
+	}
+	if code, _ := runWith(t, env, "-db", "x", "-protocol", "v2", "-max-recoveries", "0"); code != 2 {
+		t.Fatal("v2 with max-recoveries 0 accepted")
+	}
 }
 
 func TestLoopbackDetection(t *testing.T) {

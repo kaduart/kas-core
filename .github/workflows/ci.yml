@@ -5,6 +5,7 @@ on:
     branches:
       - kas-core/validacao-core
       - kas-core/operacional
+      - kas-core/event-reaper
   pull_request:
     branches:
       - main
@@ -49,6 +50,20 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: 22
+
+      - name: Disposable MongoDB (single-node replica set) for the event reaper
+        run: |
+          docker run -d --name mongo -p 127.0.0.1:27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' && break; sleep 1; done
+          docker exec mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+          for i in $(seq 1 30); do [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = true ] && break; sleep 1; done
+          echo "KAS_TEST_MONGO_URI=mongodb://127.0.0.1:27017/?directConnection=true" >> "$GITHUB_ENV"
+
+      - name: Legacy oracle (unmodified CRM reaper) dependencies
+        working-directory: legacy-oracle/eventreaper
+        run: |
+          npm install --no-audit --no-fund
+          echo "KAS_TEST_ORACLE_DIR=$GITHUB_WORKSPACE/legacy-oracle/eventreaper" >> "$GITHUB_ENV"
 
       - name: Go tests
         run: go test ./...

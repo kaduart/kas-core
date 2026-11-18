@@ -1,0 +1,7 @@
+{
+  "name": "kas-legacy-oracle-alerts",
+  "private": true,
+  "type": "module",
+  "description": "Runs the unmodified CRM alert service (fono-inova-crm-back@761018f, infrastructure/alerts/alertService.js) as the behavioural oracle for the KAS alert center. fetch is a simulated webhook; the clock is injected. No network.",
+  "scripts": { "oracle": "node oracle.js" }
+}

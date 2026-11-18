@@ -24,7 +24,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 
+	"kas-core-pilot/internal/alerts"
 	"kas-core-pilot/internal/eventreaper"
+	"kas-core-pilot/internal/legacy/crmalerts"
 	"kas-core-pilot/internal/legacy/crmeventstore"
 	"kas-core-pilot/internal/metrics"
 )
@@ -223,6 +225,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 	logger.Info("event_reaper_start", "mode", mode, "db", c.db, "collection", c.collection,
 		"interval", c.interval.String(), "warmup", c.warmup.String(), "stuck_threshold", c.threshold.String(),
 		"max_attempts", c.maxAttempts, "batch", c.batch, "once", c.once)
+	// Central de alertas: divergência da sombra, erro de ciclo e de transição
+	// saem no log estruturado com dedup e cooldown. Canal monitorado é
+	// bloqueio de ativação.
+	center := alerts.New(alerts.DefaultConfig(), alerts.LogSink{Logger: logger}, time.Now)
+	fileReport := report
+	report = func(rep eventreaper.CycleReport) {
+		if fileReport != nil {
+			fileReport(rep)
+		}
+		for _, a := range crmalerts.ReaperCycle(rep) {
+			_, _ = center.Raise(ctx, a)
+		}
+		_ = center.Flush(ctx)
+	}
 	if c.once {
 		cctx, cancel := context.WithTimeout(ctx, c.cycleTimeout)
 		rep := r.RunCycle(cctx)

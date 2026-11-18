@@ -1,0 +1,8 @@
+{
+  "name": "kas-legacy-oracle-eventreaper",
+  "private": true,
+  "type": "module",
+  "description": "Runs the unmodified CRM event reaper (fono-inova-crm-back@10d7e75) against a disposable MongoDB to serve as the behavioural oracle for the Go port.",
+  "scripts": { "oracle": "node oracle.js" },
+  "dependencies": { "mongoose": "8.24.3" }
+}

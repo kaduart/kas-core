@@ -62,16 +62,32 @@ type legacyCycleV2 struct {
 // CRM branch feat/eventstore-posse and the Go port in protocol v2 on identical
 // copies of a fictitious corpus and requires identical final documents.
 func TestGoPortV2MatchesTheCRMOwnershipReaper(t *testing.T) {
+	n := 10000
+	if v := os.Getenv("KAS_TEST_ORACLE_EVENTS"); v != "" {
+		n, _ = strconv.Atoi(v)
+	}
+	// The legacy fence decides whether ownerless events (claimed by
+	// pre-ownership code) may be released at all.
+	for _, tc := range []struct {
+		name  string
+		fence time.Time
+		n     int
+	}{
+		{"fence passed", now.Add(-time.Hour), n},
+		{"no fence", time.Time{}, n / 3},
+		{"fence in the future", now.Add(time.Minute), n / 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) { compareV2(t, tc.fence, tc.n) })
+	}
+}
+
+func compareV2(t *testing.T, fence time.Time, n int) {
 	dir := os.Getenv("KAS_TEST_ORACLE_V2_DIR")
 	if dir == "" {
 		t.Skip("KAS_TEST_ORACLE_V2_DIR is not set; skipping the v2 Node oracle comparison")
 	}
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node is not installed")
-	}
-	n := 10000
-	if v := os.Getenv("KAS_TEST_ORACLE_EVENTS"); v != "" {
-		n, _ = strconv.Atoi(v)
 	}
 	corpus := fictitiousCorpusV2(n, 20261118)
 	legacy, port := setup(t), setup(t)
@@ -84,6 +100,11 @@ func TestGoPortV2MatchesTheCRMOwnershipReaper(t *testing.T) {
 		"ORACLE_DB="+legacy.db,
 		"ORACLE_NOW_MS="+strconv.FormatInt(now.UnixMilli(), 10),
 		"ORACLE_UNTIL_EMPTY=1")
+	if fence.IsZero() {
+		cmd.Env = append(cmd.Env, "EVENT_LEGACY_FENCE_AT=")
+	} else {
+		cmd.Env = append(cmd.Env, "EVENT_LEGACY_FENCE_AT="+fence.UTC().Format(time.RFC3339Nano))
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.Output()
@@ -114,7 +135,9 @@ func TestGoPortV2MatchesTheCRMOwnershipReaper(t *testing.T) {
 	}
 
 	l := NewLease(port.client, port.db, "", "oracle-v2-test", time.Minute)
-	r := &eventreaper.Runner{Config: eventreaper.V2Config(), Mode: eventreaper.ModeExecutor, Store: New(port.client, port.db, "", l), Lease: l, Now: fixedNow}
+	cfg := eventreaper.V2Config()
+	cfg.LegacyFence = fence
+	r := &eventreaper.Runner{Config: cfg, Mode: eventreaper.ModeExecutor, Store: New(port.client, port.db, "", l), Lease: l, Now: fixedNow}
 	var goRep eventreaper.CycleReport
 	goCycles := 0
 	for {

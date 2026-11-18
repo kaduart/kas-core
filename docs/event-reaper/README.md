@@ -61,26 +61,22 @@ A URI vem só de variável de ambiente (`-mongo-uri-env`, padrão `KAS_REAPER_MO
 
 ## 5. Como ativar, desativar e reverter (etapas futuras, cada uma com OK do Kadu)
 
-Nada disto foi feito. A ordem foi pensada para **nunca haver dois executores ativos**.
+Nada disto foi feito. O runbook completo está no CRM, em `docs/EVENTSTORE_OWNERSHIP.md`, seção 5 (PR fono-inova-crm-back#74). A ordem é esta:
 
-**Pré-requisitos**
-1. Um usuário Mongo próprio da KAS: só leitura para a sombra; depois, escrita só em `eventstore` (campos `status` e `error`) e na coleção `kas_event_reaper_lease`.
-2. Um host sempre ligado para o executor (Portão G do roadmap). A sombra pode rodar do PC em horário comercial.
-3. **Uma mudança pequena no CRM:** hoje a única forma de desligar o reaper Node é `ENABLE_CRONS=false`, que derruba **todos** os crons, inclusive o `workerScheduler`. É preciso uma chave só para ele, por exemplo `EVENT_REAPER_OWNER=node|kas` lida em `cronManager.js` antes de `startCron('eventReaper', ...)`. Proposta opcional, mais forte: o cron Node também pula a execução se houver lease vivo em `kas_event_reaper_lease`.
+1. **Implantar o CRM com posse e dono `node`.** `EVENT_REAPER_OWNER` fica ausente. A API (reaper) vai antes do worker. A janela é com o worker suspenso.
+2. **Declarar a cerca** `EVENT_LEGACY_FENCE_AT` depois de confirmar que não há processo com o código antigo.
+3. **Validar o protocolo v2 em produção** (só leitura, 24 a 48 h): contagens de `processing` com e sem token, `dead_letter` com `RECOVERY_LIMIT_EXCEEDED` e os logs de posse.
+4. **Go em sombra** com usuário Mongo só leitura: `kas-event-reaper -mode shadow -protocol v2 -legacy-fence <mesmo valor do CRM> -report sombra.jsonl`. A sombra guarda a decisão por `eventId` e, no ciclo seguinte, confere o que o Node fez (`agree`, `still_processing`, `diverge`, `gone`). Critério: alguns dias com 0 `diverge`.
+5. **Propor a troca de dono**, só com um canal de alerta da KAS monitorado (hoje a KAS alerta só por log e métrica; ver DV-5). Ordem sem dois executores: `EVENT_REAPER_OWNER=kas` no CRM e reinício da API; confirmar nos logs que `[EventReaper]` sumiu; só então subir `-mode executor -protocol v2 -legacy-fence <valor>`. A lacuna é inofensiva: uma entrega nova retoma uma posse vencida sem o reaper.
 
-**Etapa A, sombra em produção (só leitura).** Rodar `-mode shadow` ao lado do cron Node por alguns dias. Critério: os `shadow_checks` dão `agree` e todo `diverge` é explicado (ver DV-1).
-
-**Etapa B, troca de dono**
-1. Publicar o CRM com a chave nova ainda em `node`. Não muda nada.
-2. Trocar para `kas` e reiniciar a API. Confirmar nos logs que não aparece mais `Inicializando Event Reaper Cron` nem `[EventReaper]`.
-3. Só então subir `kas-event-reaper -mode executor`. Uma lacuna de alguns minutos é inofensiva, porque o limite do reaper é 15 min.
+**O protocolo da KAS precisa ser igual ao do CRM implantado.** Use `-protocol v1` contra um CRM sem posse e `-protocol v2` contra um CRM com posse. O v2 rodando contra um CRM v1 não libera nenhum evento sem token sem `-legacy-fence`, ou seja, não faz nada de perigoso, mas também não ajuda.
 
 **Reversão**
 1. Parar o executor da KAS (SIGTERM). Ele libera o lease ao sair.
 2. Conferir que nenhum `kas-event-reaper` está rodando e que o lease está expirado.
-3. Trocar a chave para `node` e reiniciar a API.
+3. Remover `EVENT_REAPER_OWNER` (volta a `node`) e reiniciar a API.
 
-O que a KAS já gravou continua válido: são as mesmas transições que o Node faria.
+O que a KAS já gravou continua válido, porque são as mesmas transições que o Node faria. Reverter o CRM para o código sem posse também é seguro: o código antigo ignora os campos novos.
 
 ## 6. Como reproduzir a validação local
 

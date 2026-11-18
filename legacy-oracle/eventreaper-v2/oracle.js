@@ -11,6 +11,7 @@
 //   ORACLE_DB         database name (required)
 //   ORACLE_NOW_MS     the reaper's clock, epoch milliseconds (required)
 //   ORACLE_UNTIL_EMPTY=1  repeat until a cycle finds nothing
+//   EVENT_LEGACY_FENCE_AT  passed through to the CRM code (legacy fence)
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

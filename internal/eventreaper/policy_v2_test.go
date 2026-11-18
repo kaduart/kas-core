@@ -6,8 +6,9 @@ import (
 )
 
 func TestDecideV2Table(t *testing.T) {
-	cfg := V2Config()
 	now := time.Date(2026, 11, 18, 15, 0, 0, 0, time.UTC)
+	cfg := V2Config()
+	cfg.LegacyFence = now.Add(-30 * time.Minute) // deploy declared complete
 	old := now.Add(-time.Hour)
 	recent := now.Add(-time.Minute)
 	lease := func(at time.Time) LeaseField { return LeaseField{Present: true, IsDate: true, At: at} }
@@ -35,6 +36,7 @@ func TestDecideV2Table(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.c.Status = StatusProcessing
+			tc.c.TokenNullOrMissing = tc.c.ProcessingToken == ""
 			d := Decide(cfg, now, tc.c)
 			if d.Eligible != tc.eligible || d.To != tc.to {
 				t.Fatalf("got eligible=%v to=%q (%s), want %v %q", d.Eligible, d.To, d.Reason, tc.eligible, tc.to)
@@ -56,6 +58,41 @@ func TestDecideV2Table(t *testing.T) {
 				t.Fatalf("code %q", d.Code)
 			}
 		})
+	}
+}
+
+func TestV2OwnerlessEventsWaitForTheLegacyFence(t *testing.T) {
+	now := time.Date(2026, 11, 18, 15, 0, 0, 0, time.UTC)
+	old := Candidate{Status: StatusProcessing, CreatedAt: now.Add(-3 * time.Hour), Attempts: NumberAttempts(0), TokenNullOrMissing: true}
+	nullLease := old
+	nullLease.Lease = LeaseField{Present: true, Null: true}
+	for name, fence := range map[string]time.Time{"no fence": {}, "fence in the future": now.Add(time.Minute)} {
+		cfg := V2Config()
+		cfg.LegacyFence = fence
+		for _, c := range []Candidate{old, nullLease} {
+			if d := Decide(cfg, now, c); d.Eligible || d.Reason != "legacy_awaiting_fence" {
+				t.Fatalf("%s: ownerless event released: %+v", name, d)
+			}
+		}
+	}
+	cfg := V2Config()
+	cfg.LegacyFence = now.Add(-time.Hour)
+	for _, c := range []Candidate{old, nullLease} {
+		if d := Decide(cfg, now, c); !d.Eligible || d.Message != cfg.RecoveryMessage() {
+			t.Fatalf("fence passed: %+v", d)
+		}
+	}
+	// Created after the fence: not released even though older than 15 min.
+	recent := old
+	recent.CreatedAt = now.Add(-30 * time.Minute)
+	if d := Decide(cfg, now, recent); d.Eligible {
+		t.Fatalf("event created after the fence released: %+v", d)
+	}
+	// A token without a lease is owned by someone: never ownerless.
+	tok := old
+	tok.TokenNullOrMissing, tok.ProcessingToken = false, "tok"
+	if d := Decide(cfg, now, tok); d.Eligible {
+		t.Fatalf("event with token released: %+v", d)
 	}
 }
 

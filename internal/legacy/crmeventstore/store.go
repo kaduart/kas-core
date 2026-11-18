@@ -79,13 +79,15 @@ func CandidateFilter(cutoff time.Time) bson.D {
 }
 
 // CandidateFilterV2 is stuckFilter of the v2 CRM reaper.
-func CandidateFilterV2(now, cutoff time.Time) bson.D {
+func CandidateFilterV2(now, legacyCutoff time.Time) bson.D {
+	or := bson.A{bson.D{{Key: fLeaseExpiresAt, Value: bson.D{{Key: "$lte", Value: now}}}}}
+	if !legacyCutoff.IsZero() {
+		// Ownerless (null or absent) and older than min(cutoff, fence).
+		or = append(or, bson.D{{Key: fProcessingToken, Value: nil}, {Key: fLeaseExpiresAt, Value: nil}, {Key: fCreatedAt, Value: bson.D{{Key: "$lt", Value: legacyCutoff}}}})
+	}
 	return bson.D{
 		{Key: fStatus, Value: eventreaper.StatusProcessing},
-		{Key: "$or", Value: bson.A{
-			bson.D{{Key: fLeaseExpiresAt, Value: bson.D{{Key: "$lte", Value: now}}}},
-			bson.D{{Key: fLeaseExpiresAt, Value: bson.D{{Key: "$exists", Value: false}}}, {Key: fCreatedAt, Value: bson.D{{Key: "$lt", Value: cutoff}}}},
-		}},
+		{Key: "$or", Value: or},
 	}
 }
 
@@ -129,6 +131,9 @@ func decodeCandidate(raw bson.Raw) (eventreaper.Candidate, error) {
 		c.CreatedAt = time.UnixMilli(dt).UTC()
 	}
 	c.ProcessingToken, _ = raw.Lookup(fProcessingToken).StringValueOK()
+	if v, err := raw.LookupErr(fProcessingToken); err != nil || v.Type == bson.TypeNull {
+		c.TokenNullOrMissing = true
+	}
 	c.Attempts = decodeAttempts(raw)
 	c.RecoveryCount = decodeNumberField(raw, fRecoveryCount)
 	c.Lease = decodeLease(raw)
@@ -139,6 +144,7 @@ func decodeLease(raw bson.Raw) eventreaper.LeaseField {
 	var l eventreaper.LeaseField
 	if v, err := raw.LookupErr(fLeaseExpiresAt); err == nil {
 		l.Present = true
+		l.Null = v.Type == bson.TypeNull
 		if dt, ok := v.DateTimeOK(); ok {
 			l.IsDate, l.At = true, time.UnixMilli(dt).UTC()
 		}

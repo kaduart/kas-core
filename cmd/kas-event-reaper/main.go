@@ -32,10 +32,10 @@ import (
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 type cliConfig struct {
-	mode, protocol, uriEnv, db, collection, leaseCollection, confirmDB, reportPath, metricsAddr, holder string
-	interval, warmup, threshold, leaseTTL, cycleTimeout                                                 time.Duration
-	maxAttempts, maxRecoveries, batch                                                                   int
-	once, allowRemoteExecutor                                                                           bool
+	mode, protocol, legacyFence, uriEnv, db, collection, leaseCollection, confirmDB, reportPath, metricsAddr, holder string
+	interval, warmup, threshold, leaseTTL, cycleTimeout                                                              time.Duration
+	maxAttempts, maxRecoveries, batch                                                                                int
+	once, allowRemoteExecutor                                                                                        bool
 }
 
 func parse(args []string, stderr io.Writer) (cliConfig, error) {
@@ -60,6 +60,7 @@ func parse(args []string, stderr io.Writer) (cliConfig, error) {
 	fs.DurationVar(&c.leaseTTL, "lease-ttl", 12*time.Minute, "executor lease lifetime; longer than -interval so the holder keeps it")
 	fs.DurationVar(&c.cycleTimeout, "cycle-timeout", 2*time.Minute, "upper bound for one cycle; a database that stops answering is reported as an error")
 	fs.IntVar(&c.maxAttempts, "max-attempts", 3, "attempts below this go back to pending, others to failed (legacy: 3)")
+	fs.StringVar(&c.legacyFence, "legacy-fence", "", "protocol v2: RFC 3339 instant after which no pre-ownership CRM process runs (CRM EVENT_LEGACY_FENCE_AT); empty: ownerless processing events are never recovered")
 	fs.IntVar(&c.maxRecoveries, "max-recoveries", 3, "protocol v2: recoveries before dead_letter (CRM MAX_RECOVERIES: 3)")
 	fs.IntVar(&c.batch, "batch", 100, "events per cycle (legacy: 100)")
 	fs.BoolVar(&c.once, "once", false, "run a single cycle without warmup and exit")
@@ -112,7 +113,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		logger.Error("invalid protocol", "reason", err.Error())
 		return 2
 	}
-	cfg := eventreaper.Config{StuckThreshold: c.threshold, MaxAttemptsForRetry: c.maxAttempts, BatchSize: c.batch, Protocol: protocol, MaxRecoveries: c.maxRecoveries}
+	var fence time.Time
+	if c.legacyFence != "" {
+		if fence, err = time.Parse(time.RFC3339, c.legacyFence); err != nil {
+			logger.Error("invalid -legacy-fence", "reason", "use RFC 3339, e.g. 2026-11-20T03:00:00Z")
+			return 2
+		}
+	}
+	cfg := eventreaper.Config{StuckThreshold: c.threshold, MaxAttemptsForRetry: c.maxAttempts, BatchSize: c.batch, Protocol: protocol, MaxRecoveries: c.maxRecoveries, LegacyFence: fence}
 	if err := cfg.Validate(); err != nil {
 		logger.Error("invalid configuration", "reason", err.Error())
 		return 2

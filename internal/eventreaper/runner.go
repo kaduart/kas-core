@@ -58,8 +58,9 @@ type Observation struct {
 type Store interface {
 	// Candidates returns up to limit eligible events of the given protocol,
 	// oldest createdAt first, without payload. v1: processing and createdAt <
-	// cutoff. v2: processing and (lease expired at now, or no lease and
-	// createdAt < cutoff).
+	// cutoff. v2: processing and (lease expired at now, or ownerless and
+	// createdAt < cutoff); a zero cutoff in v2 means ownerless events are not
+	// eligible (legacy fence not passed).
 	Candidates(ctx context.Context, p Protocol, now, cutoff time.Time, limit int) ([]Candidate, error)
 	// Apply performs one transition atomically. applied=false with a nil
 	// error means the document no longer matched (someone else changed it).
@@ -193,7 +194,11 @@ func (r *Runner) RunCycle(ctx context.Context) CycleReport {
 		r.verifyShadow(ctx, &rep)
 	}
 
-	cands, err := r.Store.Candidates(ctx, r.Config.protocol(), started, rep.Cutoff, r.Config.BatchSize)
+	cut := rep.Cutoff
+	if r.Config.protocol() == ProtocolV2 {
+		cut = r.Config.LegacyCutoff(started) // zero: ownerless events are not eligible
+	}
+	cands, err := r.Store.Candidates(ctx, r.Config.protocol(), started, cut, r.Config.BatchSize)
 	if err != nil {
 		rep.Err = "candidates: " + err.Error()
 		r.finish(&rep, started)

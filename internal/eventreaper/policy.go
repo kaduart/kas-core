@@ -60,6 +60,24 @@ type Config struct {
 	// MaxRecoveries (v2 only): the recovery that reaches this count moves the
 	// event to dead_letter (CRM: MAX_RECOVERIES = 3).
 	MaxRecoveries int
+	// LegacyFence (v2 only): events in processing without ownership (claimed
+	// by pre-ownership CRM code) are eligible only once this instant has
+	// passed (CRM: EVENT_LEGACY_FENCE_AT). Zero: never.
+	LegacyFence time.Time
+}
+
+// LegacyCutoff (v2) is the createdAt bound for ownerless events, or the zero
+// time when the fence is not set or not yet reached (ownerless events are
+// then never eligible).
+func (c Config) LegacyCutoff(now time.Time) time.Time {
+	if c.LegacyFence.IsZero() || now.Before(c.LegacyFence) {
+		return time.Time{}
+	}
+	cut := c.Cutoff(now)
+	if c.LegacyFence.Before(cut) {
+		return c.LegacyFence
+	}
+	return cut
 }
 
 func (c Config) protocol() Protocol {
@@ -218,6 +236,8 @@ type Candidate struct {
 	// ProcessingToken is empty for every legacy document. It exists so that a
 	// future fenced claim protocol can be honoured (see DIVERGENCIAS.md, F-1).
 	ProcessingToken string
+	// TokenNullOrMissing: processingToken absent or null (no owner).
+	TokenNullOrMissing bool
 	// Lease is the raw leaseExpiresAt field (v2).
 	Lease LeaseField
 	// RecoveryCount is the raw recoveryCount field (v2), read like Attempts.
@@ -227,6 +247,7 @@ type Candidate struct {
 // LeaseField is the raw leaseExpiresAt value.
 type LeaseField struct {
 	Present bool      // field exists (any type)
+	Null    bool      // field holds BSON null
 	IsDate  bool      // field holds a BSON date
 	At      time.Time // when IsDate
 }
@@ -281,15 +302,20 @@ func Decide(cfg Config, now time.Time, c Candidate) Decision {
 
 // decideV2 reproduces stuckFilter + decide of the v2 CRM reaper.
 func decideV2(cfg Config, now time.Time, c Candidate, d Decision) Decision {
+	legacyCut := cfg.LegacyCutoff(now)
+	ownerless := c.TokenNullOrMissing && (!c.Lease.Present || c.Lease.Null)
 	switch {
 	case c.Lease.Present && c.Lease.IsDate && !c.Lease.At.After(now):
 		// {leaseExpiresAt: {$lte: now}}
-	case !c.Lease.Present && c.CreatedAt.Before(cfg.Cutoff(now)):
-		// {leaseExpiresAt: {$exists: false}, createdAt: {$lt: threshold}}
+	case ownerless && !legacyCut.IsZero() && c.CreatedAt.Before(legacyCut):
+		// fence passed: {processingToken: null, leaseExpiresAt: null, createdAt: {$lt: min(cutoff, fence)}}
 	default:
-		if c.Lease.Present {
+		switch {
+		case ownerless && legacyCut.IsZero():
+			d.Reason = "legacy_awaiting_fence"
+		case c.Lease.Present && !c.Lease.Null:
 			d.Reason = "lease_alive"
-		} else {
+		default:
 			d.Reason = "not_old_enough"
 		}
 		return d

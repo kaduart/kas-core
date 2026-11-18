@@ -2,7 +2,7 @@
   "name": "kas-legacy-oracle-eventreaper-v2",
   "private": true,
   "type": "module",
-  "description": "Runs the unmodified CRM event reaper with execution ownership (fono-inova-crm-back@701d456, branch feat/eventstore-posse) against a disposable MongoDB as the behavioural oracle for protocol v2 of the Go port.",
+  "description": "Runs the unmodified CRM event reaper with execution ownership (fono-inova-crm-back@a84a644, branch feat/eventstore-posse) against a disposable MongoDB as the behavioural oracle for protocol v2 of the Go port.",
   "scripts": { "oracle": "node oracle.js" },
   "dependencies": { "mongoose": "8.24.3" }
 }

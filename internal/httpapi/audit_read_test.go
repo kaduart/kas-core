@@ -49,7 +49,7 @@ func auditReadHandler(t *testing.T) (http.Handler, *audit.JSONLStore) {
 }
 
 func readCall(h http.Handler, service, token, query string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/v1/audit"+query, nil)
+	req := httptest.NewRequest(http.MethodGet, "/internal/v1/audit"+query, nil)
 	req.Header.Set("X-KAS-Service", service)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -342,9 +342,9 @@ func TestReadAuditInvalidParametersAreRejectedWith400(t *testing.T) {
 func TestReadAuditMethodAndAvailability(t *testing.T) {
 	h, _ := auditReadHandler(t)
 	post := httptest.NewRecorder()
-	h.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/v1/audit", strings.NewReader("{}")))
+	h.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/internal/v1/audit", strings.NewReader("{}")))
 	if post.Code != http.StatusMethodNotAllowed || post.Header().Get("Allow") != http.MethodGet {
-		t.Fatalf("POST /v1/audit = %d allow %q", post.Code, post.Header().Get("Allow"))
+		t.Fatalf("POST /internal/v1/audit = %d allow %q", post.Code, post.Header().Get("Allow"))
 	}
 	// A handler without audit storage refuses to read.
 	store, _ := configstore.Load(strings.NewReader(auditReadFixture), func(name string) (string, bool) {
@@ -371,5 +371,34 @@ func TestReadAuditResponseNeverLeaksSecretsOrOtherFields(t *testing.T) {
 	}
 	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Correlation-ID") == "" {
 		t.Fatalf("headers = %v", rec.Header())
+	}
+}
+
+func TestReadAuditLivesUnderTheInternalPrefixOnly(t *testing.T) {
+	h, _ := auditReadHandler(t)
+	writeAudit(t, h, "node-a", handlerTokenA, "tenant-demo-a", "pre-1", "", "")
+	// The route is /internal/v1/audit, next to POST /internal/v1/audit/events.
+	if page := decodePage(t, readCall(h, "node-a", handlerTokenA, "")); len(page.Items) != 1 {
+		t.Fatalf("read under the internal prefix = %+v", page.Items)
+	}
+	// The earlier path was never released as supported: it no longer exists.
+	for _, path := range []string{"/v1/audit", "/v1/audit/events"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("X-KAS-Service", "node-a")
+		req.Header.Set("Authorization", "Bearer "+handlerTokenA)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s = %d, want 404", path, rec.Code)
+		}
+	}
+	// Reading and writing are separate routes: the events route still only accepts POST.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/internal/v1/audit/events", nil)
+	req.Header.Set("X-KAS-Service", "node-a")
+	req.Header.Set("Authorization", "Bearer "+handlerTokenA)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /internal/v1/audit/events = %d, want 405", rec.Code)
 	}
 }

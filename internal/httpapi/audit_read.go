@@ -10,7 +10,7 @@ import (
 	"kas-core-pilot/internal/configstore"
 )
 
-// readAuditParams are the only query parameters GET /v1/audit accepts.
+// readAuditParams are the only query parameters GET /internal/v1/audit accepts.
 var readAuditParams = map[string]bool{
 	"entity_type": true, "entity_id": true, "since": true, "limit": true, "cursor": true, "tenant_id": true,
 }
@@ -21,7 +21,7 @@ type auditPageResponse struct {
 	NextCursor      string        `json:"next_cursor,omitempty"`
 }
 
-// readAudit serves GET /v1/audit. The tenant is derived from the authenticated
+// readAudit serves GET /internal/v1/audit. The tenant is derived from the authenticated
 // service (see configstore.ResolveTenant); a free request field can never select
 // another tenant, only choose among the tenants the service is itself allowed
 // for. Records of any other tenant are never read: the store query is filtered by

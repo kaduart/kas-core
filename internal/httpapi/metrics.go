@@ -51,7 +51,7 @@ func routeLabel(path string) string {
 	case "/healthz", "/readyz", "/metrics",
 		"/internal/v1/config/evaluate",
 		"/internal/v1/audit/events",
-		"/v1/audit",
+		"/internal/v1/audit",
 		"/internal/v1/events",
 		"/internal/v1/events/deliveries/claim",
 		"/internal/v1/events/deliveries/ack",

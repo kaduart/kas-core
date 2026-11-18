@@ -88,7 +88,7 @@ func newHandler(store *configstore.Store, auditService *audit.Service, maxConcur
 	h.mux.HandleFunc("/internal/v1/config/evaluate", h.evaluate)
 	h.mux.HandleFunc("/internal/v1/audit/events", h.recordAuditEvent)
 	h.mux.HandleFunc("/internal/v1/events", h.publishEvent)
-	h.mux.HandleFunc("/v1/audit", h.readAudit)
+	h.mux.HandleFunc("/internal/v1/audit", h.readAudit)
 	h.mux.HandleFunc("/internal/v1/events/deliveries/claim", h.claimDeliveries)
 	h.mux.HandleFunc("/internal/v1/events/deliveries/ack", h.ackDelivery)
 	h.mux.HandleFunc("/internal/v1/events/deliveries/nack", h.nackDelivery)

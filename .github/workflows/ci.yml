@@ -77,6 +77,9 @@ jobs:
           npm install --no-audit --no-fund
           echo "KAS_TEST_ORACLE_OUTBOX_DIR=$GITHUB_WORKSPACE/legacy-oracle/outbox" >> "$GITHUB_ENV"
 
+      - name: Legacy oracle (unmodified CRM alert service), no dependencies
+        run: echo "KAS_TEST_ORACLE_ALERTS_DIR=$GITHUB_WORKSPACE/legacy-oracle/alerts" >> "$GITHUB_ENV"
+
       - name: Go tests
         run: go test ./...
 

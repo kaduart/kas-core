@@ -24,6 +24,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 
+	"kas-core-pilot/internal/alerts"
+	"kas-core-pilot/internal/legacy/crmalerts"
 	"kas-core-pilot/internal/legacy/crmoutbox"
 	"kas-core-pilot/internal/outboxrecovery"
 )
@@ -177,13 +179,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		defer f.Close()
 		report = json.NewEncoder(f)
 	}
+	// Alertas passam pela central (dedup, cooldown, escalonamento) e saem no
+	// log estruturado. Entrega num canal monitorado continua sendo um bloqueio
+	// de ativação (ver o README).
+	center := alerts.New(alerts.DefaultConfig(), alerts.LogSink{Logger: logger}, time.Now)
+	hours := crmalerts.FonoInovaHours()
 	r := &outboxrecovery.Runner{
 		Config: cfg, Mode: mode, Store: store, Now: time.Now, MaxPages: c.maxPages, StalePendingAfter: c.stalePending,
-		// The alert goes to the log at ERROR level. Delivery to a monitored
-		// channel is an activation blocker (see the README).
-		Alert: func(_ context.Context, a outboxrecovery.Alert) error {
-			logger.Error("outbox entry given up", "id", a.ID, "reason", a.Reason)
-			return nil
+		Alert: func(ctx context.Context, a outboxrecovery.Alert) error {
+			_, err := center.Raise(ctx, crmalerts.OutboxExhausted(a))
+			if errors.Is(err, alerts.ErrInvalidAlert) {
+				return err
+			}
+			return nil // falha de entrega fica pendente na central e é tentada de novo
 		},
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -195,6 +203,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		cancel()
 		if report != nil {
 			_ = report.Encode(cy)
+		}
+		for _, a := range crmalerts.OutboxCycle(cy, hours) {
+			_, _ = center.Raise(ctx, a)
+		}
+		if ferr := center.Flush(ctx); ferr != nil {
+			logger.Warn("alert delivery pending", "reason", ferr.Error(), "pending", center.Pending())
 		}
 		if err != nil {
 			logger.Error("cycle", "reason", err.Error(), "recovered", cy.Recovered, "exhausted", cy.Exhausted)

@@ -447,7 +447,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-  /v1/audit:
+  /internal/v1/audit:
     get:
       tags: [Audit]
       summary: Read audit records of the authenticated tenant

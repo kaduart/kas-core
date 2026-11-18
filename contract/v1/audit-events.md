@@ -100,7 +100,7 @@ The store serializes writes within one process and synchronizes each complete li
 
 ## Reading audit records (`audit:read`)
 
-`GET /v1/audit` returns the audit records of **one tenant**, with the same service authentication headers. It needs the capability `audit:read`, which is separate from `audit:write`: a service that can write cannot read, and the reverse.
+`GET /internal/v1/audit` returns the audit records of **one tenant**, with the same service authentication headers. It needs the capability `audit:read`, which is separate from `audit:write`: a service that can write cannot read, and the reverse.
 
 Query parameters (all optional; unknown or repeated parameters are rejected with `400 invalid_request`):
 

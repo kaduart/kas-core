@@ -36,6 +36,10 @@ type Transition struct {
 	To        string
 	Message   string
 	Cutoff    time.Time
+	// Protocol and Decision drive the v2 write (recoveryCount, error.code).
+	Protocol Protocol
+	Decision Decision
+	Now      time.Time
 }
 
 // ErrLeaseLost means the executor no longer owns the lease; no write was made.
@@ -52,9 +56,11 @@ type Observation struct {
 // Store is everything the runner needs from the legacy database. The MongoDB
 // implementation lives in internal/legacy/crmeventstore.
 type Store interface {
-	// Candidates returns up to limit events with status "processing" and
-	// createdAt < cutoff, oldest first, without payload.
-	Candidates(ctx context.Context, cutoff time.Time, limit int) ([]Candidate, error)
+	// Candidates returns up to limit eligible events of the given protocol,
+	// oldest createdAt first, without payload. v1: processing and createdAt <
+	// cutoff. v2: processing and (lease expired at now, or no lease and
+	// createdAt < cutoff).
+	Candidates(ctx context.Context, p Protocol, now, cutoff time.Time, limit int) ([]Candidate, error)
 	// Apply performs one transition atomically. applied=false with a nil
 	// error means the document no longer matched (someone else changed it).
 	Apply(ctx context.Context, t Transition) (applied bool, err error)
@@ -95,19 +101,20 @@ type ShadowCheck struct {
 
 // CycleReport summarises one run. It contains identifiers and states only.
 type CycleReport struct {
-	Mode      Mode          `json:"mode"`
-	StartedAt time.Time     `json:"started_at"`
-	Duration  time.Duration `json:"duration_ns"`
-	Cutoff    time.Time     `json:"cutoff"`
-	Total     int           `json:"total"`
-	Reset     int           `json:"reset"`
-	Failed    int           `json:"failed"`
-	LostRace  int           `json:"lost_race"`
-	Errors    int           `json:"errors"`
-	Skipped   string        `json:"skipped,omitempty"` // already_running, not_leader, lease_error
-	Outcomes  []Outcome     `json:"outcomes,omitempty"`
-	Checks    []ShadowCheck `json:"shadow_checks,omitempty"`
-	Err       string        `json:"error,omitempty"`
+	Mode       Mode          `json:"mode"`
+	StartedAt  time.Time     `json:"started_at"`
+	Duration   time.Duration `json:"duration_ns"`
+	Cutoff     time.Time     `json:"cutoff"`
+	Total      int           `json:"total"`
+	Reset      int           `json:"reset"`
+	Failed     int           `json:"failed"`
+	DeadLetter int           `json:"dead_letter"`
+	LostRace   int           `json:"lost_race"`
+	Errors     int           `json:"errors"`
+	Skipped    string        `json:"skipped,omitempty"` // already_running, not_leader, lease_error
+	Outcomes   []Outcome     `json:"outcomes,omitempty"`
+	Checks     []ShadowCheck `json:"shadow_checks,omitempty"`
+	Err        string        `json:"error,omitempty"`
 }
 
 // Runner executes the policy against a Store.
@@ -186,7 +193,7 @@ func (r *Runner) RunCycle(ctx context.Context) CycleReport {
 		r.verifyShadow(ctx, &rep)
 	}
 
-	cands, err := r.Store.Candidates(ctx, rep.Cutoff, r.Config.BatchSize)
+	cands, err := r.Store.Candidates(ctx, r.Config.protocol(), started, rep.Cutoff, r.Config.BatchSize)
 	if err != nil {
 		rep.Err = "candidates: " + err.Error()
 		r.finish(&rep, started)
@@ -211,7 +218,11 @@ func (r *Runner) RunCycle(ctx context.Context) CycleReport {
 			rep.Outcomes = append(rep.Outcomes, o)
 			continue
 		}
-		applied, err := r.Store.Apply(ctx, Transition{Candidate: c, To: d.To, Message: r.Config.RecoveryMessage(), Cutoff: rep.Cutoff})
+		msg := r.Config.RecoveryMessage()
+		if d.Message != "" {
+			msg = d.Message
+		}
+		applied, err := r.Store.Apply(ctx, Transition{Candidate: c, To: d.To, Message: msg, Cutoff: rep.Cutoff, Protocol: r.Config.protocol(), Decision: d, Now: started})
 		switch {
 		case errors.Is(err, ErrLeaseLost):
 			o.Result = "lease_lost"
@@ -230,6 +241,11 @@ func (r *Runner) RunCycle(ctx context.Context) CycleReport {
 		default:
 			o.Result = "applied"
 			r.count(&rep, d.To)
+			if d.Exhausted {
+				// The CRM v2 reaper sends a critical alert here (alertService).
+				// The KAS has no alert channel yet: ERROR log + metric.
+				r.logger().Error("event_reaper_recovery_limit", "event_id", c.EventID, "event_type", c.EventType, "recoveries", d.Recoveries)
+			}
 		}
 		rep.Outcomes = append(rep.Outcomes, o)
 	}
@@ -243,9 +259,12 @@ func (r *Runner) RunCycle(ctx context.Context) CycleReport {
 }
 
 func (r *Runner) count(rep *CycleReport, to string) {
-	if to == StatusPending {
+	switch to {
+	case StatusPending:
 		rep.Reset++
-	} else {
+	case StatusDeadLetter:
+		rep.DeadLetter++
+	default:
 		rep.Failed++
 	}
 }
@@ -280,7 +299,7 @@ func (r *Runner) verifyShadow(ctx context.Context, rep *CycleReport) {
 			c.Verdict = "gone"
 		case o.Status == StatusProcessing:
 			c.Verdict = "still_processing"
-		case o.Status == prev[id] && o.ErrorMessage == msg:
+		case o.Status == prev[id] && (o.ErrorMessage == msg || o.ErrorMessage == LeaseMessage || o.ErrorMessage == r.Config.ExhaustedMessage()):
 			c.Verdict = "agree"
 		default:
 			c.Verdict = "diverge"
@@ -294,7 +313,7 @@ func (r *Runner) finish(rep *CycleReport, started time.Time) {
 	if r.Stats != nil {
 		r.Stats.record(rep)
 	}
-	attrs := []any{"mode", rep.Mode, "total", rep.Total, "reset", rep.Reset, "failed", rep.Failed,
+	attrs := []any{"mode", rep.Mode, "protocol", r.Config.protocol(), "total", rep.Total, "reset", rep.Reset, "failed", rep.Failed, "dead_letter", rep.DeadLetter,
 		"lost_race", rep.LostRace, "errors", rep.Errors, "duration_ms", rep.Duration.Milliseconds()}
 	if rep.Skipped != "" {
 		attrs = append(attrs, "skipped", rep.Skipped)

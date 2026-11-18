@@ -115,7 +115,7 @@ func TestCandidatesUseTheLegacySelection(t *testing.T) {
 	insert(t, e, bson.D{{Key: "eventId", Value: "no-created"}, {Key: "status", Value: "processing"}},
 		bson.D{{Key: "eventId", Value: "string-created"}, {Key: "status", Value: "processing"}, {Key: "createdAt", Value: "2020-01-01"}})
 	s := New(e.client, e.db, "", nil)
-	got, err := s.Candidates(context.Background(), cut, 100)
+	got, err := s.Candidates(context.Background(), eventreaper.ProtocolV1, time.Now(), cut, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestCandidatesUseTheLegacySelection(t *testing.T) {
 	if strings.Join(ids, ",") != "old-2,old-1" {
 		t.Fatalf("got %v, want [old-2 old-1] (oldest first, boundary excluded)", ids)
 	}
-	if lim, _ := s.Candidates(context.Background(), cut, 1); len(lim) != 1 || lim[0].EventID != "old-2" {
+	if lim, _ := s.Candidates(context.Background(), eventreaper.ProtocolV1, time.Now(), cut, 1); len(lim) != 1 || lim[0].EventID != "old-2" {
 		t.Fatalf("limit not honoured: %+v", lim)
 	}
 }
@@ -157,7 +157,9 @@ func TestTheKASNeverRequestsPayloadOrMetadata(t *testing.T) {
 	if len(cmds) < 3 {
 		t.Fatalf("expected find commands, got %d", len(cmds))
 	}
-	allowed := map[string]bool{"_id": true, "eventId": true, "eventType": true, "status": true, "createdAt": true, "attempts": true, "processingToken": true, "error.message": true}
+	allowed := map[string]bool{"_id": true, "eventId": true, "eventType": true, "status": true, "createdAt": true, "attempts": true, "processingToken": true, "error.message": true,
+		// protocol v2 control fields (ownership lease and recovery counter); never payload or metadata
+		"leaseExpiresAt": true, "recoveryCount": true}
 	for _, c := range cmds {
 		proj, err := c.LookupErr("projection")
 		if err != nil {
@@ -182,7 +184,7 @@ func TestApplyWritesExactlyWhatTheLegacyReaperStores(t *testing.T) {
 	insert(t, e, d)
 	before := getDoc(t, e, "x")
 	s := New(e.client, e.db, "", nil)
-	cands, _ := s.Candidates(context.Background(), now.Add(-15*time.Minute), 10)
+	cands, _ := s.Candidates(context.Background(), eventreaper.ProtocolV1, time.Now(), now.Add(-15*time.Minute), 10)
 	ok, err := s.Apply(context.Background(), eventreaper.Transition{Candidate: cands[0], To: "pending", Message: eventreaper.LegacyConfig().RecoveryMessage(), Cutoff: now.Add(-15 * time.Minute)})
 	if err != nil || !ok {
 		t.Fatalf("apply ok=%v err=%v", ok, err)
@@ -214,7 +216,7 @@ func TestCompletionBetweenReadAndWriteIsNotOverwritten(t *testing.T) {
 	e := setup(t)
 	insert(t, e, legacyDoc("race", "processing", now.Add(-time.Hour), int32(0)))
 	s := New(e.client, e.db, "", nil)
-	cands, _ := s.Candidates(context.Background(), now.Add(-15*time.Minute), 10)
+	cands, _ := s.Candidates(context.Background(), eventreaper.ProtocolV1, time.Now(), now.Add(-15*time.Minute), 10)
 	// The worker finishes (legacy markProcessed: save() by _id).
 	if _, err := e.coll.UpdateOne(context.Background(), bson.D{{Key: "eventId", Value: "race"}}, bson.D{{Key: "$set", Value: bson.D{{Key: "status", Value: "processed"}, {Key: "processedBy", Value: "worker-ficticio"}}}}); err != nil {
 		t.Fatal(err)
@@ -241,7 +243,7 @@ func TestAttemptsChangedAfterReadMakesTheWriteMiss(t *testing.T) {
 	e := setup(t)
 	insert(t, e, legacyDoc("att", "processing", now.Add(-time.Hour), int32(2)))
 	s := New(e.client, e.db, "", nil)
-	cands, _ := s.Candidates(context.Background(), now.Add(-15*time.Minute), 10)
+	cands, _ := s.Candidates(context.Background(), eventreaper.ProtocolV1, time.Now(), now.Add(-15*time.Minute), 10)
 	if _, err := e.coll.UpdateOne(context.Background(), bson.D{{Key: "eventId", Value: "att"}}, bson.D{{Key: "$inc", Value: bson.D{{Key: "attempts", Value: 1}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +257,7 @@ func TestAttemptsGuardDistinguishesNullAndMissing(t *testing.T) {
 	e := setup(t)
 	insert(t, e, legacyDoc("null", "processing", now.Add(-time.Hour), nil), legacyDoc("miss", "processing", now.Add(-time.Hour), missing))
 	s := New(e.client, e.db, "", nil)
-	cands, _ := s.Candidates(context.Background(), now.Add(-15*time.Minute), 10)
+	cands, _ := s.Candidates(context.Background(), eventreaper.ProtocolV1, time.Now(), now.Add(-15*time.Minute), 10)
 	byID := map[string]eventreaper.Candidate{}
 	for _, c := range cands {
 		byID[c.EventID] = c
@@ -406,7 +408,7 @@ func TestFormerLeaseHolderIsFencedOut(t *testing.T) {
 		t.Fatal("a acquire")
 	}
 	sa := New(e.client, e.db, "", a)
-	cands, _ := sa.Candidates(ctx, now.Add(-15*time.Minute), 10)
+	cands, _ := sa.Candidates(ctx, eventreaper.ProtocolV1, time.Now(), now.Add(-15*time.Minute), 10)
 	time.Sleep(400 * time.Millisecond)
 	b := NewLease(e.client, e.db, "", "b", time.Minute)
 	if ok, _ := b.Acquire(ctx); !ok {
@@ -508,7 +510,7 @@ func TestFencedClaimProtocolStopsAStaleConsumer(t *testing.T) {
 	d = append(d, bson.E{Key: "processingToken", Value: "claim-1"})
 	insert(t, e, d, legacyDoc("legacy", "processing", now.Add(-time.Hour), int32(0)))
 	s := New(e.client, e.db, "", nil)
-	cands, _ := s.Candidates(ctx, now.Add(-15*time.Minute), 10)
+	cands, _ := s.Candidates(ctx, eventreaper.ProtocolV1, time.Now(), now.Add(-15*time.Minute), 10)
 	for _, c := range cands {
 		if ok, err := s.Apply(ctx, eventreaper.Transition{Candidate: c, To: "pending", Message: "m", Cutoff: now.Add(-15 * time.Minute)}); err != nil || !ok {
 			t.Fatalf("%s: ok=%v err=%v", c.EventID, ok, err)
@@ -527,5 +529,37 @@ func TestFencedClaimProtocolStopsAStaleConsumer(t *testing.T) {
 	r, _ = e.coll.UpdateOne(ctx, bson.D{{Key: "eventId", Value: "legacy"}}, bson.D{{Key: "$set", Value: bson.D{{Key: "status", Value: "processed"}}}})
 	if r.ModifiedCount != 1 {
 		t.Fatal("legacy unconditional completion should still succeed (documented gap)")
+	}
+}
+
+// TestV2RenewalBetweenReadAndWriteIsNotOverwritten: the worker renews its
+// lease after the reaper read the candidate; the conditional write must miss.
+func TestV2RenewalBetweenReadAndWriteIsNotOverwritten(t *testing.T) {
+	e := setup(t)
+	d := legacyDoc("renew", "processing", now.Add(-time.Hour), int32(0))
+	d = append(d, bson.E{Key: "processingToken", Value: "tok-dono"}, bson.E{Key: "processingOwner", Value: "w"}, bson.E{Key: "leaseExpiresAt", Value: now.Add(-time.Second)})
+	insert(t, e, d)
+	s := New(e.client, e.db, "", nil)
+	ctx := context.Background()
+	cands, err := s.Candidates(ctx, eventreaper.ProtocolV2, now, now.Add(-15*time.Minute), 10)
+	if err != nil || len(cands) != 1 {
+		t.Fatalf("candidates %v %v", cands, err)
+	}
+	// Owner renews (same token, new deadline).
+	if _, err := e.coll.UpdateOne(ctx, bson.D{{Key: "eventId", Value: "renew"}, {Key: "processingToken", Value: "tok-dono"}},
+		bson.D{{Key: "$set", Value: bson.D{{Key: "leaseExpiresAt", Value: now.Add(time.Minute)}}}}); err != nil {
+		t.Fatal(err)
+	}
+	dec := eventreaper.Decide(eventreaper.V2Config(), now, cands[0])
+	ok, err := s.Apply(ctx, eventreaper.Transition{Candidate: cands[0], To: dec.To, Message: dec.Message, Cutoff: now.Add(-15 * time.Minute), Protocol: eventreaper.ProtocolV2, Decision: dec, Now: now})
+	if err != nil || ok {
+		t.Fatalf("apply must miss after renewal: ok=%v err=%v", ok, err)
+	}
+	var got bson.M
+	if err := e.coll.FindOne(ctx, bson.D{{Key: "eventId", Value: "renew"}}).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got["status"] != "processing" || got["processingToken"] != "tok-dono" {
+		t.Fatalf("owner lost the event: %v", got)
 	}
 }

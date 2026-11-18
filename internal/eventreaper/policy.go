@@ -21,7 +21,29 @@ const (
 	StatusProcessing = "processing"
 	StatusPending    = "pending"
 	StatusFailed     = "failed"
+	StatusDeadLetter = "dead_letter"
 )
+
+// Protocol selects which version of the CRM reaper is reproduced.
+type Protocol string
+
+const (
+	// ProtocolV1 is the reaper running in production today
+	// (fono-inova-crm-back@10d7e75): age by createdAt, no ownership fields.
+	ProtocolV1 Protocol = "v1"
+	// ProtocolV2 is the reaper of the CRM branch feat/eventstore-posse:
+	// execution leases, conditional recovery, recoveryCount and dead_letter.
+	ProtocolV2 Protocol = "v2"
+)
+
+// ParseProtocol validates a protocol name.
+func ParseProtocol(s string) (Protocol, error) {
+	switch Protocol(s) {
+	case ProtocolV1, ProtocolV2:
+		return Protocol(s), nil
+	}
+	return "", fmt.Errorf("unknown protocol %q (use v1 or v2)", s)
+}
 
 // Config mirrors the constants of the legacy reaper.
 type Config struct {
@@ -33,11 +55,30 @@ type Config struct {
 	MaxAttemptsForRetry int
 	// BatchSize: events handled per cycle (legacy: .limit(100)).
 	BatchSize int
+	// Protocol: v1 (default, production today) or v2 (execution ownership).
+	Protocol Protocol
+	// MaxRecoveries (v2 only): the recovery that reaches this count moves the
+	// event to dead_letter (CRM: MAX_RECOVERIES = 3).
+	MaxRecoveries int
+}
+
+func (c Config) protocol() Protocol {
+	if c.Protocol == "" {
+		return ProtocolV1
+	}
+	return c.Protocol
 }
 
 // LegacyConfig returns the values hard-coded in the legacy reaper.
 func LegacyConfig() Config {
-	return Config{StuckThreshold: 15 * time.Minute, MaxAttemptsForRetry: 3, BatchSize: 100}
+	return Config{StuckThreshold: 15 * time.Minute, MaxAttemptsForRetry: 3, BatchSize: 100, Protocol: ProtocolV1, MaxRecoveries: 3}
+}
+
+// V2Config returns the values of the CRM reaper with execution ownership.
+func V2Config() Config {
+	c := LegacyConfig()
+	c.Protocol = ProtocolV2
+	return c
 }
 
 // Validate rejects values that would make the policy meaningless.
@@ -49,12 +90,29 @@ func (c Config) Validate() error {
 		return fmt.Errorf("max attempts for retry must be at least 1")
 	case c.BatchSize < 1 || c.BatchSize > 1000:
 		return fmt.Errorf("batch size must be between 1 and 1000")
+	case c.protocol() != ProtocolV1 && c.protocol() != ProtocolV2:
+		return fmt.Errorf("unknown protocol %q", c.Protocol)
+	case c.protocol() == ProtocolV2 && c.MaxRecoveries < 1:
+		return fmt.Errorf("max recoveries must be at least 1")
 	}
 	return nil
 }
 
 // Cutoff is the instant before which createdAt makes an event eligible.
 func (c Config) Cutoff(now time.Time) time.Time { return now.Add(-c.StuckThreshold) }
+
+// Messages and codes of the v2 reaper (crons/eventReaper.cron.js on
+// feat/eventstore-posse).
+const (
+	LeaseMessage  = "Auto-recovered: processing lease expired"
+	CodeRecovered = "RECOVERED_STUCK_PROCESSING"
+	CodeExhausted = "RECOVERY_LIMIT_EXCEEDED"
+)
+
+// ExhaustedMessage is the v2 message for the recovery that hits the limit.
+func (c Config) ExhaustedMessage() string {
+	return "Recovery limit reached (" + strconv.Itoa(c.MaxRecoveries) + "); moved to dead_letter"
+}
 
 // RecoveryMessage is the exact error.message the legacy reaper stores.
 func (c Config) RecoveryMessage() string {
@@ -160,6 +218,26 @@ type Candidate struct {
 	// ProcessingToken is empty for every legacy document. It exists so that a
 	// future fenced claim protocol can be honoured (see DIVERGENCIAS.md, F-1).
 	ProcessingToken string
+	// Lease is the raw leaseExpiresAt field (v2).
+	Lease LeaseField
+	// RecoveryCount is the raw recoveryCount field (v2), read like Attempts.
+	RecoveryCount Attempts
+}
+
+// LeaseField is the raw leaseExpiresAt value.
+type LeaseField struct {
+	Present bool      // field exists (any type)
+	IsDate  bool      // field holds a BSON date
+	At      time.Time // when IsDate
+}
+
+// jsNumberOrZero reproduces `Number(x) || 0`.
+func (a Attempts) jsNumberOrZero() float64 {
+	n := a.jsNumber()
+	if a.Kind == AttemptsMissing || math.IsNaN(n) || n == 0 {
+		return 0
+	}
+	return n
 }
 
 // Decision is what the policy wants to happen to one event.
@@ -169,6 +247,11 @@ type Decision struct {
 	To       string
 	Eligible bool
 	Reason   string
+	// v2 only.
+	Recoveries float64
+	Message    string
+	Code       string
+	Exhausted  bool
 }
 
 // Decide applies the legacy rule to one candidate observed at now.
@@ -177,6 +260,9 @@ func Decide(cfg Config, now time.Time, c Candidate) Decision {
 	if c.Status != StatusProcessing {
 		d.Reason = "not_processing"
 		return d
+	}
+	if cfg.protocol() == ProtocolV2 {
+		return decideV2(cfg, now, c, d)
 	}
 	// Mongo `createdAt: {$lt: threshold}` is strict.
 	if !c.CreatedAt.Before(cfg.Cutoff(now)) {
@@ -189,6 +275,42 @@ func Decide(cfg Config, now time.Time, c Candidate) Decision {
 		d.To, d.Reason = StatusPending, "retry"
 	} else {
 		d.To, d.Reason = StatusFailed, "too_many_attempts"
+	}
+	return d
+}
+
+// decideV2 reproduces stuckFilter + decide of the v2 CRM reaper.
+func decideV2(cfg Config, now time.Time, c Candidate, d Decision) Decision {
+	switch {
+	case c.Lease.Present && c.Lease.IsDate && !c.Lease.At.After(now):
+		// {leaseExpiresAt: {$lte: now}}
+	case !c.Lease.Present && c.CreatedAt.Before(cfg.Cutoff(now)):
+		// {leaseExpiresAt: {$exists: false}, createdAt: {$lt: threshold}}
+	default:
+		if c.Lease.Present {
+			d.Reason = "lease_alive"
+		} else {
+			d.Reason = "not_old_enough"
+		}
+		return d
+	}
+	d.Eligible = true
+	d.Recoveries = c.RecoveryCount.jsNumberOrZero() + 1
+	if d.Recoveries >= float64(cfg.MaxRecoveries) {
+		d.To, d.Reason, d.Message, d.Code, d.Exhausted = StatusDeadLetter, "recovery_limit", cfg.ExhaustedMessage(), CodeExhausted, true
+		return d
+	}
+	if c.Attempts.jsNumber() < float64(cfg.MaxAttemptsForRetry) {
+		d.To, d.Reason = StatusPending, "retry"
+	} else {
+		d.To, d.Reason = StatusFailed, "too_many_attempts"
+	}
+	d.Code = CodeRecovered
+	// JS: event.leaseExpiresAt ? LEASE_MESSAGE : LEGACY_MESSAGE
+	if c.Lease.Present && c.Lease.IsDate {
+		d.Message = LeaseMessage
+	} else {
+		d.Message = cfg.RecoveryMessage()
 	}
 	return d
 }

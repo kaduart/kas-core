@@ -32,6 +32,9 @@ const (
 	fAttempts        = "attempts"
 	fError           = "error"
 	fProcessingToken = "processingToken"
+	fProcessingOwner = "processingOwner"
+	fLeaseExpiresAt  = "leaseExpiresAt"
+	fRecoveryCount   = "recoveryCount"
 )
 
 // DefaultCollection is the legacy collection name (`collection: 'eventstore'`).
@@ -46,6 +49,8 @@ var candidateProjection = bson.D{
 	{Key: fCreatedAt, Value: 1},
 	{Key: fAttempts, Value: 1},
 	{Key: fProcessingToken, Value: 1},
+	{Key: fLeaseExpiresAt, Value: 1},
+	{Key: fRecoveryCount, Value: 1},
 }
 
 // Store implements eventreaper.Store on the legacy collection.
@@ -73,14 +78,29 @@ func CandidateFilter(cutoff time.Time) bson.D {
 	}
 }
 
+// CandidateFilterV2 is stuckFilter of the v2 CRM reaper.
+func CandidateFilterV2(now, cutoff time.Time) bson.D {
+	return bson.D{
+		{Key: fStatus, Value: eventreaper.StatusProcessing},
+		{Key: "$or", Value: bson.A{
+			bson.D{{Key: fLeaseExpiresAt, Value: bson.D{{Key: "$lte", Value: now}}}},
+			bson.D{{Key: fLeaseExpiresAt, Value: bson.D{{Key: "$exists", Value: false}}}, {Key: fCreatedAt, Value: bson.D{{Key: "$lt", Value: cutoff}}}},
+		}},
+	}
+}
+
 // Candidates implements eventreaper.Store with the legacy query
 // find(filter).sort({createdAt: 1}).limit(limit).
-func (s *Store) Candidates(ctx context.Context, cutoff time.Time, limit int) ([]eventreaper.Candidate, error) {
+func (s *Store) Candidates(ctx context.Context, p eventreaper.Protocol, now, cutoff time.Time, limit int) ([]eventreaper.Candidate, error) {
+	filter := CandidateFilter(cutoff)
+	if p == eventreaper.ProtocolV2 {
+		filter = CandidateFilterV2(now, cutoff)
+	}
 	opts := options.Find().
 		SetSort(bson.D{{Key: fCreatedAt, Value: 1}}).
 		SetLimit(int64(limit)).
 		SetProjection(candidateProjection)
-	cur, err := s.coll.Find(ctx, CandidateFilter(cutoff), opts)
+	cur, err := s.coll.Find(ctx, filter, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -110,11 +130,26 @@ func decodeCandidate(raw bson.Raw) (eventreaper.Candidate, error) {
 	}
 	c.ProcessingToken, _ = raw.Lookup(fProcessingToken).StringValueOK()
 	c.Attempts = decodeAttempts(raw)
+	c.RecoveryCount = decodeNumberField(raw, fRecoveryCount)
+	c.Lease = decodeLease(raw)
 	return c, nil
 }
 
-func decodeAttempts(raw bson.Raw) eventreaper.Attempts {
-	v, err := raw.LookupErr(fAttempts)
+func decodeLease(raw bson.Raw) eventreaper.LeaseField {
+	var l eventreaper.LeaseField
+	if v, err := raw.LookupErr(fLeaseExpiresAt); err == nil {
+		l.Present = true
+		if dt, ok := v.DateTimeOK(); ok {
+			l.IsDate, l.At = true, time.UnixMilli(dt).UTC()
+		}
+	}
+	return l
+}
+
+func decodeAttempts(raw bson.Raw) eventreaper.Attempts { return decodeNumberField(raw, fAttempts) }
+
+func decodeNumberField(raw bson.Raw, field string) eventreaper.Attempts {
+	v, err := raw.LookupErr(field)
 	if err != nil {
 		return eventreaper.Attempts{Kind: eventreaper.AttemptsMissing}
 	}
@@ -212,6 +247,12 @@ func (s *Store) Apply(ctx context.Context, t eventreaper.Transition) (bool, erro
 		} else {
 			filter = append(filter, bson.E{Key: fProcessingToken, Value: bson.D{{Key: "$exists", Value: false}}})
 		}
+		if t.Protocol == eventreaper.ProtocolV2 {
+			filter, update, err = v2Write(sc, s.coll, t)
+			if err != nil || filter == nil {
+				return false, err
+			}
+		}
 		r, err := s.coll.UpdateOne(sc, filter, update)
 		if err != nil {
 			return false, err
@@ -222,6 +263,81 @@ func (s *Store) Apply(ctx context.Context, t eventreaper.Transition) (bool, erro
 		return false, err
 	}
 	return res.(bool), nil
+}
+
+// v2Write builds the conditional write of the v2 CRM reaper:
+// filter {eventId, status:'processing', processingToken, leaseExpiresAt,
+// recoveryCount} as observed (absent or null observed -> $exists:false, as
+// `x ?? {$exists:false}` does), then $set status/recoveryCount/error and
+// $unset the ownership fields.
+func v2Write(ctx context.Context, coll *mongo.Collection, t eventreaper.Transition) (bson.D, bson.D, error) {
+	var doc bson.Raw
+	err := coll.FindOne(ctx, bson.D{{Key: fEventID, Value: t.Candidate.EventID}},
+		options.FindOne().SetProjection(bson.D{{Key: "_id", Value: 0}, {Key: fProcessingToken, Value: 1}, {Key: fLeaseExpiresAt, Value: 1}, {Key: fRecoveryCount, Value: 1}})).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	// Guards compare the raw stored values: absent -> $exists:false, null ->
+	// $type:null, anything else -> $eq on the exact BSON value (no casting).
+	guard := func(field string) bson.E {
+		v, err := doc.LookupErr(field)
+		if err != nil {
+			return bson.E{Key: field, Value: bson.D{{Key: "$exists", Value: false}}}
+		}
+		if v.Type == bson.TypeNull || v.Type == bson.TypeUndefined {
+			return bson.E{Key: field, Value: bson.D{{Key: "$type", Value: "null"}}}
+		}
+		return bson.E{Key: field, Value: bson.D{{Key: "$eq", Value: v}}}
+	}
+	// The re-read (inside the transaction) must still be what the decision
+	// was made on. Otherwise the worker renewed, finished or another reaper
+	// recovered in between: lost race, nothing is written.
+	cand := t.Candidate
+	if !sameOwnership(doc, cand) {
+		return nil, nil, nil
+	}
+	filter := bson.D{
+		{Key: fEventID, Value: cand.EventID},
+		{Key: fStatus, Value: eventreaper.StatusProcessing},
+		guard(fProcessingToken),
+		guard(fLeaseExpiresAt),
+		guard(fRecoveryCount),
+	}
+	errDoc := bson.D{{Key: "message", Value: t.Decision.Message}, {Key: "code", Value: t.Decision.Code}}
+	update := bson.D{
+		{Key: "$set", Value: bson.D{
+			{Key: fStatus, Value: t.To},
+			{Key: fRecoveryCount, Value: jsNumberValue(t.Decision.Recoveries)},
+			{Key: fError, Value: errDoc},
+		}},
+		{Key: "$unset", Value: bson.D{{Key: fProcessingToken, Value: ""}, {Key: fProcessingOwner, Value: ""}, {Key: fLeaseExpiresAt, Value: ""}}},
+	}
+	return filter, update, nil
+}
+
+// sameOwnership reports whether the ownership fields re-read from the
+// document are the ones observed when the candidate was decided.
+func sameOwnership(doc bson.Raw, c eventreaper.Candidate) bool {
+	tok, _ := doc.Lookup(fProcessingToken).StringValueOK()
+	if tok != c.ProcessingToken {
+		return false
+	}
+	if decodeLease(doc) != c.Lease {
+		return false
+	}
+	return sameAttempts(decodeNumberField(doc, fRecoveryCount), c.RecoveryCount)
+}
+
+// jsNumberValue stores a number the way the Node driver does: int32 when it
+// is an integer in range, double otherwise.
+func jsNumberValue(f float64) any {
+	if f == math.Trunc(f) && f >= math.MinInt32 && f <= math.MaxInt32 {
+		return int32(f)
+	}
+	return f
 }
 
 func sameAttempts(a, b eventreaper.Attempts) bool {

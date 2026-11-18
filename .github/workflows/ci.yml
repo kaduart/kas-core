@@ -65,6 +65,12 @@ jobs:
           npm install --no-audit --no-fund
           echo "KAS_TEST_ORACLE_DIR=$GITHUB_WORKSPACE/legacy-oracle/eventreaper" >> "$GITHUB_ENV"
 
+      - name: Legacy oracle v2 (CRM reaper with execution ownership) dependencies
+        working-directory: legacy-oracle/eventreaper-v2
+        run: |
+          npm install --no-audit --no-fund
+          echo "KAS_TEST_ORACLE_V2_DIR=$GITHUB_WORKSPACE/legacy-oracle/eventreaper-v2" >> "$GITHUB_ENV"
+
       - name: Go tests
         run: go test ./...
 

@@ -32,10 +32,10 @@ import (
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 type cliConfig struct {
-	mode, uriEnv, db, collection, leaseCollection, confirmDB, reportPath, metricsAddr, holder string
-	interval, warmup, threshold, leaseTTL, cycleTimeout                                       time.Duration
-	maxAttempts, batch                                                                        int
-	once, allowRemoteExecutor                                                                 bool
+	mode, protocol, uriEnv, db, collection, leaseCollection, confirmDB, reportPath, metricsAddr, holder string
+	interval, warmup, threshold, leaseTTL, cycleTimeout                                                 time.Duration
+	maxAttempts, maxRecoveries, batch                                                                   int
+	once, allowRemoteExecutor                                                                           bool
 }
 
 func parse(args []string, stderr io.Writer) (cliConfig, error) {
@@ -44,6 +44,7 @@ func parse(args []string, stderr io.Writer) (cliConfig, error) {
 	fs.SetOutput(stderr)
 	host, _ := os.Hostname()
 	fs.StringVar(&c.mode, "mode", "shadow", "shadow (read only) or executor (writes; only on a disposable database in this phase)")
+	fs.StringVar(&c.protocol, "protocol", "v1", "v1: CRM reaper as in production (createdAt > threshold). v2: CRM with execution ownership (expired lease, recoveryCount, dead_letter); must match the CRM build")
 	fs.StringVar(&c.uriEnv, "mongo-uri-env", "KAS_REAPER_MONGO_URI", "environment variable holding the MongoDB URI (never pass the URI as a flag)")
 	fs.StringVar(&c.db, "db", "", "database name of the CRM event store (required)")
 	fs.StringVar(&c.collection, "collection", crmeventstore.DefaultCollection, "legacy event store collection")
@@ -59,6 +60,7 @@ func parse(args []string, stderr io.Writer) (cliConfig, error) {
 	fs.DurationVar(&c.leaseTTL, "lease-ttl", 12*time.Minute, "executor lease lifetime; longer than -interval so the holder keeps it")
 	fs.DurationVar(&c.cycleTimeout, "cycle-timeout", 2*time.Minute, "upper bound for one cycle; a database that stops answering is reported as an error")
 	fs.IntVar(&c.maxAttempts, "max-attempts", 3, "attempts below this go back to pending, others to failed (legacy: 3)")
+	fs.IntVar(&c.maxRecoveries, "max-recoveries", 3, "protocol v2: recoveries before dead_letter (CRM MAX_RECOVERIES: 3)")
 	fs.IntVar(&c.batch, "batch", 100, "events per cycle (legacy: 100)")
 	fs.BoolVar(&c.once, "once", false, "run a single cycle without warmup and exit")
 	if err := fs.Parse(args); err != nil {
@@ -105,7 +107,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		logger.Error("invalid mode", "reason", err.Error())
 		return 2
 	}
-	cfg := eventreaper.Config{StuckThreshold: c.threshold, MaxAttemptsForRetry: c.maxAttempts, BatchSize: c.batch}
+	protocol, err := eventreaper.ParseProtocol(c.protocol)
+	if err != nil {
+		logger.Error("invalid protocol", "reason", err.Error())
+		return 2
+	}
+	cfg := eventreaper.Config{StuckThreshold: c.threshold, MaxAttemptsForRetry: c.maxAttempts, BatchSize: c.batch, Protocol: protocol, MaxRecoveries: c.maxRecoveries}
 	if err := cfg.Validate(); err != nil {
 		logger.Error("invalid configuration", "reason", err.Error())
 		return 2

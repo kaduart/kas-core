@@ -29,7 +29,7 @@ func newMem(cs ...Candidate) *memStore {
 	return m
 }
 
-func (m *memStore) Candidates(_ context.Context, cutoff time.Time, limit int) ([]Candidate, error) {
+func (m *memStore) Candidates(_ context.Context, _ Protocol, _ time.Time, cutoff time.Time, limit int) ([]Candidate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failFind != nil {

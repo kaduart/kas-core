@@ -70,7 +70,7 @@ func TestConfigValidate(t *testing.T) {
 	if err := LegacyConfig().Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range []Config{{0, 3, 100}, {time.Minute, 0, 100}, {time.Minute, 3, 0}, {time.Minute, 3, 1001}} {
+	for _, c := range []Config{{StuckThreshold: 0, MaxAttemptsForRetry: 3, BatchSize: 100}, {StuckThreshold: time.Minute, MaxAttemptsForRetry: 0, BatchSize: 100}, {StuckThreshold: time.Minute, MaxAttemptsForRetry: 3, BatchSize: 0}, {StuckThreshold: time.Minute, MaxAttemptsForRetry: 3, BatchSize: 1001}} {
 		if c.Validate() == nil {
 			t.Fatalf("%+v should be invalid", c)
 		}

@@ -5,20 +5,30 @@
 // raise Alerts; the center decides when a Notification goes to a Sink.
 //
 // Rules:
+//
 //   - Dedup: the same alert key (source, kind, subject) raised again inside
 //     DedupWindow is counted, not notified again.
+//
 //   - Cooldown: per group (source, kind), at most one notification per
 //     Cooldown. Alerts raised during the cooldown are aggregated and go out in
 //     the next notification (Flush or the next Raise after the cooldown), so
 //     nothing is silently lost.
+//
 //   - Escalation: an alert more severe than the last one notified for its
 //     group bypasses the cooldown.
+//
 //   - Delivery failure: the group keeps its pending alerts and its cooldown is
 //     not started; the next Raise or Flush tries again.
 //
-// State is in memory and per process. Running several instances means several
-// independent centers; put the center behind the same leader lease the
-// producers already use, or accept one notification per instance.
+//   - Tenants: every key and group includes the tenant, so one tenant's
+//     repeats, cooldown or failing destination never hold back another's.
+//
+// State lives in memory and, with SetStore, is saved after every change and
+// restored on start (Restore), so a restart keeps dedup, cooldowns and alerts
+// whose delivery failed. Delivery happens before the save: a crash between
+// the two re-sends that notification after the restart (at least once; never
+// lost, possibly repeated). Several instances need one store document each or
+// a leader lease; two centers sharing a document overwrite each other.
 package alerts
 
 import (
@@ -52,6 +62,7 @@ func (s Severity) String() string {
 
 // Alert is one observation from a producer.
 type Alert struct {
+	Tenant   string // isolation boundary (clinic/customer); "" is a single-tenant install
 	Source   string // producer, e.g. "outbox-recovery"
 	Kind     string // what happened, e.g. "entry_exhausted"
 	Subject  string // what it happened to, e.g. an entry ID
@@ -60,12 +71,13 @@ type Alert struct {
 }
 
 // Key identifies an alert for deduplication.
-func (a Alert) Key() string { return a.Source + "\xff" + a.Kind + "\xff" + a.Subject }
+func (a Alert) Key() string { return a.group() + "\x1f" + a.Subject }
 
-func (a Alert) group() string { return a.Source + "\xff" + a.Kind }
+func (a Alert) group() string { return a.Tenant + "\x1f" + a.Source + "\x1f" + a.Kind }
 
 // Notification is what reaches the sink: one or more alerts of a group.
 type Notification struct {
+	Tenant     string    `json:"tenant,omitempty"`
 	Source     string    `json:"source"`
 	Kind       string    `json:"kind"`
 	Severity   string    `json:"severity"`
@@ -119,6 +131,29 @@ type group struct {
 	lastAt       time.Time
 }
 
+// GroupState is the persisted form of a group.
+type GroupState struct {
+	LastSent     time.Time `json:"lastSent" bson:"lastSent"`
+	LastSeverity Severity  `json:"lastSeverity" bson:"lastSeverity"`
+	Pending      []Alert   `json:"pending" bson:"pending"`
+	Duplicates   int       `json:"duplicates" bson:"duplicates"`
+	FirstAt      time.Time `json:"firstAt" bson:"firstAt"`
+	LastAt       time.Time `json:"lastAt" bson:"lastAt"`
+}
+
+// Snapshot is everything a restart needs.
+type Snapshot struct {
+	Seen   map[string]time.Time  `json:"seen" bson:"seen"`
+	Groups map[string]GroupState `json:"groups" bson:"groups"`
+}
+
+// Store saves and loads a center's snapshot. Load returns (nil, nil) when
+// nothing was saved yet.
+type Store interface {
+	Load(ctx context.Context) (*Snapshot, error)
+	Save(ctx context.Context, s Snapshot) error
+}
+
 // Center is safe for concurrent use.
 type Center struct {
 	cfg  Config
@@ -129,6 +164,57 @@ type Center struct {
 	seen   map[string]time.Time // key -> first raise inside the current window
 	groups map[string]*group
 	stats  map[Decision]int
+
+	store       Store
+	persistErrs int
+}
+
+// SetStore makes the center save its state after every change.
+func (c *Center) SetStore(s Store) { c.mu.Lock(); c.store = s; c.mu.Unlock() }
+
+// Restore loads a saved snapshot into an empty center. Call it before the
+// first Raise. Pending alerts come back pending; they go out on the next
+// Flush or Raise of their group, subject to the restored cooldown.
+func (c *Center) Restore(ctx context.Context, s Store) error {
+	snap, err := s.Load(ctx)
+	if err != nil || snap == nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, t := range snap.Seen {
+		c.seen[k] = t
+	}
+	for name, gs := range snap.Groups {
+		g := &group{lastSent: gs.LastSent, lastSeverity: gs.LastSeverity, duplicates: gs.Duplicates,
+			firstAt: gs.FirstAt, lastAt: gs.LastAt, pendingSet: map[string]bool{}}
+		for _, a := range gs.Pending {
+			g.pending = append(g.pending, a)
+			g.pendingSet[a.Key()] = true
+		}
+		c.groups[name] = g
+	}
+	return nil
+}
+
+// PersistErrors counts failed saves. A failed save keeps running in memory.
+func (c *Center) PersistErrors() int { c.mu.Lock(); defer c.mu.Unlock(); return c.persistErrs }
+
+func (c *Center) persistLocked(ctx context.Context) {
+	if c.store == nil {
+		return
+	}
+	snap := Snapshot{Seen: make(map[string]time.Time, len(c.seen)), Groups: make(map[string]GroupState, len(c.groups))}
+	for k, t := range c.seen {
+		snap.Seen[k] = t
+	}
+	for name, g := range c.groups {
+		snap.Groups[name] = GroupState{LastSent: g.lastSent, LastSeverity: g.lastSeverity, Pending: append([]Alert(nil), g.pending...),
+			Duplicates: g.duplicates, FirstAt: g.firstAt, LastAt: g.lastAt}
+	}
+	if err := c.store.Save(ctx, snap); err != nil {
+		c.persistErrs++
+	}
 }
 
 // New returns a center. now may be nil (time.Now).
@@ -149,6 +235,7 @@ func (c *Center) Raise(ctx context.Context, a Alert) (Decision, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.persistLocked(ctx)
 	now := c.now()
 	g := c.groups[a.group()]
 	if g == nil {
@@ -191,6 +278,7 @@ func (c *Center) Raise(ctx context.Context, a Alert) (Decision, error) {
 func (c *Center) Flush(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.persistLocked(ctx)
 	now := c.now()
 	for k, t := range c.seen {
 		if now.Sub(t) >= c.cfg.DedupWindow {
@@ -256,7 +344,7 @@ func (c *Center) deliverLocked(ctx context.Context, g *group, now time.Time, esc
 			n.Omitted++
 		}
 	}
-	n.Source, n.Kind, n.Severity, n.Summary = top.Source, top.Kind, top.Severity.String(), top.Summary
+	n.Tenant, n.Source, n.Kind, n.Severity, n.Summary = top.Tenant, top.Source, top.Kind, top.Severity.String(), top.Summary
 	if c.sink == nil {
 		return errors.New("alerts: no sink")
 	}

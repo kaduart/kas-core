@@ -2,7 +2,9 @@
 
 Regra desta migração: o comportamento do Node é preservado. Um defeito do legado não é corrigido em silêncio. Cada item abaixo tem um teste que o fixa.
 
-## Divergências intencionais da versão Go (precisam de aceite do Kadu)
+## Divergências intencionais da versão Go
+
+**DV-1 foi aceita pelo Kadu em 18/11/2026 como correção intencional:** o reaper não deve sobrescrever um evento que o worker já concluiu. DV-2 a DV-4 são consequências operacionais (contagem, limite de tempo, trava entre reapers) e não mudam o documento gravado.
 
 | Id | Node | Go | Por quê | Teste |
 |---|---|---|---|---|
@@ -11,7 +13,19 @@ Regra desta migração: o comportamento do Node é preservado. Um defeito do leg
 | DV-3 | Sem limite de tempo: um banco que não responde trava o ciclo, e `isRunning` fica verdadeiro para sempre | `-cycle-timeout` (padrão 2 min) | Robustez | `scripts/validate-event-reaper.sh` (pausa de 8 s) |
 | DV-4 | Trava só por processo (`isRunning`) | Lease com fencing entre processos e máquinas | Evitar dois executores | `TestFormerLeaseHolderIsFencedOut`, `TestOnlyOneLiveLeaseHolder` |
 
-Sem disputa entre escritores, DV-1 e DV-2 produzem exatamente o mesmo documento que o Node. Foi comprovado pelo oráculo em 10.000 eventos.
+**Alcance da equivalência.** A afirmação "0 divergências com o Node" vale **somente sem disputa entre escritores**, isto é, quando nenhum worker conclui, falha ou reivindica o evento entre a leitura e a escrita do reaper. Foi isso que o oráculo comparou em 10.000 eventos. No cenário de conclusão concorrente, o comportamento é **diferente por decisão** (DV-1): o Node grava `pending` por cima de `processed`, e a versão Go deixa `processed`. Esse cenário não entra na equivalência; ele é coberto por `TestCompletionBetweenReadAndWriteIsNotOverwritten`.
+
+## Trava entre reapers não é posse da execução
+
+São duas coisas diferentes, e esta entrega só resolve a primeira:
+
+| | O que garante | O que **não** garante |
+|---|---|---|
+| **Lease do executor** (`kas_event_reaper_lease`) | No máximo um reaper KAS grava por vez; um reaper antigo cujo lease foi tomado não grava (fencing) | Nada sobre os workers. Não impede que um worker continue rodando nem que conclua depois. |
+| **Escrita condicional do reaper** | Cada transição `processing → pending/failed` acontece no máximo uma vez por estado observado e não apaga uma conclusão já gravada | Não impede que um worker que estava rodando grave `processed` **depois** do resgate (o legado conclui sem condição; ver F-1) |
+| **Posse da execução pelo worker** (F-1) | Ainda **não existe** no legado | — |
+
+Os testes que dizem "cada evento foi movido exatamente uma vez" falam das **transições do reaper**, não do processamento. **Esta entrega não promete processamento exatamente uma vez**: o BullMQ reentrega jobs, e um worker resgatado pode ter executado efeitos externos antes de perder a posse.
 
 ## Defeitos do legado preservados (registrados, não corrigidos)
 

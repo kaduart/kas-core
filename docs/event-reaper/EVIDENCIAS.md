@@ -4,6 +4,10 @@ Executado em 18/11/2026 num contêiner descartável: go version go1.25.0 linux/a
 
 Legado de referência: fono-inova-crm-back@10d7e75a. Somas SHA-256 dos arquivos copiados em `legacy-oracle/eventreaper/LEGACY_SHA256SUMS`; o oráculo confere essas somas antes de rodar.
 
+Alcance: "0 divergências" vale para o cenário sem disputa entre escritores. A conclusão concorrente com o reaper é a divergência aceita DV-1 (ver DIVERGENCIAS.md). "Exatamente uma vez" nas linhas abaixo se refere às transições do reaper, não ao processamento dos eventos.
+
+Comandos e versões para reproduzir: README.md, seção 6.
+
 ## Testes do reaper (unitários, integração Mongo, oráculo)
 
 ```

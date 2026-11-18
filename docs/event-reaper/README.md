@@ -82,7 +82,36 @@ Nada disto foi feito. A ordem foi pensada para **nunca haver dois executores ati
 
 O que a KAS já gravou continua válido: são as mesmas transições que o Node faria.
 
-## 6. Como rodar a validação local
+## 6. Como reproduzir a validação local
+
+Versões usadas em 18/11/2026:
+
+| Item | Versão |
+|---|---|
+| Go | 1.25.0 (o `go.mod` exige 1.25; com Go 1.24 use `GOTOOLCHAIN=auto`) |
+| Driver Mongo Go | `go.mongodb.org/mongo-driver/v2` v2.3.0 |
+| MongoDB | `mongo:7` (`sha256:884c055bff8b7144ca44830d01826facd3083b33c4dea44b94a1476c62de3c32`), replica set de 1 nó |
+| PostgreSQL (suíte antiga) | `postgres:16` (`sha256:dd2bf3ce2dc83a81674cf7f217fcfd8a5009a4b325dda5b843bfee82a06cff6f`) |
+| Node / Mongoose (oráculo) | Node 22.23.5, Mongoose 8.24.3 (o mesmo do `package-lock.json` do CRM) |
+| staticcheck | 2025.1.1 |
+
+Variáveis: `KAS_TEST_MONGO_URI` (só loopback; os testes apagam bancos), `KAS_TEST_ORACLE_DIR` (pasta do oráculo), `KAS_TEST_DATABASE_URL` (Postgres da suíte antiga). Sem elas, os testes de integração são pulados, não falham.
+
+Suíte completa, como no CI:
+
+```bash
+docker run -d --name kaspg -e POSTGRES_USER=kas -e POSTGRES_PASSWORD=kas_teste_ci -e POSTGRES_DB=kas_core_test -p 127.0.0.1:5432:5432 postgres:16
+export KAS_TEST_DATABASE_URL='postgres://kas:kas_teste_ci@localhost:5432/kas_core_test?sslmode=disable'
+export KAS_TEST_MONGO_URI='mongodb://127.0.0.1:27017/?directConnection=true'
+export KAS_TEST_ORACLE_DIR=$PWD/legacy-oracle/eventreaper
+go test -count=1 ./...
+go vet ./...
+go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+CGO_ENABLED=1 go test -race -count=1 ./...
+(cd node-integration && npm test)
+```
+
+Passo a passo só do reaper:
 
 ```bash
 # testes unitários (sem banco)
@@ -103,8 +132,8 @@ scripts/validate-event-reaper.sh
 
 Os resultados abaixo estão em `EVIDENCIAS.md`.
 
-- **Oráculo:** 10.000 eventos fictícios, com todas as formas de `attempts`, idades em volta do limite e todos os status. O reaper Node sem modificação e o executor Go rodaram em cópias idênticas, deram **0 divergências documento a documento** e os mesmos totais (879 `pending`, 746 `failed`, 18 ciclos). Um teste de mutação (trocar 3 por 4) faz o oráculo falhar.
-- **Concorrência:** dois executores sem lease, em 1.000 eventos, moveram cada evento exatamente uma vez (só a escrita condicional os protegeu). Dois executores com lease, em 600 eventos, deram o mesmo resultado.
+- **Oráculo:** 10.000 eventos fictícios, com todas as formas de `attempts`, idades em volta do limite e todos os status. O reaper Node sem modificação e o executor Go rodaram em cópias idênticas, deram **0 divergências documento a documento, no cenário sem disputa entre escritores** (a conclusão concorrente é a divergência aceita DV-1) e os mesmos totais (879 `pending`, 746 `failed`, 18 ciclos). Um teste de mutação (trocar 3 por 4) faz o oráculo falhar.
+- **Concorrência entre reapers:** dois executores sem lease, em 1.000 eventos, fizeram cada **transição do reaper** exatamente uma vez (só a escrita condicional os protegeu). Isso não é garantia de processamento exatamente uma vez; ver DIVERGENCIAS.md, "Trava entre reapers não é posse da execução". Dois executores com lease, em 600 eventos, deram o mesmo resultado.
 - **Posse:** um ex-dono com lease expirado e tomado não escreve (`ErrLeaseLost`).
 - **Reinício:** processo cortado após 37 escritas; o próximo terminou os 213 restantes sem repetir nenhum.
 - **Falha do banco:** com o banco inalcançável, o ciclo é reportado como erro, sem travar. No ponta a ponta, o Mongo pausado por 8 s gerou 4 ciclos com erro, e os executores voltaram sozinhos.

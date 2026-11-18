@@ -447,6 +447,107 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/audit:
+    get:
+      tags: [Audit]
+      summary: Read audit records of the authenticated tenant
+      description: >-
+        Requires a valid service token and the capability `audit:read`, which is
+        separate from `audit:write`. The tenant comes from the service's own
+        authorization: a service allowed for exactly one tenant needs no tenant
+        parameter and can only read that tenant; a service allowed for several must
+        pass `tenant_id`, which is authorized like any other request, so it can only
+        select one of its own active tenants. Records of any other tenant are never
+        returned. Order is stable, by recorded_at (the server-assigned `received_at`,
+        microsecond resolution) and then by the store's record id. Pagination is by
+        an opaque cursor: pass the `next_cursor` of the previous page unchanged.
+        Unknown or repeated query parameters are rejected.
+      operationId: readAudit
+      security:
+        - ServiceIdentity: []
+          ServiceBearer: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+        - name: tenant_id
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/TenantID'
+          description: Required only for a service allowed for several tenants.
+        - name: entity_type
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+        - name: entity_id
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+          description: Requires entity_type.
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+            maxLength: 40
+          description: Keep records recorded at or after this RFC3339 instant.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+          description: Opaque; use the next_cursor of the previous page.
+      responses:
+        '200':
+          description: One page, possibly empty. next_cursor is absent on the last page.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditPage'
+        '400':
+          description: invalid_request (unknown or repeated parameter, invalid limit, since or entity value), invalid_cursor, or tenant_required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: capability_forbidden (no audit:read), tenant_forbidden or tenant_inactive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The selected tenant is not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          description: Capacity limit reached or audit storage could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /internal/v1/audit/events:
     post:
       tags: [Audit]
@@ -671,7 +772,7 @@ components:
   schemas:
     ServiceCapability:
       type: string
-      enum: ['config:read', 'audit:write', 'events:publish', 'events:consume']
+      enum: ['config:read', 'audit:write', 'audit:read', 'events:publish', 'events:consume']
       description: >-
         Startup-only capability. Missing/empty caller capability lists grant
         none. Unknown and duplicate values reject configuration loading.
@@ -1024,6 +1125,29 @@ components:
           maxLength: 40
           format: date-time
           description: Emitter-supplied RFC3339 time, not independently verified.
+        entity_type:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+          description: Optional entity the action was about. Both entity fields or neither; identifiers only.
+        entity_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+    AuditPage:
+      type: object
+      additionalProperties: false
+      required: [contract_version, items]
+      properties:
+        contract_version:
+          type: string
+          const: v1
+        items:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+        next_cursor:
+          type: string
+          description: Present only when more records follow.
     AuditEventResponse:
       type: object
       additionalProperties: false
@@ -1088,6 +1212,13 @@ components:
           maxLength: 40
           format: date-time
           description: Time assigned by the KAS process on receipt.
+        entity_type:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+          description: Optional entity the action was about. Both entity fields or neither; identifiers only.
+        entity_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
     ErrorResponse:
       type: object
       additionalProperties: false

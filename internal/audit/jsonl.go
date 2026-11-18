@@ -10,7 +10,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
+	"time"
 )
 
 const maxStoredLineBytes = 16 << 10
@@ -28,6 +30,17 @@ type JSONLStore struct {
 	// It is rebuilt from the whole file on open (memory grows with the file);
 	// if historical duplicates exist, the first record is kept.
 	index map[eventKey]Event
+	// byTenant holds the readable records of each tenant sorted by (recorded_at
+	// micros, line number), so reads are keyset-paginated without rescanning the
+	// file. Memory grows with the file, like index. lines counts every line in
+	// the file, including historical duplicates, and numbers new records.
+	byTenant map[string][]jsonlRecord
+	lines    int64
+}
+
+type jsonlRecord struct {
+	pos   Position
+	event Event
 }
 
 type durableFile interface {
@@ -59,7 +72,7 @@ func OpenJSONL(dataDir string) (*JSONLStore, error) {
 		_ = os.Remove(lockPath)
 		return nil, fmt.Errorf("sync audit lock: %w", err)
 	}
-	index, err := validateExistingFile(path)
+	index, byTenant, lines, err := validateExistingFile(path)
 	if err != nil {
 		_ = lock.Close()
 		_ = os.Remove(lockPath)
@@ -71,35 +84,36 @@ func OpenJSONL(dataDir string) (*JSONLStore, error) {
 		_ = os.Remove(lockPath)
 		return nil, fmt.Errorf("open audit file: %w", err)
 	}
-	return &JSONLStore{file: file, lock: lock, lockPath: lockPath, index: index}, nil
+	return &JSONLStore{file: file, lock: lock, lockPath: lockPath, index: index, byTenant: byTenant, lines: lines}, nil
 }
 
-func validateExistingFile(path string) (map[eventKey]Event, error) {
+func validateExistingFile(path string) (map[eventKey]Event, map[string][]jsonlRecord, int64, error) {
 	index := make(map[eventKey]Event)
+	byTenant := make(map[string][]jsonlRecord)
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return index, nil
+		return index, byTenant, 0, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, 0, err
 	}
 	defer file.Close()
 
 	info, err := file.Stat()
 	if err != nil {
-		return nil, err
+		return nil, nil, 0, err
 	}
 	if info.Size() > 0 {
 		last := make([]byte, 1)
 		if _, err := file.ReadAt(last, info.Size()-1); err != nil {
-			return nil, err
+			return nil, nil, 0, err
 		}
 		if last[0] != '\n' {
-			return nil, errors.New("last record is incomplete")
+			return nil, nil, 0, errors.New("last record is incomplete")
 		}
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return nil, err
+		return nil, nil, 0, err
 	}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 1024), maxStoredLineBytes)
@@ -108,16 +122,17 @@ func validateExistingFile(path string) (map[eventKey]Event, error) {
 		lineNumber++
 		event, ok := parseStoredLine(bytes.TrimSuffix(scanner.Bytes(), []byte{'\r'}))
 		if !ok {
-			return nil, fmt.Errorf("line %d is invalid", lineNumber)
+			return nil, nil, 0, fmt.Errorf("line %d is invalid", lineNumber)
 		}
 		if _, exists := index[keyOf(event)]; !exists {
 			index[keyOf(event)] = event
+			byTenant[event.TenantID] = insertRecord(byTenant[event.TenantID], recordOf(event, int64(lineNumber)))
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("audit line exceeds size limit or cannot be read: %w", err)
+		return nil, nil, 0, fmt.Errorf("audit line exceeds size limit or cannot be read: %w", err)
 	}
-	return index, nil
+	return index, byTenant, int64(lineNumber), nil
 }
 
 func parseStoredLine(line []byte) (Event, bool) {
@@ -161,6 +176,7 @@ func (s *JSONLStore) Append(ctx context.Context, event Event) error {
 		}
 		return ErrEventConflict
 	}
+	seq := s.lines + 1
 	n, err := s.file.Write(line)
 	if err != nil || n != len(line) {
 		if err == nil {
@@ -177,7 +193,76 @@ func (s *JSONLStore) Append(ctx context.Context, event Event) error {
 		s.index = make(map[eventKey]Event)
 	}
 	s.index[keyOf(event)] = event
+	s.lines = seq
+	if s.byTenant == nil {
+		s.byTenant = make(map[string][]jsonlRecord)
+	}
+	s.byTenant[event.TenantID] = insertRecord(s.byTenant[event.TenantID], recordOf(event, seq))
 	return nil
+}
+
+// recordOf positions an event. An unparsable receipt time cannot occur for a
+// validated event; it sorts first rather than failing a write that already
+// succeeded.
+func recordOf(event Event, seq int64) jsonlRecord {
+	received, _ := time.Parse(time.RFC3339Nano, event.ReceivedAt)
+	return jsonlRecord{pos: Position{RecordedMicros: micros(received), ID: seq}, event: event}
+}
+
+// insertRecord keeps records sorted by position. New records almost always go at
+// the end; concurrent writers can append slightly out of receipt order, so the
+// new record is moved back while it is smaller than its predecessor.
+func insertRecord(records []jsonlRecord, r jsonlRecord) []jsonlRecord {
+	records = append(records, r)
+	i := len(records) - 1
+	for i > 0 && records[i-1].pos.after(records[i].pos) {
+		records[i-1], records[i] = records[i], records[i-1]
+		i--
+	}
+	return records
+}
+
+// Query returns one page for the tenant of q after the cursor position.
+func (s *JSONLStore) Query(ctx context.Context, q Query, after *Position) (Page, error) {
+	if err := ctx.Err(); err != nil {
+		return Page{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.file == nil {
+		return Page{}, ErrStoreUnavailable
+	}
+	records := s.byTenant[q.TenantID]
+	start := 0
+	if after != nil {
+		start = sort.Search(len(records), func(i int) bool { return records[i].pos.after(*after) })
+	}
+	sinceMicros := int64(0)
+	hasSince := !q.Since.IsZero()
+	if hasSince {
+		sinceMicros = micros(q.Since)
+	}
+	var page Page
+	var last Position
+	for i := start; i < len(records); i++ {
+		r := records[i]
+		if hasSince && r.pos.RecordedMicros < sinceMicros {
+			continue
+		}
+		if q.EntityType != "" && r.event.EntityType != q.EntityType {
+			continue
+		}
+		if q.EntityID != "" && r.event.EntityID != q.EntityID {
+			continue
+		}
+		if len(page.Items) == q.Limit {
+			page.NextCursor = EncodeCursor(last)
+			return page, nil
+		}
+		page.Items = append(page.Items, r.event)
+		last = r.pos
+	}
+	return page, nil
 }
 
 // Ready reports whether the store is open and has not been poisoned by a

@@ -78,6 +78,12 @@ go run ./cmd/kas-core -config ./config.example.json -events-store postgres -addr
 - `GET /readyz` também verifica o armazenamento de eventos quando ele está habilitado.
 - A configuração continua em arquivo: tipos de evento, consumidores e vínculos com serviços só mudam com reinício, e consumidores adicionados depois não recebem entregas de eventos já publicados.
 
+### Leitura da auditoria (`audit:read`)
+
+`GET /v1/audit?entity_type=&entity_id=&since=&limit=&cursor=` devolve registros de auditoria de **um tenant**. Exige a capacidade `audit:read`, **separada** de `audit:write` (quem escreve não lê, e vice-versa). O tenant vem da autenticação do serviço: um serviço autorizado para um único tenant não manda nada e só lê esse tenant; um serviço autorizado para vários precisa enviar `tenant_id`, que é autorizado como qualquer outra requisição (só escolhe um dos seus próprios tenants ativos). Registros de outro tenant nunca são devolvidos, e o cursor guarda só uma posição, nunca um tenant.
+
+A ordem é estável por `recorded_at` (o `received_at` atribuído pela KAS, em microssegundos) e depois pelo id do registro (identidade do PostgreSQL ou número da linha no JSON Lines). O `limit` vai de 1 a 200 (padrão 50); valores inválidos, parâmetros desconhecidos ou repetidos e cursor malformado dão `400`. Funciona nos dois armazenamentos. No PostgreSQL a migração `0003` acrescenta `entity_type`/`entity_id` e os índices de leitura; o papel de runtime só precisa de `SELECT` (que já tem). O contrato de escrita ganhou os campos **opcionais** `entity_type` e `entity_id` (juntos ou nenhum, só identificadores); quem não os envia continua funcionando. Detalhes e limites (inclusive o caso de um registro confirmado depois com `recorded_at` anterior) em [contract/v1/audit-events.md](contract/v1/audit-events.md) e no [openapi.yaml](openapi.yaml).
+
 ## Módulo de configuração
 
 Contrato `v1`: `POST /internal/v1/config/evaluate`, descrito em [contract/v1/config-evaluate.md](contract/v1/config-evaluate.md) e em [openapi.yaml](openapi.yaml). O esquema JSON declara chaves, tipo (`integer`, `boolean`, `string`) e faixa opcional de inteiros. O serviço autenticado precisa estar autorizado para o tenant solicitado e possuir a capacidade `config:read`. A configuração é somente leitura durante a vida do processo.
@@ -115,7 +121,7 @@ Para validar o código atual no WSL, execute os comandos de [VALIDACAO-AMANHA.md
 
 O workflow [KAS Core CI](.github/workflows/ci.yml) executa os mesmos quatro checks em `ubuntu-latest` no push à branch `kas-core/validacao-core`, em pull requests para `main` e sob acionamento manual. Usa apenas tokens fictícios escritos nos testes; não lê segredos do repositório, não acessa produção e não faz deploy.
 
-Serviços recebem capacidades na configuração de inicialização: `config:read`, `audit:write`, `events:publish`, `events:consume` ou combinações. Campo ausente/vazio concede nenhuma capacidade; nomes desconhecidos ou repetidos impedem a inicialização. Para manter o funcionamento do exemplo, `config.example.json` declara explicitamente ambas para os dois serviços fictícios. A autorização por tenant continua obrigatória em conjunto com a capacidade.
+Serviços recebem capacidades na configuração de inicialização: `config:read`, `audit:write`, `audit:read`, `events:publish`, `events:consume` ou combinações. Campo ausente/vazio concede nenhuma capacidade; nomes desconhecidos ou repetidos impedem a inicialização. Para manter o funcionamento do exemplo, `config.example.json` declara explicitamente ambas para os dois serviços fictícios. A autorização por tenant continua obrigatória em conjunto com a capacidade.
 
 ## Limites
 

@@ -34,6 +34,11 @@ type Submission struct {
 	Result          string `json:"result"`
 	CorrelationID   string `json:"correlation_id"`
 	OccurredAt      string `json:"occurred_at"`
+	// EntityType and EntityID optionally identify the entity the action was
+	// about, so records can be read back by entity. Both or neither; identifiers
+	// only, never names or other personal data.
+	EntityType string `json:"entity_type,omitempty"`
+	EntityID   string `json:"entity_id,omitempty"`
 }
 
 // Event is the persisted representation. ReceivedAt is set by the KAS server.
@@ -49,6 +54,8 @@ type Event struct {
 	CorrelationID   string `json:"correlation_id"`
 	OccurredAt      string `json:"occurred_at"`
 	ReceivedAt      string `json:"received_at"`
+	EntityType      string `json:"entity_type,omitempty"`
+	EntityID        string `json:"entity_id,omitempty"`
 }
 
 func ValidateSubmission(s Submission) error {
@@ -66,6 +73,12 @@ func ValidateSubmission(s Submission) error {
 	if len(s.OccurredAt) > 40 {
 		return ErrInvalidEvent
 	}
+	if (s.EntityType == "") != (s.EntityID == "") {
+		return ErrInvalidEvent
+	}
+	if s.EntityType != "" && (!identifierPattern.MatchString(s.EntityType) || !identifierPattern.MatchString(s.EntityID)) {
+		return ErrInvalidEvent
+	}
 	if _, err := time.Parse(time.RFC3339Nano, s.OccurredAt); err != nil {
 		return ErrInvalidEvent
 	}
@@ -77,6 +90,7 @@ func ValidateEvent(e Event) error {
 		ContractVersion: e.ContractVersion, EventID: e.EventID, TenantID: e.TenantID,
 		ServiceID: e.ServiceID, Actor: e.Actor, Action: e.Action, Resource: e.Resource,
 		Result: e.Result, CorrelationID: e.CorrelationID, OccurredAt: e.OccurredAt,
+		EntityType: e.EntityType, EntityID: e.EntityID,
 	}
 	if err := ValidateSubmission(s); err != nil || strings.TrimSpace(e.ReceivedAt) == "" || len(e.ReceivedAt) > 40 {
 		return ErrInvalidEvent

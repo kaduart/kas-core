@@ -20,6 +20,9 @@ const ContractVersion = "v1"
 const (
 	CapabilityConfigRead = "config:read"
 	CapabilityAuditWrite = "audit:write"
+	// CapabilityAuditRead lets a service read back audit records of its tenant.
+	// It is separate from audit:write: writing never implies reading.
+	CapabilityAuditRead = "audit:read"
 	// CapabilityEventsPublish lets a service publish events through the outbox.
 	CapabilityEventsPublish = "events:publish"
 	// CapabilityEventsConsume lets a service claim, ack and nack deliveries of
@@ -39,12 +42,15 @@ var (
 	// ErrConsumerForbidden covers an unknown consumer and a consumer that is not
 	// bound to the authenticated service; callers cannot tell them apart.
 	ErrConsumerForbidden = errors.New("consumer_forbidden")
-	tenantIDPattern      = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
-	serviceIDPattern     = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
-	envNamePattern       = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
-	keyPattern           = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
-	eventTypePattern     = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
-	consumerIDPattern    = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
+	// ErrTenantRequired means the authenticated service may act for several
+	// tenants and none was selected.
+	ErrTenantRequired = errors.New("tenant_required")
+	tenantIDPattern   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+	serviceIDPattern  = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+	envNamePattern    = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
+	keyPattern        = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
+	eventTypePattern  = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$`)
+	consumerIDPattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
 )
 
 type rawConfig struct {
@@ -256,7 +262,7 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 		capabilities := make(map[string]struct{}, len(rawCaller.Capabilities))
 		for _, capability := range rawCaller.Capabilities {
 			switch capability {
-			case CapabilityConfigRead, CapabilityAuditWrite, CapabilityEventsPublish, CapabilityEventsConsume:
+			case CapabilityConfigRead, CapabilityAuditWrite, CapabilityAuditRead, CapabilityEventsPublish, CapabilityEventsConsume:
 			default:
 				return nil, fmt.Errorf("service caller %q declares an unknown capability", serviceID)
 			}
@@ -484,6 +490,32 @@ func validateValue(rule KeyRule, rawValue json.RawMessage) error {
 	return nil
 }
 
+// ResolveTenant authenticates the service and returns the tenant it acts for.
+// The tenant comes from the service's own authorization: a service allowed for
+// exactly one tenant needs no selection. A service allowed for several must name
+// one in requested, and that choice is then authorized like any other request
+// (it must be one of its own tenants, active, and the capability must be held).
+// A single-tenant service that names another tenant is refused.
+func (s *Store) ResolveTenant(serviceID, token, requested, capability string) (string, error) {
+	c, exists := s.callers[serviceID]
+	if !exists || !validToken(token) || !s.tokenMatches(c, token) {
+		return "", ErrUnauthorized
+	}
+	tenantID := requested
+	if tenantID == "" {
+		if len(c.tenants) != 1 {
+			return "", ErrTenantRequired
+		}
+		for only := range c.tenants {
+			tenantID = only
+		}
+	}
+	if err := s.authorizeTenant(c, tenantID, capability); err != nil {
+		return "", err
+	}
+	return tenantID, nil
+}
+
 func (s *Store) Authorize(serviceID, token, tenantID, capability string) error {
 	c, exists := s.callers[serviceID]
 	if !exists || !validToken(token) {
@@ -492,6 +524,12 @@ func (s *Store) Authorize(serviceID, token, tenantID, capability string) error {
 	if !s.tokenMatches(c, token) {
 		return ErrUnauthorized
 	}
+	return s.authorizeTenant(c, tenantID, capability)
+}
+
+// authorizeTenant applies the tenant and capability rules to an already
+// authenticated caller.
+func (s *Store) authorizeTenant(c caller, tenantID, capability string) error {
 	active, registered := s.tenants[tenantID]
 	if !registered {
 		return ErrTenantNotFound

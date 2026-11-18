@@ -71,6 +71,12 @@ jobs:
           npm install --no-audit --no-fund
           echo "KAS_TEST_ORACLE_V2_DIR=$GITHUB_WORKSPACE/legacy-oracle/eventreaper-v2" >> "$GITHUB_ENV"
 
+      - name: Legacy oracle (unmodified CRM outbox dispatcher) dependencies
+        working-directory: legacy-oracle/outbox
+        run: |
+          npm install --no-audit --no-fund
+          echo "KAS_TEST_ORACLE_OUTBOX_DIR=$GITHUB_WORKSPACE/legacy-oracle/outbox" >> "$GITHUB_ENV"
+
       - name: Go tests
         run: go test ./...
 

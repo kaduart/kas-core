@@ -2,6 +2,7 @@ package alerts
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync"
@@ -53,5 +54,42 @@ func (s LogSink) Deliver(_ context.Context, n Notification) error {
 	s.Logger.Log(context.Background(), level, "alert", "source", n.Source, "kind", n.Kind, "severity", n.Severity,
 		"summary", n.Summary, "alerts", n.Alerts, "duplicates", n.Duplicates, "subjects", n.Subjects,
 		"omittedSubjects", n.Omitted, "escalation", n.Escalation)
+	return nil
+}
+
+// MemoryStore keeps the snapshot as JSON bytes, the way a real store would
+// serialise it, so a "restart" in tests goes through the same round trip.
+type MemoryStore struct {
+	mu   sync.Mutex
+	data []byte
+	// FailSaves makes the next N saves fail.
+	FailSaves int
+}
+
+func (m *MemoryStore) Load(context.Context) (*Snapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.data == nil {
+		return nil, nil
+	}
+	var s Snapshot
+	if err := json.Unmarshal(m.data, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+func (m *MemoryStore) Save(_ context.Context, s Snapshot) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailSaves > 0 {
+		m.FailSaves--
+		return errors.New("simulated store failure")
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	m.data = b
 	return nil
 }

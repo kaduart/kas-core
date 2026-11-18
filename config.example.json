@@ -32,7 +32,7 @@
     "fono-node-local": {
       "token_env": "KAS_CALLER_FONO_NODE_TOKEN",
       "tenants": ["tenant-demo-a"],
-      "capabilities": ["config:read", "audit:write", "events:publish", "events:consume"]
+      "capabilities": ["config:read", "audit:write", "audit:read", "events:publish", "events:consume"]
     },
     "demo-node-b": {
       "token_env": "KAS_CALLER_DEMO_NODE_B_TOKEN",

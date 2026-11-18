@@ -467,3 +467,79 @@ func TestInvalidRotationConfigurationIsRejected(t *testing.T) {
 		})
 	}
 }
+
+const resolveFixture = `{
+  "contract_version":"v1","config_version":"fixture-resolve",
+  "tenant_registry":[{"id":"tenant-demo-a","status":"active"},{"id":"tenant-demo-b","status":"active"},{"id":"tenant-demo-c","status":"inactive"}],
+  "key_schema":{"k.v":{"type":"integer"}},"tenants":{"tenant-demo-a":{"k.v":1}},
+  "callers":{
+    "one":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["audit:read"]},
+    "many":{"token_env":"TOKEN_B","tenants":["tenant-demo-a","tenant-demo-b","tenant-demo-c"],"capabilities":["audit:read"]},
+    "writer":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["audit:write"]}
+  }
+}`
+
+func TestResolveTenantComesFromTheServiceAuthorization(t *testing.T) {
+	store, err := newTestStore(t, resolveFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tenant, err := store.ResolveTenant("one", tokenA, "", CapabilityAuditRead); err != nil || tenant != "tenant-demo-a" {
+		t.Fatalf("single-tenant service = %q, %v", tenant, err)
+	}
+	if tenant, err := store.ResolveTenant("one", tokenA, "tenant-demo-a", CapabilityAuditRead); err != nil || tenant != "tenant-demo-a" {
+		t.Fatalf("restating the own tenant = %q, %v", tenant, err)
+	}
+	cases := []struct {
+		name                          string
+		service, token, tenant, capab string
+		want                          error
+	}{
+		{"single-tenant asks for another tenant", "one", tokenA, "tenant-demo-b", CapabilityAuditRead, ErrTenantForbidden},
+		{"multi-tenant must select", "many", tokenB, "", CapabilityAuditRead, ErrTenantRequired},
+		{"multi-tenant picks one it has", "many", tokenB, "tenant-demo-b", CapabilityAuditRead, nil},
+		{"multi-tenant picks an unregistered tenant", "many", tokenB, "tenant-demo-z", CapabilityAuditRead, ErrTenantNotFound},
+		{"multi-tenant picks an inactive tenant", "many", tokenB, "tenant-demo-c", CapabilityAuditRead, ErrTenantInactive},
+		{"missing capability", "writer", tokenA, "", CapabilityAuditRead, ErrCapabilityForbidden},
+		{"write does not imply read", "writer", tokenA, "tenant-demo-a", CapabilityAuditRead, ErrCapabilityForbidden},
+		{"wrong token", "one", tokenB, "", CapabilityAuditRead, ErrUnauthorized},
+		{"unknown service", "ghost", tokenA, "", CapabilityAuditRead, ErrUnauthorized},
+		{"malformed token", "one", "short", "", CapabilityAuditRead, ErrUnauthorized},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tenant, err := store.ResolveTenant(tc.service, tc.token, tc.tenant, tc.capab)
+			if !errors.Is(err, tc.want) || (tc.want == nil && (err != nil || tenant == "")) {
+				t.Fatalf("ResolveTenant = %q, %v; want %v", tenant, err, tc.want)
+			}
+			if tc.want != nil && tenant != "" {
+				t.Fatalf("a refused request must return no tenant, got %q", tenant)
+			}
+		})
+	}
+}
+
+func TestResolveTenantChecksTheTokenOnce(t *testing.T) {
+	store, err := newTestStore(t, resolveFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := store.ResolveTenant("one", tokenA, "", CapabilityAuditRead); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if primary, next := store.TokenSlotUsage(); primary != 3 || next != 0 {
+		t.Fatalf("token checks = %d primary, %d next; each request must count once", primary, next)
+	}
+}
+
+func TestAuditReadIsAKnownCapability(t *testing.T) {
+	if _, err := newTestStore(t, resolveFixture); err != nil {
+		t.Fatal(err)
+	}
+	bad := strings.Replace(resolveFixture, `"audit:read"]`, `"audit:read","audit:read"]`, 1)
+	if _, err := newTestStore(t, bad); err == nil {
+		t.Fatal("a duplicate audit:read must be rejected")
+	}
+}

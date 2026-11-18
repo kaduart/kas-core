@@ -91,7 +91,7 @@ func TestPostgresMigrationIsIdempotentAndConcurrentSafe(t *testing.T) {
 	if err := store.pool.QueryRow(context.Background(), "SELECT count(*) FROM audit_schema_migrations").Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
-	if want := 2; applied != want {
+	if want := 3; applied != want {
 		t.Fatalf("migrations recorded = %d, want %d", applied, want)
 	}
 }

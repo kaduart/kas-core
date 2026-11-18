@@ -88,6 +88,7 @@ func newHandler(store *configstore.Store, auditService *audit.Service, maxConcur
 	h.mux.HandleFunc("/internal/v1/config/evaluate", h.evaluate)
 	h.mux.HandleFunc("/internal/v1/audit/events", h.recordAuditEvent)
 	h.mux.HandleFunc("/internal/v1/events", h.publishEvent)
+	h.mux.HandleFunc("/v1/audit", h.readAudit)
 	h.mux.HandleFunc("/internal/v1/events/deliveries/claim", h.claimDeliveries)
 	h.mux.HandleFunc("/internal/v1/events/deliveries/ack", h.ackDelivery)
 	h.mux.HandleFunc("/internal/v1/events/deliveries/nack", h.nackDelivery)
@@ -399,6 +400,8 @@ func (h *Handler) writeAuthorizationError(w http.ResponseWriter, r *http.Request
 		h.writeError(w, r, http.StatusForbidden, "tenant_forbidden", "service is not authorized for this tenant")
 	case errors.Is(err, configstore.ErrCapabilityForbidden):
 		h.writeError(w, r, http.StatusForbidden, "capability_forbidden", "service is not authorized for this capability")
+	case errors.Is(err, configstore.ErrTenantRequired):
+		h.writeError(w, r, http.StatusBadRequest, "tenant_required", "this service is authorized for several tenants; pass tenant_id")
 	case errors.Is(err, configstore.ErrConsumerForbidden):
 		h.writeError(w, r, http.StatusForbidden, "consumer_forbidden", "service is not authorized for this consumer")
 	default:

@@ -78,6 +78,8 @@ func (s *Service) Submit(ctx context.Context, authenticatedService string, submi
 		Result:          submission.Result,
 		CorrelationID:   submission.CorrelationID,
 		OccurredAt:      submission.OccurredAt,
+		EntityType:      submission.EntityType,
+		EntityID:        submission.EntityID,
 		ReceivedAt:      s.now().UTC().Format(time.RFC3339Nano),
 	}
 	if err := s.repository.Append(ctx, event); err != nil {

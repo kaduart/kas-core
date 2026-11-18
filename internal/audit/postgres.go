@@ -108,12 +108,14 @@ func (s *PostgresStore) Append(ctx context.Context, event Event) error {
 	defer cancel()
 	tag, err := s.pool.Exec(ctx, `INSERT INTO audit_events
 		(contract_version, event_id, tenant_id, service_id, actor, action, resource, result,
-		 correlation_id, occurred_at_raw, received_at_raw, occurred_at, received_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		 correlation_id, occurred_at_raw, received_at_raw, occurred_at, received_at,
+		 entity_type, entity_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		ON CONFLICT (tenant_id, service_id, event_id) DO NOTHING`,
 		event.ContractVersion, event.EventID, event.TenantID, event.ServiceID, event.Actor,
 		event.Action, event.Resource, event.Result, event.CorrelationID,
-		event.OccurredAt, event.ReceivedAt, occurred.UTC(), received.UTC())
+		event.OccurredAt, event.ReceivedAt, occurred.UTC(), received.UTC(),
+		nullable(event.EntityType), nullable(event.EntityID))
 	if err != nil {
 		return ErrStoreUnavailable
 	}
@@ -122,19 +124,102 @@ func (s *PostgresStore) Append(ctx context.Context, event Event) error {
 	}
 	// Identity already stored: compare with the committed row.
 	var stored Event
+	var entityType, entityID *string
 	err = s.pool.QueryRow(ctx, `SELECT contract_version, event_id, tenant_id, service_id, actor,
-		action, resource, result, correlation_id, occurred_at_raw, received_at_raw
+		action, resource, result, correlation_id, occurred_at_raw, received_at_raw, entity_type, entity_id
 		FROM audit_events WHERE tenant_id = $1 AND service_id = $2 AND event_id = $3`,
 		event.TenantID, event.ServiceID, event.EventID).Scan(&stored.ContractVersion, &stored.EventID,
 		&stored.TenantID, &stored.ServiceID, &stored.Actor, &stored.Action, &stored.Resource,
-		&stored.Result, &stored.CorrelationID, &stored.OccurredAt, &stored.ReceivedAt)
+		&stored.Result, &stored.CorrelationID, &stored.OccurredAt, &stored.ReceivedAt, &entityType, &entityID)
 	if err != nil {
 		return ErrStoreUnavailable
 	}
+	stored.EntityType, stored.EntityID = deref(entityType), deref(entityID)
 	if sameContent(stored, event) {
 		return &DuplicateError{Stored: stored}
 	}
 	return ErrEventConflict
+}
+
+func nullable(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// Query reads one page for the tenant of q in the stable order (received_at, id).
+// The tenant condition is part of every query and of the index prefix, so no
+// other tenant's rows can be read. It needs only SELECT on audit_events.
+func (s *PostgresStore) Query(ctx context.Context, q Query, after *Position) (Page, error) {
+	if err := ctx.Err(); err != nil {
+		return Page{}, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed || s.pool == nil {
+		return Page{}, ErrStoreUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, postgresAppendTimeout)
+	defer cancel()
+
+	args := []any{q.TenantID}
+	where := "tenant_id = $1"
+	add := func(cond string, value any) {
+		args = append(args, value)
+		where += " AND " + fmt.Sprintf(cond, len(args))
+	}
+	if !q.Since.IsZero() {
+		add("received_at >= $%d", q.Since.UTC())
+	}
+	if q.EntityType != "" {
+		add("entity_type = $%d", q.EntityType)
+	}
+	if q.EntityID != "" {
+		add("entity_id = $%d", q.EntityID)
+	}
+	if after != nil {
+		args = append(args, time.UnixMicro(after.RecordedMicros).UTC(), after.ID)
+		where += fmt.Sprintf(" AND (received_at, id) > ($%d, $%d)", len(args)-1, len(args))
+	}
+	args = append(args, q.Limit+1)
+	rows, err := s.pool.Query(ctx, `SELECT id, received_at, contract_version, event_id, tenant_id, service_id, actor,
+		action, resource, result, correlation_id, occurred_at_raw, received_at_raw, entity_type, entity_id
+		FROM audit_events WHERE `+where+fmt.Sprintf(" ORDER BY received_at, id LIMIT $%d", len(args)), args...)
+	if err != nil {
+		return Page{}, ErrStoreUnavailable
+	}
+	defer rows.Close()
+	var page Page
+	var last Position
+	for rows.Next() {
+		var id int64
+		var receivedAt time.Time
+		var e Event
+		var entityType, entityID *string
+		if err := rows.Scan(&id, &receivedAt, &e.ContractVersion, &e.EventID, &e.TenantID, &e.ServiceID, &e.Actor,
+			&e.Action, &e.Resource, &e.Result, &e.CorrelationID, &e.OccurredAt, &e.ReceivedAt, &entityType, &entityID); err != nil {
+			return Page{}, ErrStoreUnavailable
+		}
+		e.EntityType, e.EntityID = deref(entityType), deref(entityID)
+		if len(page.Items) == q.Limit {
+			page.NextCursor = EncodeCursor(last)
+			break
+		}
+		page.Items = append(page.Items, e)
+		last = Position{RecordedMicros: receivedAt.UnixMicro(), ID: id}
+	}
+	if err := rows.Err(); err != nil {
+		return Page{}, ErrStoreUnavailable
+	}
+	return page, nil
 }
 
 // Ready reports whether the database currently answers a ping.

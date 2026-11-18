@@ -1,6 +1,6 @@
-# KAS Events contract v1 (outbox, phases 1 and 2)
+# KAS Events contract v1 (outbox, phases 1 to 3)
 
-Durable event publication with identity-based idempotency, and delivery to consumers with leases, retries and a `dead` state. The outbox lives in PostgreSQL. **Delivery is at-least-once, not exactly-once**: consumers must be idempotent. There is no ordering guarantee, not even per subject or tenant.
+Durable event publication with identity-based idempotency, and delivery to consumers with leases, retries and a `dead` state, consumed either by in-process handlers or by pull over HTTP. The outbox lives in PostgreSQL. **Delivery is at-least-once, not exactly-once**: consumers must be idempotent. There is no ordering guarantee, not even per subject or tenant.
 
 ## Endpoint
 
@@ -75,15 +75,17 @@ Errors use `{ "contract_version": "v1", "error": { "code": "...", "message": "..
 ```json
 "event_types": ["settings.updated"],
 "event_consumers": {
-  "consumer-demo": { "event_types": ["settings.updated"], "tenants": ["tenant-demo-a"] }
+  "consumer-demo": { "event_types": ["settings.updated"], "tenants": ["tenant-demo-a"], "service": "fono-node-local" }
 }
 ```
+
+`service` binds the consumer to one caller so it can pull over HTTP; that caller needs the capability `events:consume`. A consumer without `service` is for in-process handlers only and cannot be pulled.
 
 When an event is published, one delivery is created for every consumer subscribed to its type **and** its tenant. A consumer never receives events from a tenant it is not listed for. Consumers added to the configuration later receive no deliveries for events published earlier.
 
 ## Delivery (phase 2)
 
-Consumers are in-process handlers, used for tests; **there is no webhook and no external call in this phase**. The shipped executable registers no handlers, so deliveries stay `pending` until a later phase adds a consumption mechanism (pull is the proposed next step).
+Consumers are either in-process handlers (used for tests; the shipped executable registers none) or pull consumers (next section). **There is no webhook and no external call.**
 
 A delivery has one of four states: `pending`, `in_flight`, `delivered`, `dead`.
 
@@ -96,9 +98,59 @@ A delivery has one of four states: `pending`, `in_flight`, `delivered`, `dead`.
 
 **Why duplicates happen:** a crash, a timeout or a lost lease after the handler did its work but before the outcome was recorded leads to a second delivery. Handlers must deduplicate by `(tenant_id, service_id, event_id)`.
 
+## Pull consumption (phase 3)
+
+A consumer fetches deliveries, handles them, then confirms. All three endpoints are `POST`, JSON, authenticated with `X-KAS-Service` and the service token, and need the capability **`events:consume`**. A service can act only for the consumers bound to it by `service` in the configuration; an unknown consumer, an in-process consumer and another service's consumer all answer the same `403 consumer_forbidden`. The scope is the consumer's declared event types and tenants, **intersected with the service's own tenants**, and inactive tenants are excluded. The request cannot widen it: there is no tenant or type parameter. Consumers added to the configuration later are **not** given events published before (no reprocessing).
+
+### `POST /internal/v1/events/deliveries/claim`
+
+```json
+{ "contract_version": "v1", "consumer_id": "consumer-demo", "max_deliveries": 10, "lease_seconds": 60 }
+```
+
+`max_deliveries`: 1 to 50 (default 10). `lease_seconds`: 5 to 300 (default 60). Returns `200` with the due deliveries, possibly an empty list:
+
+```json
+{ "contract_version": "v1", "deliveries": [ {
+    "delivery_id": 7, "attempt": 1, "lease_token": "0123456789abcdef0123456789abcdef",
+    "lease_expires_at": "2026-11-17T12:01:00Z",
+    "event": { "contract_version": "v1", "event_id": "evt.demo-01", "tenant_id": "tenant-demo-a", "service_id": "fono-node-local",
+               "event_type": "settings.updated", "correlation_id": "corr.demo-01", "occurred_at": "2026-11-17T12:00:00Z",
+               "received_at": "2026-11-17T12:00:01Z", "payload": { "version": 3 } } } ] }
+```
+
+Claiming counts as an attempt. The `lease_token` is a secret for this claim: do not log it. A delivery whose lease expires without ack or nack is handed out again as a new attempt with a new token.
+
+### `POST /internal/v1/events/deliveries/ack` and `.../nack`
+
+```json
+{ "contract_version": "v1", "consumer_id": "consumer-demo", "delivery_id": 7, "attempt": 1, "lease_token": "0123456789abcdef0123456789abcdef" }
+```
+
+`nack` also accepts `"permanent": true`. Both apply only when `delivery_id`, `attempt`, `consumer_id` and `lease_token` match the current lease; otherwise they answer `409 lease_lost` and change nothing (the lease expired and was taken over, or the delivery was already settled).
+
+- `ack` → `200 {"status":"delivered"}`. A repeated ack of a delivery already delivered for that attempt also answers `200`.
+- `nack` → `200 {"status":"pending","next_attempt_at":"..."}`: the delivery returns after the exponential backoff with jitter (base 2 s, doubling, ±20%, cap 5 min). When the attempts are used up (5) or `permanent` is true, it answers `200 {"status":"dead"}`. Dead rows are kept. `nack` is not idempotent: a repeat answers `409`.
+
+There is no field for free text. Only short codes are stored (`consumer_nack`, `consumer_permanent`, `max_attempts`, `lease_expired`).
+
+### Pull errors
+
+| HTTP | Code | Meaning |
+|---:|---|---|
+| 400 | `invalid_request` | Malformed JSON, unknown field, duplicate key, bad contract version, or a value outside the limits above |
+| 401 | `unauthorized` | Unknown service or invalid/missing credential |
+| 403 | `capability_forbidden` | The service lacks `events:consume` |
+| 403 | `consumer_forbidden` | Unknown consumer, or not bound to the authenticated service |
+| 409 | `lease_lost` | The lease token or attempt no longer matches |
+| 413 / 415 | `payload_too_large` / `unsupported_media_type` | Body above 4 KiB / not JSON |
+| 503 | `events_unavailable` | Event storage is disabled or failed |
+
+Delivery remains **at-least-once**: a consumer that handled a delivery but did not manage to ack (crash, timeout, lost response) will see it again after the lease expires. Pull consumers must be idempotent by `(tenant_id, service_id, event_id)`. There is no ordering.
+
 ## Retention
 
-Documented policy for a later cleanup mechanism: keep `delivered` deliveries and their events for **30 days**, and `dead` deliveries for **90 days**. **Nothing is deleted automatically in this phase**, and the runtime role has no `DELETE` privilege. Without cleanup, tables grow without bound. The columns `delivered_at` and `dead_at` support computing the retention windows.
+Policy: keep `delivered` deliveries for **30 days** and `dead` deliveries for **90 days**; an event is removed when it has no delivery left and was received more than 30 days ago (events that never had a consumer included). `pending` and `in_flight` deliveries, and their events, are never removed. **Nothing is deleted automatically.** An operator runs the executable with `-events-purge` (add `-events-purge-dry-run` to only count): it reads `KAS_EVENTS_MIGRATION_DATABASE_URL`, deletes in batches of 1000 and exits. It needs `DELETE`, so it must use the migration (schema owner) role; the runtime role cannot delete. In a dry run the event count is a lower bound, because events freed by deliveries that were not deleted yet are not visible. Without running the purge, tables grow without bound.
 
 ## Database roles
 
@@ -108,4 +160,4 @@ Use two roles. The migration role owns the schema and runs `-events-migrate-only
 - `outbox_deliveries`: `INSERT`, `SELECT`, `UPDATE` — never `DELETE` or `TRUNCATE`;
 - `events_schema_migrations`: `SELECT`; plus `USAGE` on the schema and `CONNECT` on the database.
 
-Start the server with `-events-auto-migrate=false` so it only verifies that migrations were applied. The runtime role can still rewrite delivery state; nothing here is tamper-evident or immutable.
+Start the server with `-events-auto-migrate=false` so it only verifies that migrations were applied. The purge uses the migration role, never the runtime role. The runtime role can still rewrite delivery state; nothing here is tamper-evident or immutable.

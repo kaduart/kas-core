@@ -179,6 +179,21 @@ func (s *PostgresStore) compareWithStored(ctx context.Context, pool *pgxpool.Poo
 // Claiming counts as an attempt. It uses FOR UPDATE SKIP LOCKED so concurrent
 // workers never claim the same row.
 func (s *PostgresStore) Claim(ctx context.Context, workerID string, consumers []string, now time.Time, lease time.Duration, maxAttempts, limit int) ([]Delivery, error) {
+	return s.claim(ctx, workerID, consumers, nil, nil, now, lease, maxAttempts, limit)
+}
+
+// ClaimFor leases deliveries for one pull consumer, restricted to the given
+// tenants and event types. leaseToken identifies this claim: only the holder of
+// the token can ack or nack the claimed deliveries. Empty tenants or types
+// return nothing (they never mean "unrestricted").
+func (s *PostgresStore) ClaimFor(ctx context.Context, leaseToken, consumerID string, tenants, eventTypes []string, now time.Time, lease time.Duration, maxAttempts, limit int) ([]Delivery, error) {
+	if len(tenants) == 0 || len(eventTypes) == 0 {
+		return nil, nil
+	}
+	return s.claim(ctx, leaseToken, []string{consumerID}, tenants, eventTypes, now, lease, maxAttempts, limit)
+}
+
+func (s *PostgresStore) claim(ctx context.Context, workerID string, consumers, tenants, eventTypes []string, now time.Time, lease time.Duration, maxAttempts, limit int) ([]Delivery, error) {
 	if len(consumers) == 0 || limit < 1 {
 		return nil, nil
 	}
@@ -200,19 +215,21 @@ func (s *PostgresStore) Claim(ctx context.Context, workerID string, consumers []
 		UPDATE outbox_deliveries
 		SET status = 'in_flight', attempts = attempts + 1, locked_until = $2, locked_by = $3
 		WHERE id IN (
-			SELECT id FROM outbox_deliveries
-			WHERE consumer_id = ANY($4)
-			  AND ((status = 'pending' AND next_attempt_at <= $1)
-			    OR (status = 'in_flight' AND locked_until < $1 AND attempts < $5))
-			ORDER BY next_attempt_at, id
+			SELECT d.id FROM outbox_deliveries d JOIN outbox_events e ON e.id = d.event_pk
+			WHERE d.consumer_id = ANY($4)
+			  AND ((d.status = 'pending' AND d.next_attempt_at <= $1)
+			    OR (d.status = 'in_flight' AND d.locked_until < $1 AND d.attempts < $5))
+			  AND ($7::text[] IS NULL OR e.tenant_id = ANY($7::text[]))
+			  AND ($8::text[] IS NULL OR e.event_type = ANY($8::text[]))
+			ORDER BY d.next_attempt_at, d.id
 			LIMIT $6
-			FOR UPDATE SKIP LOCKED)
+			FOR UPDATE OF d SKIP LOCKED)
 		RETURNING id, event_pk, consumer_id, attempts)
 		SELECT c.id, c.consumer_id, c.attempts, e.contract_version, e.event_id, e.tenant_id, e.service_id,
 		       e.event_type, e.correlation_id, e.occurred_at_raw, e.received_at_raw, e.payload
 		FROM claimed c JOIN outbox_events e ON e.id = c.event_pk
 		ORDER BY c.id`,
-		now, now.Add(lease), workerID, consumers, maxAttempts, limit)
+		now, now.Add(lease), workerID, consumers, maxAttempts, limit, tenants, eventTypes)
 	if err != nil {
 		return nil, ErrStoreUnavailable
 	}
@@ -276,6 +293,75 @@ func (s *PostgresStore) Bury(ctx context.Context, workerID string, d Delivery, n
 		SET status = 'dead', dead_at = $4, locked_until = NULL, locked_by = NULL, last_error_code = $5
 		WHERE id = $1 AND status = 'in_flight' AND locked_by = $2 AND attempts = $3`,
 		d.ID, workerID, d.Attempt, now.UTC(), code)
+}
+
+// SettleOutcome is the result of settling a pulled delivery.
+type SettleOutcome int
+
+const (
+	// Settled means this call recorded the outcome.
+	Settled SettleOutcome = iota
+	// AlreadyDelivered means the delivery was already acknowledged for this
+	// attempt, so a retried ack is a success.
+	AlreadyDelivered
+	// LeaseLost means the lease token or attempt no longer matches: the lease
+	// expired and the delivery was reclaimed, or the settle never applied.
+	LeaseLost
+)
+
+// Ack marks a pulled delivery delivered. Only the holder of the claim's lease
+// token, for the same consumer and attempt, can ack; a repeated ack of a
+// delivery already delivered for that attempt succeeds.
+func (s *PostgresStore) Ack(ctx context.Context, consumerID string, deliveryID int64, attempt int, leaseToken string, now time.Time) (SettleOutcome, error) {
+	applied, err := s.settle(ctx, `UPDATE outbox_deliveries
+		SET status = 'delivered', delivered_at = $5, locked_until = NULL, locked_by = NULL
+		WHERE id = $1 AND consumer_id = $2 AND status = 'in_flight' AND locked_by = $3 AND attempts = $4`,
+		deliveryID, consumerID, leaseToken, attempt, now.UTC())
+	if err != nil {
+		return LeaseLost, err
+	}
+	if applied {
+		return Settled, nil
+	}
+	pool, release, err := s.usable()
+	if err != nil {
+		return LeaseLost, err
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(ctx, dbOperationTimeout)
+	defer cancel()
+	var status string
+	var attempts int
+	if err := pool.QueryRow(ctx, `SELECT status, attempts FROM outbox_deliveries WHERE id = $1 AND consumer_id = $2`,
+		deliveryID, consumerID).Scan(&status, &attempts); err == nil && status == "delivered" && attempts == attempt {
+		return AlreadyDelivered, nil
+	}
+	return LeaseLost, nil
+}
+
+// Nack releases a pulled delivery: back to pending due at next, or dead when
+// dead is true. It applies only for the lease token, consumer and attempt.
+func (s *PostgresStore) Nack(ctx context.Context, consumerID string, deliveryID int64, attempt int, leaseToken string, now, next time.Time, dead bool, code string) (SettleOutcome, error) {
+	var applied bool
+	var err error
+	if dead {
+		applied, err = s.settle(ctx, `UPDATE outbox_deliveries
+			SET status = 'dead', dead_at = $5, locked_until = NULL, locked_by = NULL, last_error_code = $6
+			WHERE id = $1 AND consumer_id = $2 AND status = 'in_flight' AND locked_by = $3 AND attempts = $4`,
+			deliveryID, consumerID, leaseToken, attempt, now.UTC(), code)
+	} else {
+		applied, err = s.settle(ctx, `UPDATE outbox_deliveries
+			SET status = 'pending', next_attempt_at = $5, locked_until = NULL, locked_by = NULL, last_error_code = $6
+			WHERE id = $1 AND consumer_id = $2 AND status = 'in_flight' AND locked_by = $3 AND attempts = $4`,
+			deliveryID, consumerID, leaseToken, attempt, next.UTC(), code)
+	}
+	if err != nil {
+		return LeaseLost, err
+	}
+	if !applied {
+		return LeaseLost, nil
+	}
+	return Settled, nil
 }
 
 // Ready reports whether the database currently answers a ping.

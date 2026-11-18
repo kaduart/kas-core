@@ -1,0 +1,6 @@
+# Keep shell scripts and container files with LF endings so they run in Linux
+# containers and WSL even when the working copy is on Windows.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+.dockerignore text eol=lf
+deploy/**   text eol=lf

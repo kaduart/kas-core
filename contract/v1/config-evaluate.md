@@ -11,7 +11,7 @@ Authentication headers:
 
 The service ID maps to a token environment-variable name, an explicit tenant allowlist and explicit capabilities in the server's JSON configuration. The token is loaded at startup from that environment variable. The same file contains `tenant_registry`, the central list of tenant IDs and their `active`/`inactive` status. A request succeeds only when its tenant is registered, active and in the authenticated service's allowlist, and the service has the `config:read` capability. Tenant IDs, statuses and capabilities cannot be changed through request bodies. The file is loaded once at startup; changes require a restart.
 
-`callers.<service-id>.capabilities` accepts `config:read`, `audit:write` and/or `events:publish` (see [events.md](events.md)). An omitted or empty list grants no business capability and is denied by default. Unknown or duplicate capability names reject startup. Assign only the capabilities each service needs.
+`callers.<service-id>.capabilities` accepts `config:read`, `audit:write`, `events:publish` and/or `events:consume` (see [events.md](events.md)). An omitted or empty list grants no business capability and is denied by default. Unknown or duplicate capability names reject startup. Assign only the capabilities each service needs.
 
 ## Request
 
@@ -68,5 +68,9 @@ Every error response has this shape:
 | 503 | `capacity_exceeded` | Concurrent request limit was reached |
 | 503 | `server_shutting_down` | Server is draining and has stopped accepting new requests |
 | 500 | `internal_error` | Unexpected evaluation failure |
+
+## Credential rotation
+
+Each caller accepts up to two tokens at once: `token_env` and an optional `token_env_next`, both environment variable names holding a 64-character hexadecimal token. The two tokens must differ and `token_env_next` must name a different variable; otherwise startup is rejected. While both are set, either token authenticates the service; every other value is rejected. Rotation is applied by editing the configuration and restarting. The procedure is in [RUNBOOK.md](../../RUNBOOK.md).
 
 Health endpoints `GET /healthz` and `GET /readyz` return a small `v1` status response and do not expose configuration values. `/healthz` is liveness only. `/readyz` also checks audit storage when audit is enabled (a JSON Lines store that failed a write or was closed, or a PostgreSQL database that does not answer a ping within 3 seconds) and returns `503 audit_unavailable` without storage details when it is not ready. The example config and tenant data are fictitious; credentials are supplied only via environment variables.

@@ -277,3 +277,193 @@ func TestInvalidEventConfigurationIsRejected(t *testing.T) {
 		})
 	}
 }
+
+const pullFixture = `{
+  "contract_version":"v1","config_version":"fixture-pull",
+  "tenant_registry":[
+    {"id":"tenant-demo-a","status":"active"},
+    {"id":"tenant-demo-b","status":"active"},
+    {"id":"tenant-demo-c","status":"inactive"}
+  ],
+  "key_schema":{"k.v":{"type":"integer"}},
+  "tenants":{"tenant-demo-a":{"k.v":1}},
+  "event_types":["settings.updated","settings.checked"],
+  "event_consumers":{
+    "pull-a":{"event_types":["settings.updated"],"tenants":["tenant-demo-a","tenant-demo-b","tenant-demo-c"],"service":"node-a"},
+    "pull-b":{"event_types":["settings.checked"],"tenants":["tenant-demo-b"],"service":"node-b"},
+    "in-process":{"event_types":["settings.updated"],"tenants":["tenant-demo-a"]}
+  },
+  "callers":{
+    "node-a":{"token_env":"TOKEN_A","tenants":["tenant-demo-a","tenant-demo-c"],"capabilities":["events:consume"]},
+    "node-b":{"token_env":"TOKEN_B","tenants":["tenant-demo-b"],"capabilities":["events:consume"]},
+    "node-pub":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["events:publish"]}
+  }
+}`
+
+func TestAuthorizeConsumerScopeIsRestrictedToTenantsAndTypes(t *testing.T) {
+	store, err := newTestStore(t, pullFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := store.AuthorizeConsumer("node-a", tokenA, "pull-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// consumer lists a, b and c; the service only has a and c; c is inactive.
+	if strings.Join(scope.Tenants, ",") != "tenant-demo-a" || strings.Join(scope.EventTypes, ",") != "settings.updated" {
+		t.Fatalf("scope = %+v", scope)
+	}
+	if scope, err := store.AuthorizeConsumer("node-b", tokenB, "pull-b"); err != nil || strings.Join(scope.Tenants, ",") != "tenant-demo-b" {
+		t.Fatalf("node-b scope = %+v, %v", scope, err)
+	}
+}
+
+func TestAuthorizeConsumerRejections(t *testing.T) {
+	store, err := newTestStore(t, pullFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name                 string
+		service, token, cons string
+		want                 error
+	}{
+		{"unknown service", "ghost", tokenA, "pull-a", ErrUnauthorized},
+		{"wrong token", "node-a", tokenB, "pull-a", ErrUnauthorized},
+		{"malformed token", "node-a", "short", "pull-a", ErrUnauthorized},
+		{"no consume capability", "node-pub", tokenA, "pull-a", ErrCapabilityForbidden},
+		{"consumer of another service", "node-a", tokenA, "pull-b", ErrConsumerForbidden},
+		{"unknown consumer", "node-a", tokenA, "pull-ghost", ErrConsumerForbidden},
+		{"in-process consumer cannot be pulled", "node-a", tokenA, "in-process", ErrConsumerForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.AuthorizeConsumer(tc.service, tc.token, tc.cons); !errors.Is(err, tc.want) {
+				t.Fatalf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestConsumerBindingMustReferenceAServiceWithTheConsumeCapability(t *testing.T) {
+	for name, mutate := range map[string]func(string) string{
+		"unknown service": func(s string) string {
+			return strings.Replace(s, `"service":"node-b"`, `"service":"ghost"`, 1)
+		},
+		"service without events:consume": func(s string) string {
+			return strings.Replace(s, `"service":"node-b"`, `"service":"node-pub"`, 1)
+		},
+		"invalid service id": func(s string) string {
+			return strings.Replace(s, `"service":"node-b"`, `"service":"Bad Service!"`, 1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := newTestStore(t, mutate(pullFixture)); err == nil {
+				t.Fatal("invalid consumer binding was accepted")
+			}
+		})
+	}
+}
+
+const rotationFixture = `{
+  "contract_version":"v1","config_version":"fixture-rotation",
+  "tenant_registry":[{"id":"tenant-demo-a","status":"active"}],
+  "key_schema":{"logging.max_meta_keys":{"type":"integer","min":1,"max":10}},
+  "tenants":{"tenant-demo-a":{"logging.max_meta_keys":10}},
+  "callers":{
+    "node-a":{"token_env":"TOKEN_A","token_env_next":"TOKEN_B","tenants":["tenant-demo-a"],"capabilities":["config:read"]},
+    "node-plain":{"token_env":"TOKEN_A","tenants":["tenant-demo-a"],"capabilities":["config:read"]}
+  }
+}`
+
+const tokenC = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+func TestRotationAcceptsBothTokensAndRejectsOthers(t *testing.T) {
+	store, err := newTestStore(t, rotationFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, token := range map[string]string{"primary": tokenA, "next": tokenB} {
+		if err := store.Authorize("node-a", token, "tenant-demo-a", CapabilityConfigRead); err != nil {
+			t.Fatalf("%s token must be accepted during rotation: %v", name, err)
+		}
+	}
+	if err := store.Authorize("node-a", tokenC, "tenant-demo-a", CapabilityConfigRead); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("an unknown token must be rejected: %v", err)
+	}
+	if err := store.Authorize("node-a", "short", "tenant-demo-a", CapabilityConfigRead); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("a malformed token must be rejected: %v", err)
+	}
+	// A service without a next token accepts only its own.
+	if err := store.Authorize("node-plain", tokenB, "tenant-demo-a", CapabilityConfigRead); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("node-plain must not accept the other service's next token: %v", err)
+	}
+	if strings.Join(store.RotatingServices(), ",") != "node-a" {
+		t.Fatalf("rotating services = %v", store.RotatingServices())
+	}
+}
+
+func TestTokenSlotUsageCountsWithoutIdentifyingTheCaller(t *testing.T) {
+	store, err := newTestStore(t, rotationFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Authorize("node-a", tokenA, "tenant-demo-a", CapabilityConfigRead)
+	store.Authorize("node-a", tokenA, "tenant-demo-a", CapabilityConfigRead)
+	store.Authorize("node-a", tokenB, "tenant-demo-a", CapabilityConfigRead)
+	store.Authorize("node-a", tokenC, "tenant-demo-a", CapabilityConfigRead) // rejected: not counted
+	if primary, next := store.TokenSlotUsage(); primary != 2 || next != 1 {
+		t.Fatalf("usage = %d primary, %d next", primary, next)
+	}
+}
+
+func TestRotationAppliesToConsumerAuthorizationToo(t *testing.T) {
+	cfg := strings.Replace(pullFixture, `"token_env":"TOKEN_A","tenants":["tenant-demo-a","tenant-demo-c"]`, `"token_env":"TOKEN_A","token_env_next":"TOKEN_B","tenants":["tenant-demo-a","tenant-demo-c"]`, 1)
+	store, err := newTestStore(t, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{tokenA, tokenB} {
+		if _, err := store.AuthorizeConsumer("node-a", token, "pull-a"); err != nil {
+			t.Fatalf("consumer authorization must accept both tokens: %v", err)
+		}
+	}
+	if _, err := store.AuthorizeConsumer("node-a", tokenC, "pull-a"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unknown token: %v", err)
+	}
+}
+
+func TestInvalidRotationConfigurationIsRejected(t *testing.T) {
+	for name, mutate := range map[string]func(string) string{
+		"same variable": func(s string) string {
+			return strings.Replace(s, `"token_env_next":"TOKEN_B"`, `"token_env_next":"TOKEN_A"`, 1)
+		},
+		"same token in two variables": func(s string) string {
+			return strings.Replace(s, `"token_env_next":"TOKEN_B"`, `"token_env_next":"TOKEN_A2"`, 1)
+		},
+		"missing variable": func(s string) string {
+			return strings.Replace(s, `"token_env_next":"TOKEN_B"`, `"token_env_next":"TOKEN_MISSING"`, 1)
+		},
+		"invalid variable name": func(s string) string {
+			return strings.Replace(s, `"token_env_next":"TOKEN_B"`, `"token_env_next":"bad name"`, 1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(strings.NewReader(mutate(rotationFixture)), func(n string) (string, bool) {
+				switch n {
+				case "TOKEN_A", "TOKEN_A2":
+					return tokenA, true
+				case "TOKEN_B":
+					return tokenB, true
+				}
+				return "", false
+			})
+			if err == nil {
+				t.Fatal("invalid rotation configuration was accepted")
+			}
+			if strings.Contains(err.Error(), tokenA) || strings.Contains(err.Error(), tokenB) {
+				t.Fatalf("error leaks a token: %v", err)
+			}
+		})
+	}
+}

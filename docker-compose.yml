@@ -1,0 +1,112 @@
+# Local development stack: PostgreSQL (with TLS, two roles), the migrations, the
+# least-privilege grants, and KAS Core. Development only: all passwords and
+# tokens below are fictitious defaults; do not use this file for production.
+#
+#   ./scripts/dev-certs.sh        # once: self-signed certificate
+#   docker compose up --build     # start everything
+#
+# Endpoints (loopback only): https://127.0.0.1:8088 (self-signed, use curl -k),
+# PostgreSQL on 127.0.0.1:5432.
+name: kas-core-dev
+
+x-db-env: &db-env
+  PGHOST: db
+  PGDATABASE: kas_core
+
+services:
+  db:
+    image: postgres:16
+    # Start PostgreSQL with TLS. The key must be owned by the postgres user with
+    # mode 0600, which a bind mount cannot guarantee, so it is copied first.
+    entrypoint: ["bash", "-c"]
+    command:
+      - >-
+        install -o postgres -g postgres -m 600 /certs/server.key /tmp/server.key &&
+        install -o postgres -g postgres -m 644 /certs/server.crt /tmp/server.crt &&
+        exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key
+    environment:
+      POSTGRES_USER: kas_admin
+      POSTGRES_PASSWORD: ${KAS_DEV_ADMIN_PASSWORD:-kas_dev_admin_only}
+      POSTGRES_DB: kas_core
+      KAS_MIGRATOR_PASSWORD: ${KAS_DEV_MIGRATOR_PASSWORD:-kas_dev_migrator_only}
+      KAS_RUNTIME_PASSWORD: ${KAS_DEV_RUNTIME_PASSWORD:-kas_dev_runtime_only}
+    volumes:
+      - kas-db:/var/lib/postgresql/data
+      - ./deploy/dev/initdb:/docker-entrypoint-initdb.d:ro
+      - ./deploy/dev/certs:/certs:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kas_admin -d kas_core"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # One-shot: applies the audit and events migrations with the migration role.
+  migrate:
+    build: .
+    image: kas-core:dev
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    command:
+      - -audit-store=postgres
+      - -audit-migrate-only
+      - -events-store=postgres
+      - -events-migrate-only
+    environment:
+      KAS_AUDIT_MIGRATION_DATABASE_URL: postgres://kas_migrator:${KAS_DEV_MIGRATOR_PASSWORD:-kas_dev_migrator_only}@db:5432/kas_core?sslmode=require
+      KAS_EVENTS_MIGRATION_DATABASE_URL: postgres://kas_migrator:${KAS_DEV_MIGRATOR_PASSWORD:-kas_dev_migrator_only}@db:5432/kas_core?sslmode=require
+
+  # One-shot: gives the runtime role only the privileges it needs.
+  grants:
+    image: postgres:16
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    entrypoint: ["psql", "-v", "ON_ERROR_STOP=1", "-v", "schema=public", "-v", "runtime_role=kas_runtime", "-f", "/deploy/grants.sql"]
+    environment:
+      <<: *db-env
+      PGUSER: kas_migrator
+      PGPASSWORD: ${KAS_DEV_MIGRATOR_PASSWORD:-kas_dev_migrator_only}
+    volumes:
+      - ./deploy/grants.sql:/deploy/grants.sql:ro
+
+  kas:
+    build: .
+    image: kas-core:dev
+    depends_on:
+      db:
+        condition: service_healthy
+      grants:
+        condition: service_completed_successfully
+    # The runtime role has no DDL rights: migrations are only verified at start.
+    command:
+      - -config=/etc/kas/config.json
+      - -addr=0.0.0.0:8088
+      - -tls-cert=/certs/server.crt
+      - -tls-key=/certs/server.key
+      - -audit-store=postgres
+      - -audit-auto-migrate=false
+      - -events-store=postgres
+      - -events-auto-migrate=false
+      - -metrics-token-env=KAS_METRICS_TOKEN
+    environment:
+      KAS_CALLER_FONO_NODE_TOKEN: ${KAS_DEV_FONO_TOKEN:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+      KAS_CALLER_DEMO_NODE_B_TOKEN: ${KAS_DEV_NODE_B_TOKEN:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}
+      KAS_METRICS_TOKEN: ${KAS_DEV_METRICS_TOKEN:-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}
+      KAS_AUDIT_DATABASE_URL: postgres://kas_runtime:${KAS_DEV_RUNTIME_PASSWORD:-kas_dev_runtime_only}@db:5432/kas_core?sslmode=require
+      KAS_EVENTS_DATABASE_URL: postgres://kas_runtime:${KAS_DEV_RUNTIME_PASSWORD:-kas_dev_runtime_only}@db:5432/kas_core?sslmode=require
+    volumes:
+      - ./config.example.json:/etc/kas/config.json:ro
+      - ./deploy/dev/certs:/certs:ro
+    ports:
+      - "127.0.0.1:8088:8088"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  kas-db:

@@ -18,6 +18,18 @@ O `ecosystem.config.cjs` do CRM descreve 7 processos PM2 (API, cinco workers, wa
 
 **Consequência para a economia:** os dois itens pagos que pesam são o worker do WhatsApp (Chrome) e a API (Chrome para PDF). Nenhum deles é substituível por Go: dependem de `whatsapp-web.js` e `puppeteer`. Portanto **nenhuma migração para Go, no estado atual do código, desliga um serviço pago do Render.** Valores em dólar não foram obtidos (a documentação do Render lida não traz preços): conferir no painel.
 
+### 1.1 Fatos verificados sobre onde o Outbox roda e quando para
+
+Verificados no código do CRM e no Render (somente leitura):
+
+- O Start Command do `crm-worker` é `workers/entrypoints/whatsapp-only.js`. Esse entrypoint sobe os grupos `scheduling`, `billing`, `clinical` e `reconciliation` (`workers/entrypoints/whatsapp-only.js:138-143`).
+- O grupo `reconciliation` inicia `startOutboxDispatcher` em `workers/registry.js:223-224` quando `ENABLE_RECONCILIATION_OUTBOX` não é `false`. O padrão é **ligado** (`isEnabled` assume `true` sem a variável). Isso depende das variáveis do painel do Render, que não li.
+- O web (`node server.js`) só sobe workers se `ENABLE_WORKERS=true` (`server.js:819`). O valor no painel não foi verificado.
+- O `crm-worker` é **suspenso às 19:10 (BRT, seg-sex) e retomado seg-sex** por `back/scripts/render-worker-toggle.js`. O comentário do script diz que a retomada é às **07:50**; o levantamento recebido diz 07:30. O horário real está no agendador, que o script cita como "Cron Jobs `crm-worker-suspend` / `crm-worker-resume`" e que **não aparece** na lista de serviços do Render que li (5 serviços, nenhum cron job). Onde o agendador roda continua não localizado.
+- Consequência: enquanto o worker está parado (noites e fins de semana) o dispatcher, as filas e os lembretes também param. Eventos se acumulam em `pending`; isso é parada programada, não falha.
+
+**Ajuste na métrica de idade do evento mais antigo.** A métrica `oldest due pending age` deve **descontar as janelas em que o worker está programado para estar parado** (noites e fins de semana), senão gera alerta falso toda manhã. A janela vem de configuração da KAS (dias e horas, fuso `America/Sao_Paulo`), não de leitura do Render, e a métrica passa a medir o tempo de espera **dentro das horas de operação**. Alertas de `failed` e `dead` não dependem de janela.
+
 ## 2. Candidatas avaliadas
 
 | Candidata | Onde está no Node | Veredicto |
@@ -82,10 +94,19 @@ A KAS **não lê nem copia o `payload`**: só `eventId`, `eventType`, `status`, 
 3. **Retenção:** primeiro simulação, depois apagamento com lote pequeno e limite diário. Irreversível, por isso por último.
 4. **Reversão:** desligar a KAS (ou a flag) devolve ao comportamento atual do Node; o que ela já recuperou continua válido. O apagamento não se desfaz, então exige backup verificado do Mongo antes. Aplicar a flag no CRM exige redeploy se for lida no carregamento (`config/featureFlags.js`; **não verifiquei** onde a flag seria lida). Ligar a KAS não exige mexer no CRM.
 
+## 5.1 Hospedagem da KAS (restrições registradas)
+
+- Um web service **free** do Render **não recebe tráfego pela rede privada**; só atende pela internet pública.
+- Por isso o teste de conectividade, quando houver, será **somente público: com TLS, com token de serviço, sem banco e sem dado real**. Auditoria durável e Outbox da KAS em PostgreSQL ficam pendentes até existir uma economia medida que justifique um banco (o PostgreSQL free expira em 30 dias e não tem backup).
+- Nenhuma conta extra será criada para contornar limites do plano.
+
 ## 6. O que pode ser desativado depois de validado
 
 - **Nada dos serviços pagos do Render.** O ganho é: eventos que hoje podem ficar parados para sempre passam a ser entregues, e a coleção `Outbox` deixa de crescer sem limite (custo de armazenamento do Mongo não medido).
 - Dependência Node: nenhuma sai. O dispatcher e o BullMQ continuam.
+- **Primeiros alvos de economia, antes de qualquer corte em Go (medições recebidas, não verificadas por mim):**
+  1. **Estouro de memória do `crm-worker`: o processo passou de 2 GB em 13/11 (OOM).** Entender o que consome memória (Chrome do WhatsApp, filas, vazamento) e dimensionar o plano com base em dado, não em palpite.
+  2. **Banda de saída: 2,46 GB de 5 GB já no dia 18 do mês.** Identificar o que gera tráfego antes que a franquia acabe e que passe a gerar cobrança.
 - **Economia real** só virá de reduzir recursos medidos: por exemplo, rebaixar o plano do `crm-worker` ou da API se a memória real permitir (decisão de configuração, não de linguagem), ou remover o serviço suspenso. Isso deve ser medido no painel antes de qualquer promessa.
 
 ## 7. Critérios de aceite

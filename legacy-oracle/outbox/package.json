@@ -1,0 +1,8 @@
+{
+  "name": "kas-legacy-oracle-outbox",
+  "private": true,
+  "type": "module",
+  "description": "Runs the unmodified CRM outbox dispatcher (fono-inova-crm-back@f560f63, infrastructure/outbox) against a disposable MongoDB as the behavioural oracle for kas-outbox-recovery. BullMQ is replaced by an in-memory queue with BullMQ's jobId deduplication; the clock is injected.",
+  "scripts": { "oracle": "node oracle.js" },
+  "dependencies": { "mongoose": "8.24.3", "uuid": "13.0.0" }
+}

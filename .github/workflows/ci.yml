@@ -146,7 +146,7 @@ jobs:
       # PR único do CRM (item 4 + API/workers reais do item 7). Depois do merge, voltar para main.
       # Repositório público; nada de segredo, banco descartável e dados fictícios.
       CRM_REPO: kaduart/fono-inova-crm-back
-      CRM_REF: feat/envios-item4
+      CRM_REF: main
       PUPPETEER_SKIP_DOWNLOAD: 'true'
     steps:
       - name: Check out source

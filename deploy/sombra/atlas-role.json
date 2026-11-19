@@ -1,0 +1,10 @@
+{
+  "roleName": "kasReaperShadowRead",
+  "actions": [
+    {
+      "action": "FIND",
+      "resources": [{ "db": "fono_inova_prod", "collection": "eventstore" }]
+    }
+  ],
+  "inheritedRoles": []
+}

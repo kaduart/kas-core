@@ -1,0 +1,125 @@
+# Sombra do reaper KAS contra o Mongo de produção, SÓ LEITURA (docs/event-reaper/SOMBRA.md).
+#
+# Fica inerte até o Kadu ligar a variável do repositório SOMBRA_REAPER_ATIVA=true e criar os
+# segredos KAS_REAPER_SHADOW_MONGO_URI (usuário com o papel kasReaperShadowRead) e
+# SOMBRA_REPORT_PASSPHRASE. Desligar: SOMBRA_REAPER_ATIVA=false (ou apagar a variável).
+#
+# Custo: zero (repositório público, runners do GitHub). Cada execução dura ~5h45; a agenda é de
+# hora em hora e o grupo de concorrência enfileira a próxima, então há sempre uma rodando.
+#
+# O que fica público: só o resumo com contagens (sem eventId). O relatório completo, o log do
+# binário e a sonda do /health saem criptografados (AES256) como artifact por 14 dias.
+name: sombra-reaper
+
+on:
+  schedule:
+    - cron: '7 * * * *'
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Duração desta execução em minutos (máx. 345)'
+        required: false
+        default: '345'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sombra-reaper
+  cancel-in-progress: false
+
+jobs:
+  sombra:
+    if: github.repository == 'kaduart/kas-core' && vars.SOMBRA_REAPER_ATIVA == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 358
+    env:
+      DB: ${{ vars.SOMBRA_DB || 'fono_inova_prod' }}
+      # Mesmo valor de EVENT_LEGACY_FENCE_AT da API (vazio se a API não tiver a variável).
+      LEGACY_FENCE: ${{ vars.SOMBRA_LEGACY_FENCE }}
+      HEALTH_URL: ${{ vars.SOMBRA_CRM_HEALTH_URL || 'https://fono-inova-crm-back.onrender.com/health' }}
+      MINUTES: ${{ github.event.inputs.minutes || '345' }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build
+        run: |
+          go build -o bin/kas-event-reaper ./cmd/kas-event-reaper
+          go build -o bin/kas-shadow-summary ./cmd/kas-shadow-summary
+          echo "kas-core $(git rev-parse --short HEAD)"
+
+      - name: Conferir segredos (sem imprimir)
+        env:
+          URI: ${{ secrets.KAS_REAPER_SHADOW_MONGO_URI }}
+          PASS: ${{ secrets.SOMBRA_REPORT_PASSPHRASE }}
+        run: |
+          [ -n "$URI" ] || { echo "::error::segredo KAS_REAPER_SHADOW_MONGO_URI ausente"; exit 1; }
+          [ -n "$PASS" ] || { echo "::error::segredo SOMBRA_REPORT_PASSPHRASE ausente"; exit 1; }
+          [ "$MINUTES" -ge 1 ] && [ "$MINUTES" -le 345 ] || { echo "::error::minutes fora de 1..345"; exit 1; }
+
+      - name: Sombra (só leitura) e sonda do /health
+        env:
+          KAS_REAPER_MONGO_URI: ${{ secrets.KAS_REAPER_SHADOW_MONGO_URI }}
+        run: |
+          mkdir -p run
+          # Sonda do /health do CRM a cada 60 s (só status e tempo).
+          ( while true; do
+              r=$(curl -s -o /dev/null -m 20 -w '%{http_code} %{time_total}' "$HEALTH_URL" || echo "000 0")
+              printf '{"at":"%s","status":%s,"ms":%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${r%% *}" "$(awk -v t="${r##* }" 'BEGIN{printf "%.0f", t*1000}')" >> run/health.jsonl
+              sleep 60
+            done ) & PROBE=$!
+          set +e
+          FENCE_ARGS=(); [ -n "$LEGACY_FENCE" ] && FENCE_ARGS=(-legacy-fence "$LEGACY_FENCE")
+          # stdout do binário vai para arquivo (pode citar eventId): nunca para o log público.
+          timeout --signal=TERM --kill-after=60s "${MINUTES}m" bin/kas-event-reaper -mode shadow -protocol v2 \
+            -db "$DB" "${FENCE_ARGS[@]}" -require-read-only on -warmup 30s -interval 5m \
+            -report run/report.jsonl > run/reaper.log 2>&1
+          rc=$?
+          kill "$PROBE" 2>/dev/null
+          echo "saída da sombra: $rc (124 = fim do tempo, esperado; 2 = recusou iniciar)"
+          grep -q '"msg":"read_only_confirmed"' run/reaper.log && echo "usuário só leitura comprovado pelo servidor" || echo "::error::a sombra não comprovou só leitura"
+          grep -q '"msg":"shadow_refused_not_read_only"' run/reaper.log && { echo "::error::recusou: o usuário pode escrever"; exit 1; }
+          [ "$rc" = 0 ] || [ "$rc" = 124 ] || exit 1
+
+      - name: Resumo desta execução (só contagens)
+        if: always()
+        run: |
+          [ -f run/report.jsonl ] || { echo "sem relatório" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          set +e
+          H=(); [ -f run/health.jsonl ] && H=(-health run/health.jsonl)
+          bin/kas-shadow-summary -min-days 0 "${H[@]}" -json-out run/summary.json run/report.jsonl > run/summary.md
+          echo "SUMMARY_RC=$?" >> "$GITHUB_ENV"
+          cat run/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Criptografar o relatório completo
+        if: always()
+        env:
+          PASS: ${{ secrets.SOMBRA_REPORT_PASSPHRASE }}
+        run: |
+          [ -d run ] || exit 0
+          tar czf sombra.tar.gz run
+          printf '%s' "$PASS" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 -o "sombra-${{ github.run_id }}.tar.gz.gpg" sombra.tar.gz
+          rm -rf run sombra.tar.gz
+
+      - name: Guardar (14 dias, criptografado)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sombra-reaper-${{ github.run_id }}
+          path: sombra-*.tar.gz.gpg
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Critério reprovado deixa a execução vermelha
+        if: always()
+        run: |
+          [ "${SUMMARY_RC:-0}" != 1 ] || { echo "::error::algum critério da sombra falhou nesta execução (ver o resumo)"; exit 1; }

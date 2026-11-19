@@ -2,8 +2,10 @@ package eventreaper
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ type memStore struct {
 	failApply map[string]error
 	failFind  error
 	onApply   func(n int)
+	msgs      map[string]*string // optional observed error message per event (nil entry: default)
 }
 
 func newMem(cs ...Candidate) *memStore {
@@ -80,6 +83,9 @@ func (m *memStore) Observe(_ context.Context, ids []string) ([]Observation, erro
 			msg := ""
 			if e.Status != StatusProcessing {
 				msg = LegacyConfig().RecoveryMessage()
+			}
+			if p, ok := m.msgs[id]; ok {
+				msg = *p
 			}
 			out = append(out, Observation{EventID: id, Found: true, Status: e.Status, ErrorMessage: msg})
 		}
@@ -259,5 +265,37 @@ func TestParseMode(t *testing.T) {
 	}
 	if _, err := ParseMode("write"); err == nil {
 		t.Fatal("unknown mode accepted")
+	}
+}
+
+func TestShadowCheckClassifiesWhoWroteTheObservedMessage(t *testing.T) {
+	m := newMem(old("reaper", 0), old("worker", 0), old("blank", 0), old("gone", 0))
+	r := &Runner{Config: LegacyConfig(), Mode: ModeShadow, Store: m, Now: fixed}
+	r.RunCycle(context.Background())
+	workerMsg, blank := "timeout calling provider", ""
+	m.msgs = map[string]*string{"worker": &workerMsg, "blank": &blank}
+	m.events["reaper"].Status = StatusPending
+	m.events["worker"].Status = StatusPending
+	m.events["blank"].Status = "processed"
+	delete(m.events, "gone")
+	rep := r.RunCycle(context.Background())
+	got := map[string][2]string{}
+	for _, c := range rep.Checks {
+		got[c.EventID] = [2]string{c.Verdict, c.ObservedReason}
+	}
+	want := map[string][2]string{
+		"reaper": {"agree", "reaper"},
+		"worker": {"diverge", "other"},
+		"blank":  {"diverge", "none"},
+		"gone":   {"gone", ""},
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("%s: got %v want %v", k, got[k], v)
+		}
+	}
+	raw, _ := json.Marshal(rep.Checks)
+	if strings.Contains(string(raw), workerMsg) {
+		t.Fatal("the report must not copy the observed message text")
 	}
 }

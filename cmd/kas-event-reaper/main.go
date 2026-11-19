@@ -34,11 +34,11 @@ import (
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 type cliConfig struct {
-	mode, protocol, legacyFence, uriEnv, db, collection, leaseCollection, confirmDB, reportPath, metricsAddr, holder string
-	interval, warmup, threshold, leaseTTL, cycleTimeout                                                              time.Duration
-	maxAttempts, maxRecoveries, batch                                                                                int
-	once, allowRemoteExecutor, requireCRMNode                                                                        bool
-	crmNodeMaxAge                                                                                                    time.Duration
+	mode, protocol, legacyFence, requireReadOnly, uriEnv, db, collection, leaseCollection, confirmDB, reportPath, metricsAddr, holder string
+	interval, warmup, threshold, leaseTTL, cycleTimeout                                                                               time.Duration
+	maxAttempts, maxRecoveries, batch                                                                                                 int
+	once, allowRemoteExecutor, requireCRMNode                                                                                         bool
+	crmNodeMaxAge                                                                                                                     time.Duration
 }
 
 func parse(args []string, stderr io.Writer) (cliConfig, error) {
@@ -68,6 +68,7 @@ func parse(args []string, stderr io.Writer) (cliConfig, error) {
 	fs.IntVar(&c.batch, "batch", 100, "events per cycle (legacy: 100)")
 	fs.BoolVar(&c.once, "once", false, "run a single cycle without warmup and exit")
 	fs.BoolVar(&c.requireCRMNode, "require-crm-node-lease", true, "executor mode: act (and fence every write) only while the CRM Node reaper refreshes participants.crmNode in the same lease document (EVENT_REAPER_SHARED_LEASE=on). On by default; prevents two owners when the Node flag is absent/off or points elsewhere. =false is accepted only on a loopback MongoDB host (disposable test database with no CRM Node), never together with -allow-remote-executor")
+	fs.StringVar(&c.requireReadOnly, "require-read-only", "auto", "shadow mode: prove with connectionStatus that the database user can only read, and refuse to start otherwise. auto: on for any non-loopback host; on; off (accepted only on a loopback host)")
 	fs.DurationVar(&c.crmNodeMaxAge, "crm-node-marker-max-age", 15*time.Minute, "with -require-crm-node-lease: maximum age of the CRM Node marker (server clock)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
@@ -76,6 +77,28 @@ func parse(args []string, stderr io.Writer) (cliConfig, error) {
 		return c, errors.New("-db is required")
 	}
 	return c, nil
+}
+
+type startLine struct {
+	Kind             string           `json:"kind"`
+	At               time.Time        `json:"at"`
+	Mode             eventreaper.Mode `json:"mode"`
+	Protocol         string           `json:"protocol"`
+	LegacyFence      string           `json:"legacy_fence,omitempty"`
+	DB               string           `json:"db"`
+	Collection       string           `json:"collection"`
+	Interval         string           `json:"interval"`
+	StuckThreshold   string           `json:"stuck_threshold"`
+	Batch            int              `json:"batch"`
+	HostClass        string           `json:"host_class"`
+	ReadOnlyRequired bool             `json:"read_only_required"`
+	ReadOnly         *readOnlyProof   `json:"read_only,omitempty"`
+}
+
+type cycleLine struct {
+	Kind string `json:"kind"`
+	eventreaper.CycleReport
+	Proc procStats `json:"proc"`
 }
 
 func isLoopbackHost(uri string) (bool, error) {
@@ -158,6 +181,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	var mustProveReadOnly bool
+	switch c.requireReadOnly {
+	case "auto":
+		mustProveReadOnly = mode == eventreaper.ModeShadow && !loop
+	case "on":
+		mustProveReadOnly = mode == eventreaper.ModeShadow
+	case "off":
+		if mode == eventreaper.ModeShadow && !loop {
+			logger.Error("-require-read-only=off is only accepted on a loopback host: a shadow on a real database must prove it cannot write")
+			return 2
+		}
+	default:
+		logger.Error("invalid -require-read-only", "reason", "use auto, on or off")
+		return 2
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -176,6 +215,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		defer cancel()
 		_ = client.Disconnect(dctx)
 	}()
+
+	var proof *readOnlyProof
+	if mustProveReadOnly {
+		pctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		p, err := proveReadOnly(pctx, client)
+		cancel()
+		if err != nil {
+			logger.Error("shadow_refused_not_read_only", "reason", err.Error(), "roles", p.Roles, "actions", p.Actions)
+			return 2
+		}
+		proof = &p
+		logger.Info("read_only_confirmed", "users", p.Users, "roles", p.Roles, "actions", p.Actions)
+	}
 
 	var lease *crmeventstore.Lease
 	if mode == eventreaper.ModeExecutor {
@@ -209,7 +261,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		defer f.Close()
 		enc := json.NewEncoder(f)
-		report = func(rep eventreaper.CycleReport) { _ = enc.Encode(rep) }
+		hostClass := "remote"
+		if loop {
+			hostClass = "loopback"
+		}
+		// Header line: what this run was allowed to do. The summary tool
+		// (kas-shadow-summary) requires one per run, with read_only proven.
+		_ = enc.Encode(startLine{Kind: "start", At: time.Now().UTC(), Mode: mode, Protocol: string(protocol), LegacyFence: c.legacyFence,
+			DB: c.db, Collection: c.collection, Interval: c.interval.String(), StuckThreshold: c.threshold.String(), Batch: c.batch,
+			HostClass: hostClass, ReadOnlyRequired: mustProveReadOnly, ReadOnly: proof})
+		defer func() { _ = enc.Encode(map[string]any{"kind": "stop", "at": time.Now().UTC()}) }()
+		report = func(rep eventreaper.CycleReport) {
+			_ = enc.Encode(cycleLine{Kind: "cycle", CycleReport: rep, Proc: readProcStats()})
+		}
 	}
 
 	if c.metricsAddr != "" {

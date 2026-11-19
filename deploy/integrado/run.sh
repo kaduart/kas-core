@@ -237,6 +237,61 @@ grep -q 'outbox_recovery_exhausted\|exhausted' "$WORK/outbox-2.log" && ok "alert
 kill -TERM "$DISP" "$OB2" 2>/dev/null || true
 
 # ===========================================================================
+say "ITEM 7.8  Fluxo real: API HTTP → outbox → dispatcher → workers; queda real do Redis"
+# API (server.js) e workers REAIS do CRM, com a trava runtime-guard-isolado.cjs: rede
+# só para este Mongo/Redis, sem HTTP de saída nem subprocessos. Dados fictícios.
+real_published() { mongo "db.outboxes.countDocuments({eventId: {\$not: /^ob-/}, eventType: 'APPOINTMENT_CREATED', status: 'published'})"; }
+real_failed() { mongo "db.outboxes.countDocuments({eventId: {\$not: /^ob-/}, eventType: 'APPOINTMENT_CREATED', status: 'failed', lastError: /Connection is closed/})"; }
+real_total() { mongo "db.outboxes.countDocuments({eventId: {\$not: /^ob-/}, eventType: 'APPOINTMENT_CREATED'})"; }
+wk_done() { grep -c 'Completed APPOINTMENT_CREATED' "$WORK/worker-clinical.log" 2>/dev/null || true; }
+orch_done() { grep -c 'ClinicalOrchestrator\] Processing' "$WORK/worker-clinical.log" 2>/dev/null || true; }
+child_pid() { for _ in $(seq 1 50); do [ -s "$1" ] && { cat "$1"; return; }; sleep 0.1; done; }
+CPORT=${CPORT:-5099}
+
+CRM_ENV=(CRM_ISOLADO_API_PORT="$CPORT" CRM_ISOLADO_PIDFILE="$WORK/api.pid")
+crm crmProc.mjs api >"$WORK/api.log" 2>&1 & PIDS+=($!); PIDS+=("$(child_pid "$WORK/api.pid")")
+for _ in $(seq 1 90); do grep -q 'Back pronto' "$WORK/api.log" 2>/dev/null && break; sleep 1; done
+grep -q 'Back pronto' "$WORK/api.log" && ok "API real (server.js) no ar em 127.0.0.1:${CPORT}, rede externa bloqueada" || { bad "API não subiu"; tail -40 "$WORK/api.log"; }
+grep -q 'ISOLADO_NETWORK_BLOCKED' "$WORK/api.log" && echo "info: a API tentou sair para a rede e foi bloqueada (esperado: SDKs/integrações sem credencial)" || true
+CRM_ENV=(CRM_ISOLADO_API_PORT="$CPORT")
+SEED=$(crm apiFlow.mjs seed); echo "$SEED" | grep -q api_flow_seeded || bad "cadastro fictício falhou: $SEED"
+P1=$(crm apiFlow.mjs post 3 normal); echo "$P1" | tail -1
+echo "$P1" | grep -q '"created":3' && ok "3 agendamentos criados pela rota real POST /api/v2/appointments (201)" || bad "POST: $P1"
+[ "$(real_total)" = 3 ] && ok "3 APPOINTMENT_CREATED no outbox, gravados na transação do agendamento" || bad "outbox real: $(real_total)"
+
+CRM_ENV=()
+crm crmDispatcher.mjs >"$WORK/dispatcher-real.log" 2>&1 & D8=$!; PIDS+=("$D8")
+CRM_ENV=(CRM_ISOLADO_WORKERS=ENABLE_CLINICAL_ORCHESTRATOR,ENABLE_CLINICAL_PATIENT_PROJECTION CRM_ISOLADO_PIDFILE="$WORK/worker.pid")
+crm crmProc.mjs worker clinical >"$WORK/worker-clinical.log" 2>&1 & PIDS+=($!); WKC=$(child_pid "$WORK/worker.pid"); PIDS+=("$WKC")
+CRM_ENV=()
+for _ in $(seq 1 60); do [ "$(real_published)" = 3 ] && [ "$(wk_done)" -ge 3 ] && [ "$(orch_done)" -ge 3 ] && break; sleep 1; done
+[ "$(real_published)" = 3 ] && ok "dispatcher real publicou 3/3" || bad "publicados: $(real_published)/3"
+[ "$(wk_done)" -ge 3 ] && [ "$(orch_done)" -ge 3 ] && ok "workers reais (ClinicalOrchestrator + PatientProjection) processaram os 3 eventos" || bad "workers: projeção $(wk_done), orquestrador $(orch_done)"
+kill -TERM "$D8" 2>/dev/null || true; sleep 1
+
+echo "-- queda real do Redis: dispatcher novo (sem conexão ainda) e Redis parado antes do 1º uso"
+docker stop "$R" >/dev/null
+crm crmDispatcher.mjs >"$WORK/dispatcher-queda.log" 2>&1 & D9=$!; PIDS+=("$D9")
+CRM_ENV=(CRM_ISOLADO_API_PORT="$CPORT")
+P2=$(crm apiFlow.mjs post 2 queda); echo "$P2" | tail -1
+CRM_ENV=()
+echo "$P2" | grep -q '"created":2' && ok "com o Redis parado, a API continua aceitando agendamentos (outbox na transação do Mongo)" || bad "POST com Redis parado: $P2"
+for _ in $(seq 1 30); do [ "$(real_failed)" -ge 1 ] && break; sleep 1; done
+# O 1º evento falha com 'Connection is closed.' e a fila presa é descartada; a fila nova
+# espera o Redis (fila offline do ioredis), então o 2º pode ficar pending em vez de failed.
+[ "$(real_failed)" -ge 1 ] && ok "falha REAL de publicação: $(real_failed) evento(s) em failed com 'Connection is closed.' (mesmo erro visto em produção)" || bad "nenhum failed real com o Redis parado"
+[ "$(real_published)" = 3 ] && ok "nada publicado enquanto o Redis estava parado" || bad "publicados durante a queda: $(real_published) (esperado 3)"
+docker start "$R" >/dev/null
+for _ in $(seq 1 30); do docker exec "$R" redis-cli ping >/dev/null 2>&1 && break; sleep 1; done
+"$WORK/kas-outbox-recovery" -mode executor -db "$DB" -executor-confirm-db "$DB" -interval 1s >"$WORK/outbox-queda.log" 2>&1 & OB9=$!; PIDS+=("$OB9")
+for _ in $(seq 1 90); do [ "$(real_published)" = 5 ] && [ "$(wk_done)" -ge 5 ] && break; sleep 1; done
+[ "$(real_published)" = 5 ] && ok "Redis de volta: a KAS devolveu os failed a pending e o MESMO dispatcher publicou (5/5), sem reiniciar" || bad "depois da queda: publicados $(real_published)/5 (dispatcher preso em 'Connection is closed.'?)"
+grep -q queue_evicted_closed_connection "$WORK/dispatcher-queda.log" && ok "o dispatcher descartou a fila presa e criou outra (correção do item 7)" || echo "info: sem descarte de fila no log"
+[ "$(wk_done)" -ge 5 ] && ok "os workers reais processaram os 2 eventos da queda (5 no total)" || bad "workers depois da queda: $(wk_done)/5"
+kill -TERM "$D9" "$OB9" 2>/dev/null || true
+for f in api.pid worker.pid; do kill -TERM "$(cat "$WORK/$f" 2>/dev/null)" 2>/dev/null || true; done
+
+# ===========================================================================
 say "ITEM 9  Reversão Node → Go → Node"
 TR=$(cluster_now)
 echo "-- fase 1: Node é o dono (EVENT_REAPER_OWNER=node, posse compartilhada ligada)"

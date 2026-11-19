@@ -2,7 +2,7 @@
 
 Itens 7 e 9 da matriz "comando original × entregue", mais os casos da guarda do Node (G1–G5). **A KAS roda sempre com `-require-crm-node-lease`** (padrão do binário), como no procedimento de troca. Um comando sobe tudo, roda os cenários e apaga tudo no fim. É a **integração dos cortes implementados**, não uma validação da API inteira (ver "Escopo").
 
-## Escopo: integração dos cortes, não da API
+## Escopo: cortes (7.1–7.7) e um fluxo real pela API (7.8)
 
 Este ambiente integra **só os cortes implementados**: o reaper do Event Store (Node e KAS), a posse de execução de eventos, a recuperação de Outbox `failed` e os alertas. **Não valida a API do CRM.** Nenhuma rota HTTP é chamada, nenhum controller, fila de negócio (agendamento, pagamento, WhatsApp) ou worker de domínio roda. O "worker do CRM" é um simulador que usa só as funções reais de posse (`claimEvent`/`renewLease`/`completeOwned`).
 
@@ -13,6 +13,7 @@ Este ambiente integra **só os cortes implementados**: o reaper do Event Store (
 | 7.5 Alerta de `dead_letter` | Reaper real do CRM + `alertService` real mandando HTTP para um processo local | **Semeado:** o evento entra direto com `recoveryCount: 2` (não passou por duas recuperações reais). **Simulado:** o canal é `alert-sink.mjs`, não Slack/e-mail; a queda do canal é o processo dele morto |
 | 7.6 Conclusão tardia com token antigo | Processo do worker simulador com as funções reais de posse + MongoDB | Tokens antigos são os gravados no cenário anterior |
 | 7.7 Recuperação de Outbox `failed` | `OutboxDispatcher` real do CRM publicando no Redis real (BullMQ) + 2 binários `kas-outbox-recovery` (um morto com `kill -9`) + Redis pausado 6 s | **Semeado:** as 60 falhas entram direto como `failed` no formato que o dispatcher grava (`lastError: 'Connection is closed.'`). A pausa do Redis não fez o dispatcher marcar `failed`, então a falha real de publicação não foi reproduzida. Os 5 eventos sem fila também são semeados. Nenhum consumidor de fila roda |
+| 7.8 Fluxo real pela API + queda real do Redis | **API real** (`server.js`) + `OutboxDispatcher` real + **workers reais** do grupo clínico (`ClinicalOrchestrator`, `PatientProjection`) + Redis **parado** (`docker stop`/`start`) + `kas-outbox-recovery`. API e workers sobem com `scripts/isolado/runtime-guard-isolado.cjs` (rede só para este Mongo/Redis; HTTP de saída e subprocessos bloqueados) | Só o cadastro inicial (admin, profissional e paciente fictícios) é semeado. Os agendamentos entram pela rota `POST /api/v2/appointments`; os `failed` nascem da falha real de publicação. Fora: grupos de cobrança/WhatsApp/notificação (fila `notification` fica sem consumidor) |
 | 9 Reversão Node → Go → Node | Reaper real do CRM reiniciado com outra configuração (SIGTERM) + binário Go com a guarda (SIGSTOP/SIGCONT) + conferência `preflight-posse.mjs` + observador por change stream | Os eventos de cada fase são semeados e abandonados pelo worker simulador. "Go sobe antes do Node sair" é um erro de operação encenado de propósito |
 | G1–G5 Guarda do Node | Reaper real do CRM com a variável ausente, `off`, `on` cedente e revertido para `off` no meio; binário Go com a guarda; Node morto com `kill -9` | Configurações erradas encenadas de propósito; eventos semeados e abandonados pelo worker simulador |
 
@@ -27,6 +28,8 @@ O que isso prova: as peças trocadas (reaper, posse, recuperação de failed, al
 | Reaper do CRM | `config/cronManager.js` + `crons/eventReaper.cron.js` | **código real do CRM** (`scripts/isolado/crmReaper.mjs`) |
 | Worker do CRM | `claimEvent`/`renewLease`/`completeOwned` de `eventOwnership.js` | **código real**; o processo é morto com `kill -9` para deixar posses abandonadas |
 | OutboxDispatcher do CRM | `infrastructure/outbox/outboxPattern.js` | **código real**, publicando em BullMQ |
+| API do CRM (7.8) | `server.js` via `scripts/isolado/crmProc.mjs api`, porta `5099` | **código real**, com a trava de rede do isolado |
+| Workers do CRM (7.8) | `workers/entrypoints/clinical-worker.js` (só `ENABLE_CLINICAL_ORCHESTRATOR` e `ENABLE_CLINICAL_PATIENT_PROJECTION`) | **código real**, com a trava de rede do isolado |
 | alertService do CRM | `infrastructure/alerts/alertService.js` | real, mandando para um webhook **simulado** (`alert-sink.mjs`) |
 | kas-event-reaper | executor `-protocol v2` | binário real |
 | kas-outbox-recovery | executor | binário real |
@@ -70,6 +73,7 @@ Leva cerca de 8 minutos. Roda no CI do kas-core (job `Integrated CRM + KAS`), co
 | 7.5 | Evento na 3ª recuperação; depois o canal de alerta cai | alerta crítico chega ao webhook simulado; sem canal, o reaper segue e grava o `dead_letter` |
 | 7.6 | Worker que perdeu a posse tenta concluir com token antigo | recusado em todos |
 | 7.7 | Outbox com falhas + 5 eventos sem fila; Redis pausado; um recuperador leva `kill -9` | 60/60 republicados; exatamente 180 jobs (60 × 3 filas); os 5 sem fila desistidos com alerta |
+| 7.8 | 3 agendamentos pela API; depois Redis parado, dispatcher novo e mais 2 agendamentos; Redis volta | 3/3 publicados e processados pelos workers reais; com o Redis parado a API segue respondendo 201 e os 2 eventos viram `failed` com `Connection is closed.` (falha real); com o Redis de volta a KAS devolve a `pending` e o **mesmo** dispatcher publica 5/5, e os workers processam. Antes da correção do CRM (fila descartada ao ver `Connection is closed.`), esse dispatcher ficava preso até reiniciar |
 
 **Item 9 (reversão Node → Go → Node)**
 

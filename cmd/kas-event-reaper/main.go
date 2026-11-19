@@ -37,7 +37,8 @@ type cliConfig struct {
 	mode, protocol, legacyFence, uriEnv, db, collection, leaseCollection, confirmDB, reportPath, metricsAddr, holder string
 	interval, warmup, threshold, leaseTTL, cycleTimeout                                                              time.Duration
 	maxAttempts, maxRecoveries, batch                                                                                int
-	once, allowRemoteExecutor                                                                                        bool
+	once, allowRemoteExecutor, requireCRMNode                                                                        bool
+	crmNodeMaxAge                                                                                                    time.Duration
 }
 
 func parse(args []string, stderr io.Writer) (cliConfig, error) {
@@ -66,6 +67,8 @@ func parse(args []string, stderr io.Writer) (cliConfig, error) {
 	fs.IntVar(&c.maxRecoveries, "max-recoveries", 3, "protocol v2: recoveries before dead_letter (CRM MAX_RECOVERIES: 3)")
 	fs.IntVar(&c.batch, "batch", 100, "events per cycle (legacy: 100)")
 	fs.BoolVar(&c.once, "once", false, "run a single cycle without warmup and exit")
+	fs.BoolVar(&c.requireCRMNode, "require-crm-node-lease", false, "executor mode: act only while the CRM Node reaper refreshes participants.crmNode in the same lease document (EVENT_REAPER_SHARED_LEASE=on). Required by the activation procedure; prevents two owners when the Node flag is absent/off or points elsewhere")
+	fs.DurationVar(&c.crmNodeMaxAge, "crm-node-marker-max-age", 15*time.Minute, "with -require-crm-node-lease: maximum age of the CRM Node marker (server clock)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
@@ -173,6 +176,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var lease *crmeventstore.Lease
 	if mode == eventreaper.ModeExecutor {
 		lease = crmeventstore.NewLease(client, c.db, c.leaseCollection, c.holder, c.leaseTTL)
+		if c.requireCRMNode {
+			lease.RequireCRMNode(c.crmNodeMaxAge)
+			logger.Info("executor requires the CRM Node reaper on the shared lease", "max_marker_age", c.crmNodeMaxAge.String(), "lease_collection", c.leaseCollection)
+		} else {
+			logger.Warn("executor does not check the CRM Node reaper; if the Node runs with EVENT_REAPER_SHARED_LEASE absent/off there can be two owners. Use -require-crm-node-lease for activation")
+		}
 		defer func() {
 			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()

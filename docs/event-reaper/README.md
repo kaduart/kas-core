@@ -73,6 +73,8 @@ Nada disto foi feito. O runbook completo está no CRM, em `docs/EVENTSTORE_OWNER
 
 **Posse compartilhada com o Node (novo, CRM `EVENT_REAPER_SHARED_LEASE`).** Com `on` no CRM, o reaper do Node disputa o MESMO documento `kas_event_reaper_lease` e cerca cada escrita como a KAS. Aí a ordem da troca deixa de ser o que impede dois executores: quem não tem a posse pula o ciclo. Com `off` (padrão), o Node só lê o documento e pula o ciclo se a KAS tiver posse viva. Demonstrado em `deploy/integrado/run.sh` (item 9 abaixo).
 
+**Guarda de ativação `-require-crm-node-lease` (novo).** Com `off` ou variável ausente, o Node confere a posse só no início do ciclo. Se a KAS assumir no meio desse ciclo, os dois agem juntos. A guarda fecha isso: o executor só disputa a posse enquanto o Node renova `participants.crmNode.at` (`$$NOW`) no mesmo documento, o que ele só faz em `on`. Marca ausente ou mais velha que `-crm-node-marker-max-age` (padrão 15m) gera `skipped: incompatible_config` no relatório, devolve a posse que a KAS tiver e não grava nada. Isso também pega `-db`/`-lease-collection` divergentes do Node (a marca não está lá). Sem a guarda, o executor avisa no log na subida. Testes: `internal/legacy/crmeventstore/lease_crmnode_test.go`. Matriz completa, conferência pré-troca (`scripts/reaper/preflight-posse.mjs`) e procedimento: CRM `docs/EVENTSTORE_OWNERSHIP.md` §11.1 e §11.2. O `run.sh` integrado continua sem a guarda, porque a fase "só Go" dele usa `EVENT_REAPER_OWNER=kas` (o Node sem reaper não grava marca).
+
 **Reversão**
 1. Parar o executor da KAS (SIGTERM). Ele libera o lease ao sair.
 2. Conferir que nenhum `kas-event-reaper` está rodando e que o lease está expirado.

@@ -1,8 +1,13 @@
 # Resumo consolidado da sombra do reaper KAS: baixa os relatórios criptografados das execuções
 # dos últimos dias, junta e avalia os critérios (docs/event-reaper/SOMBRA.md §5).
 # Diário às 09:00 (BRT) só com SOMBRA_AGENDA_ATIVA=true; manual a qualquer hora (na main).
-# Publica só contagens. O veredito dos 5 dias é a execução com min_days=5 e a janela oficial
-# (since/until): ciclos antes de since são aquecimento e não contam (docs/event-reaper/SOMBRA.md §7).
+# Publica só contagens. Janela oficial (docs/event-reaper/SOMBRA.md §7): 23/11 00h → 28/11 00h BRT,
+# nas variáveis SOMBRA_JANELA_INICIO/SOMBRA_JANELA_FIM (com esses valores como padrão). Sem since/until
+# manuais, o resumo escolhe sozinho:
+#   - antes do início: aquecimento, sem janela (não conta para o veredito);
+#   - durante: parcial, da abertura da janela até agora (período ainda curto, saída 3 esperada);
+#   - depois do fim: VEREDITO, janela inteira com min_days=5.
+# Zero candidatos ou zero conferências = INCONCLUSIVO (saída 4), mesmo com ciclos saudáveis.
 name: sombra-reaper-resumo
 
 on:
@@ -15,15 +20,15 @@ on:
         required: false
         default: '6'
       min_days:
-        description: 'Período mínimo para aprovar (5 = veredito final; 0 = parcial)'
+        description: 'Período mínimo para aprovar (vazio = automático: 5 depois do fim da janela, 0 antes)'
         required: false
-        default: '0'
+        default: ''
       since:
-        description: 'Início da janela oficial, RFC3339 (veredito: 2026-11-23T00:00:00-03:00). Vazio = sem janela'
+        description: 'Início da janela, RFC3339. Vazio = janela oficial automática (2026-11-23T00:00:00-03:00)'
         required: false
         default: ''
       until:
-        description: 'Fim da janela oficial, exclusivo (veredito: 2026-11-29T00:00:00-03:00)'
+        description: 'Fim da janela, exclusivo. Vazio = janela oficial automática (2026-11-28T00:00:00-03:00)'
         required: false
         default: ''
 
@@ -44,9 +49,11 @@ jobs:
     timeout-minutes: 20
     env:
       DAYS: ${{ github.event.inputs.days || '6' }}
-      MIN_DAYS: ${{ github.event.inputs.min_days || '0' }}
+      MIN_DAYS: ${{ github.event.inputs.min_days }}
       SINCE: ${{ github.event.inputs.since }}
       UNTIL: ${{ github.event.inputs.until }}
+      JANELA_INICIO: ${{ vars.SOMBRA_JANELA_INICIO || '2026-11-23T00:00:00-03:00' }}
+      JANELA_FIM: ${{ vars.SOMBRA_JANELA_FIM || '2026-11-28T00:00:00-03:00' }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
@@ -57,6 +64,10 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go build -o bin/kas-shadow-summary ./cmd/kas-shadow-summary
+      - name: Escolher a janela
+        run: |
+          NOW=$(date -u +%s) deploy/sombra/janela-resumo.sh >> "$GITHUB_ENV"
+          cat "$GITHUB_ENV" | grep -E '^(SINCE|UNTIL|MIN_DAYS|FASE)=' || true
       - name: Baixar e decifrar os relatórios
         env:
           PASS: ${{ secrets.SOMBRA_REPORT_PASSPHRASE }}
@@ -90,11 +101,13 @@ jobs:
           bin/kas-shadow-summary -min-days "$MIN_DAYS" "${W[@]}" ${H:+-health "$H"} all/report-*.jsonl > summary.md
           rc=$?
           set -e
+          echo "Fase: $FASE" >> "$GITHUB_STEP_SUMMARY"
+          L="VEREDITO"; case "$FASE" in veredito*|manual) ;; *) L="RESULTADO PARCIAL (não é o veredito)";; esac
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
           case $rc in
-            0) echo "VEREDITO: todos os critérios passam" >> "$GITHUB_STEP_SUMMARY" ;;
-            3) echo "VEREDITO: nada reprovado; período ainda curto" >> "$GITHUB_STEP_SUMMARY" ;;
-            4) echo "VEREDITO: INCONCLUSIVO; nada reprovado, mas zero candidatos ou zero conferências: não houve o que comparar com o Node" >> "$GITHUB_STEP_SUMMARY" ;;
-            *) echo "VEREDITO: há critério reprovado"   >> "$GITHUB_STEP_SUMMARY"; exit 1 ;;
+            0) echo "$L: todos os critérios passam" >> "$GITHUB_STEP_SUMMARY" ;;
+            3) echo "$L: nada reprovado; período ainda curto" >> "$GITHUB_STEP_SUMMARY" ;;
+            4) echo "$L: INCONCLUSIVO; nada reprovado, mas zero candidatos ou zero conferências: não houve o que comparar com o Node" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "$L: há critério reprovado"   >> "$GITHUB_STEP_SUMMARY"; exit 1 ;;
           esac
           rm -rf dl all

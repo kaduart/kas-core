@@ -175,3 +175,34 @@ func TestHealthProbe(t *testing.T) {
 		t.Fatalf("code=%d health=%v", code, r.Health)
 	}
 }
+
+// Coverage counts only cycles that finished without error or skip, one per 5-minute slot:
+// error cycles and duplicated cycles from overlapping runs do not inflate it.
+func TestCoverageCountsOnlyCompletedCyclesOncePerSlot(t *testing.T) {
+	// 1 day; every 3rd cycle failed -> about 67% covered even though every slot had a cycle line.
+	p := writeReport(t, true, 1, nil, func(i int, m map[string]any) {
+		if i%3 == 0 {
+			m["error"] = "candidates: timeout"
+		}
+	})
+	_, _, r := summarize(t, "-min-days", "0", "-max-error-rate", "1", "-max-error-streak", "999", p)
+	if r.Coverage > 0.7 || r.Coverage < 0.6 {
+		t.Fatalf("coverage with failed cycles = %v, want ~0.67", r.Coverage)
+	}
+	// The same report twice (two overlapping runs): coverage stays 100%, never above, and duplicates are reported.
+	q := writeReport(t, true, 1, nil, nil)
+	_, _, r = summarize(t, "-min-days", "0", q, q)
+	if r.Coverage != 1 || r.DuplicateSlots != r.ExpectedCycles || r.CoveredSlots != r.ExpectedCycles {
+		t.Fatalf("overlap: coverage=%v covered=%d expected=%d dup=%d", r.Coverage, r.CoveredSlots, r.ExpectedCycles, r.DuplicateSlots)
+	}
+	// Skipped cycles (e.g. already_running) do not count either.
+	s := writeReport(t, true, 1, nil, func(i int, m map[string]any) {
+		if i%2 == 0 {
+			m["skipped"] = "already_running"
+		}
+	})
+	_, _, r = summarize(t, "-min-days", "0", s)
+	if r.Coverage > 0.55 {
+		t.Fatalf("coverage with skipped cycles = %v", r.Coverage)
+	}
+}

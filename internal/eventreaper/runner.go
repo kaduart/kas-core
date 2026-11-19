@@ -363,9 +363,12 @@ func (r *Runner) finish(rep *CycleReport, started time.Time) {
 }
 
 // Loop runs a first cycle after warmup and then one every interval until ctx
-// ends (legacy: setTimeout 2 min, setInterval 5 min). Each report is passed to
-// onReport when it is not nil.
+// ends (legacy: setTimeout 2 min, setInterval 5 min). Like setInterval, the
+// cadence is fixed: cycle k starts at first+k*interval, so cycle durations do
+// not make the schedule drift; a cycle that overruns skips the missed starts.
+// Each report is passed to onReport when it is not nil.
 func (r *Runner) Loop(ctx context.Context, warmup, interval time.Duration, onReport func(CycleReport)) {
+	next := time.Now().Add(warmup)
 	timer := time.NewTimer(warmup)
 	defer timer.Stop()
 	for {
@@ -388,8 +391,18 @@ func (r *Runner) Loop(ctx context.Context, warmup, interval time.Duration, onRep
 		if onReport != nil {
 			onReport(rep)
 		}
-		timer.Reset(interval)
+		next = nextTick(next, interval, time.Now())
+		timer.Reset(time.Until(next))
 	}
+}
+
+// nextTick returns the first prev+k*interval (k >= 1) that is after now.
+func nextTick(prev time.Time, interval time.Duration, now time.Time) time.Time {
+	next := prev.Add(interval)
+	if !next.After(now) {
+		next = next.Add((now.Sub(next)/interval + 1) * interval)
+	}
+	return next
 }
 
 func describeAttempts(a Attempts) string {

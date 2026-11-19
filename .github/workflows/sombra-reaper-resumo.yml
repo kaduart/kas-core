@@ -1,6 +1,6 @@
 # Resumo consolidado da sombra do reaper KAS: baixa os relatórios criptografados das execuções
 # dos últimos dias, junta e avalia os critérios (docs/event-reaper/SOMBRA.md §5).
-# Diário às 09:00 (BRT) enquanto a sombra estiver ativa; manual a qualquer hora.
+# Diário às 09:00 (BRT) só com SOMBRA_AGENDA_ATIVA=true; manual a qualquer hora (na main).
 # Publica só contagens. O veredito dos 5 dias é a execução com min_days=5.
 name: sombra-reaper-resumo
 
@@ -24,7 +24,13 @@ permissions:
 
 jobs:
   resumo:
-    if: github.repository == 'kaduart/kas-core' && vars.SOMBRA_REAPER_ATIVA == 'true'
+    # Só a main: o ambiente "sombra" tem regra de branch = main e guarda os segredos.
+    # Disparo manual a partir de outra branch não recebe credenciais.
+    if: >-
+      github.repository == 'kaduart/kas-core' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'schedule' && vars.SOMBRA_AGENDA_ATIVA == 'true'))
+    environment: sombra
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

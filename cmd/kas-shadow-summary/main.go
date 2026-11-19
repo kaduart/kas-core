@@ -93,15 +93,19 @@ type criterion struct {
 }
 
 type result struct {
-	From, To       time.Time           `json:"-"`
-	FromS          string              `json:"from"`
-	ToS            string              `json:"to"`
-	Days           float64             `json:"days"`
-	Runs           int                 `json:"runs"`
-	RunsReadOnly   int                 `json:"runs_read_only_proven"`
-	RunsNotShadow  int                 `json:"runs_not_shadow"`
-	Cycles         int                 `json:"cycles"`
-	ExpectedCycles int                 `json:"expected_cycles"`
+	From, To       time.Time `json:"-"`
+	FromS          string    `json:"from"`
+	ToS            string    `json:"to"`
+	Days           float64   `json:"days"`
+	Runs           int       `json:"runs"`
+	RunsReadOnly   int       `json:"runs_read_only_proven"`
+	RunsNotShadow  int       `json:"runs_not_shadow"`
+	Cycles         int       `json:"cycles"`
+	ExpectedCycles int       `json:"expected_cycles"`
+	// CoveredSlots: 5-minute slots with at least one cycle that finished without error or skip.
+	// Duplicated cycles (overlapping runs) count once; error and skipped cycles do not count.
+	CoveredSlots   int                 `json:"covered_slots"`
+	DuplicateSlots int                 `json:"duplicate_slots"`
 	Coverage       float64             `json:"coverage"`
 	LongestGap     string              `json:"longest_gap"`
 	ErrorCycles    int                 `json:"error_cycles"`
@@ -318,6 +322,7 @@ func evaluate(lines []line, hs []health, th thresholds, withIDs bool) result {
 	}
 	sort.SliceStable(cycles, func(i, j int) bool { return cycles[i].StartedAt.Before(cycles[j].StartedAt) })
 	streak := 0
+	covered := map[time.Time]int{}
 	var prev time.Time
 	var longest time.Duration
 	for _, c := range cycles {
@@ -343,6 +348,9 @@ func evaluate(lines []line, hs []health, th thresholds, withIDs bool) result {
 		}
 		if c.Skipped != "" {
 			res.Skipped[c.Skipped]++
+		}
+		if c.Err == "" && c.Skipped == "" {
+			covered[c.StartedAt.UTC().Truncate(interval)]++
 		}
 		res.Candidates += c.Total
 		if c.Total > res.MaxCandidates {
@@ -386,11 +394,15 @@ func evaluate(lines []line, hs []health, th thresholds, withIDs bool) result {
 	if res.Cycles > 0 {
 		span := res.To.Sub(res.From)
 		res.Days = span.Hours() / 24
-		res.ExpectedCycles = int(span/interval) + 1
-		res.Coverage = float64(res.Cycles) / float64(res.ExpectedCycles)
-		if res.Coverage > 1 {
-			res.Coverage = 1
+		first, last := res.From.UTC().Truncate(interval), res.To.UTC().Truncate(interval)
+		res.ExpectedCycles = int(last.Sub(first)/interval) + 1
+		res.CoveredSlots = len(covered)
+		for _, n := range covered {
+			if n > 1 {
+				res.DuplicateSlots++
+			}
 		}
+		res.Coverage = float64(res.CoveredSlots) / float64(res.ExpectedCycles)
 		res.FromS, res.ToS = res.From.Format(time.RFC3339), res.To.Format(time.RFC3339)
 	}
 	res.LongestGap = longest.Round(time.Second).String()
@@ -446,7 +458,7 @@ func evaluate(lines []line, hs []health, th thresholds, withIDs bool) result {
 		fmt.Sprintf("memória máxima %.1f MB (limite %.0f); CPU total %.1f s", res.MaxRSSMB, th.maxRSSMB, res.CPUSeconds))
 	add("C7", "Período e cobertura",
 		res.Days >= th.minDays && res.Coverage >= th.minCoverage,
-		fmt.Sprintf("%.2f dias (mínimo %.0f); %d de %d ciclos esperados (%.1f%%, mínimo %.0f%%); maior intervalo sem ciclo %s", res.Days, th.minDays, res.Cycles, res.ExpectedCycles, res.Coverage*100, th.minCoverage*100, res.LongestGap))
+		fmt.Sprintf("%.2f dias (mínimo %.0f); %d de %d intervalos de ciclo com ciclo concluído sem erro (%.1f%%, mínimo %.0f%%); %d intervalos com ciclo duplicado; maior intervalo sem ciclo %s", res.Days, th.minDays, res.CoveredSlots, res.ExpectedCycles, res.Coverage*100, th.minCoverage*100, res.DuplicateSlots, res.LongestGap))
 	if !withIDs {
 		res.Examples = nil
 	}

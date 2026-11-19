@@ -206,3 +206,76 @@ func TestCoverageCountsOnlyCompletedCyclesOncePerSlot(t *testing.T) {
 		t.Fatalf("coverage with skipped cycles = %v", r.Coverage)
 	}
 }
+
+// Janela oficial: ciclos antes de -since (aquecimento) não contam, e a cobertura
+// é medida contra a janela inteira.
+func TestOfficialWindow(t *testing.T) {
+	// 10 dias de ciclos a partir de base (20/11 00h BRT); janela 24/11 00h → 29/11 00h BRT.
+	p := writeReport(t, true, 10, healthy, func(i int, m map[string]any) {
+		if i < 12*24*4 { // aquecimento com erro em todos os ciclos: não pode contar
+			m["error"] = "warm-up failure"
+		}
+	})
+	since, until := "2026-11-24T00:00:00-03:00", "2026-11-29T00:00:00-03:00"
+	code, out, r := summarize(t, "-min-days", "5", "-since", since, "-until", until, p)
+	if code != 0 {
+		t.Fatalf("code %d, want 0\n%s", code, out)
+	}
+	if r.ErrorCycles != 0 || r.Cycles != 5*24*12 {
+		t.Fatalf("window not applied: cycles=%d errors=%d", r.Cycles, r.ErrorCycles)
+	}
+	if r.Days != 5 || r.ExpectedCycles != 5*24*12 || r.Coverage != 1 {
+		t.Fatalf("days=%v expected=%d coverage=%v", r.Days, r.ExpectedCycles, r.Coverage)
+	}
+	if !strings.Contains(out, "Janela oficial") {
+		t.Fatal("window not shown in the Markdown")
+	}
+
+	// Um dia inteiro sem ciclo dentro da janela: a cobertura cai e C7 falha.
+	p2 := writeReport(t, true, 10, healthy, func(i int, m map[string]any) {
+		if i >= 12*24*5 && i < 12*24*6 {
+			m["error"] = "down"
+		}
+	})
+	code, out, r = summarize(t, "-min-days", "5", "-since", since, "-until", until, p2)
+	if code != 1 || r.Coverage > 0.81 {
+		t.Fatalf("missing day not caught: code=%d coverage=%v\n%s", code, r.Coverage, out)
+	}
+}
+
+func TestWindowFlagsValidated(t *testing.T) {
+	p := writeReport(t, true, 0.1, healthy, nil)
+	for _, args := range [][]string{
+		{"-since", "2026-11-24T00:00:00-03:00", p},
+		{"-since", "ontem", "-until", "2026-11-29T00:00:00-03:00", p},
+		{"-since", "2026-11-29T00:00:00-03:00", "-until", "2026-11-24T00:00:00-03:00", p},
+	} {
+		if code, _, _ := summarize(t, args...); code != 2 {
+			t.Fatalf("%v accepted", args)
+		}
+	}
+}
+
+// Zero candidatos: ciclos saudáveis, mas a comparação com o Node é inconclusiva.
+func TestZeroCandidatesIsInconclusive(t *testing.T) {
+	p := writeReport(t, true, 1, nil, func(i int, m map[string]any) {
+		m["total"] = 0
+		m["outcomes"] = []map[string]any{}
+	})
+	code, out, r := summarize(t, "-min-days", "0", p)
+	if code != 4 {
+		t.Fatalf("code %d, want 4 (inconclusive)\n%s", code, out)
+	}
+	if r.Comparison != "inconclusiva" || !strings.Contains(out, "INCONCLUSIVA") || !strings.Contains(out, "| INCONCLUSIVO |") {
+		t.Fatalf("inconclusive not reported\n%s", out)
+	}
+	// Uma falha real continua tendo prioridade sobre o inconclusivo.
+	p2 := writeReport(t, false, 1, nil, func(i int, m map[string]any) { m["total"] = 0 })
+	if code, _, _ := summarize(t, "-min-days", "0", p2); code != 1 {
+		t.Fatalf("failure hidden by inconclusive: code %d", code)
+	}
+	// Com candidatos e conferências, a comparação é conclusiva.
+	if _, _, r := summarize(t, "-min-days", "0", writeReport(t, true, 1, healthy, nil)); r.Comparison != "conclusiva" {
+		t.Fatalf("comparison %q", r.Comparison)
+	}
+}

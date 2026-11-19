@@ -1,7 +1,8 @@
 # Resumo consolidado da sombra do reaper KAS: baixa os relatórios criptografados das execuções
 # dos últimos dias, junta e avalia os critérios (docs/event-reaper/SOMBRA.md §5).
 # Diário às 09:00 (BRT) só com SOMBRA_AGENDA_ATIVA=true; manual a qualquer hora (na main).
-# Publica só contagens. O veredito dos 5 dias é a execução com min_days=5.
+# Publica só contagens. O veredito dos 5 dias é a execução com min_days=5 e a janela oficial
+# (since/until): ciclos antes de since são aquecimento e não contam (docs/event-reaper/SOMBRA.md §7).
 name: sombra-reaper-resumo
 
 on:
@@ -17,6 +18,14 @@ on:
         description: 'Período mínimo para aprovar (5 = veredito final; 0 = parcial)'
         required: false
         default: '0'
+      since:
+        description: 'Início da janela oficial, RFC3339 (veredito: 2026-11-24T00:00:00-03:00). Vazio = sem janela'
+        required: false
+        default: ''
+      until:
+        description: 'Fim da janela oficial, exclusivo (veredito: 2026-11-29T00:00:00-03:00)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -36,6 +45,8 @@ jobs:
     env:
       DAYS: ${{ github.event.inputs.days || '6' }}
       MIN_DAYS: ${{ github.event.inputs.min_days || '0' }}
+      SINCE: ${{ github.event.inputs.since }}
+      UNTIL: ${{ github.event.inputs.until }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
@@ -51,6 +62,11 @@ jobs:
           PASS: ${{ secrets.SOMBRA_REPORT_PASSPHRASE }}
         run: |
           since=$(date -u -d "-${DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
+          if [ -n "$SINCE" ]; then
+            # Execuções que podem ter ciclos na janela: começam até 6 h antes do início dela.
+            s=$(date -u -d "$SINCE" +%s) || { echo "::error::since inválido"; exit 1; }
+            since=$(date -u -d "@$((s - 21600))" +%Y-%m-%dT%H:%M:%SZ)
+          fi
           mkdir -p dl all
           gh run list -R "$GITHUB_REPOSITORY" -w sombra-reaper.yml -L 200 --json databaseId,createdAt,status \
             -q ".[] | select(.status==\"completed\" and .createdAt >= \"$since\") | .databaseId" > runs.txt
@@ -70,13 +86,15 @@ jobs:
           ls all/report-*.jsonl >/dev/null 2>&1 || { echo "nenhum relatório no período" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
           H=$(ls all/health-*.jsonl 2>/dev/null | paste -sd, -)
           set +e
-          bin/kas-shadow-summary -min-days "$MIN_DAYS" ${H:+-health "$H"} all/report-*.jsonl > summary.md
+          W=(); [ -n "$SINCE$UNTIL" ] && W=(-since "$SINCE" -until "$UNTIL")
+          bin/kas-shadow-summary -min-days "$MIN_DAYS" "${W[@]}" ${H:+-health "$H"} all/report-*.jsonl > summary.md
           rc=$?
           set -e
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
           case $rc in
             0) echo "VEREDITO: todos os critérios passam" >> "$GITHUB_STEP_SUMMARY" ;;
             3) echo "VEREDITO: nada reprovado; período ainda curto" >> "$GITHUB_STEP_SUMMARY" ;;
+            4) echo "VEREDITO: INCONCLUSIVO; nada reprovado, mas zero candidatos ou zero conferências: não houve o que comparar com o Node" >> "$GITHUB_STEP_SUMMARY" ;;
             *) echo "VEREDITO: há critério reprovado"   >> "$GITHUB_STEP_SUMMARY"; exit 1 ;;
           esac
           rm -rf dl all

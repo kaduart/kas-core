@@ -139,13 +139,13 @@ A classe vem de quem escreveu a mensagem observada (`observed_reason`: `reaper`,
 - Qualquer `decision_mismatch`, `unclassified` ou `node_not_acting`: baixar o artifact, rodar com `-with-ids`, explicar o caso em `DIVERGENCIAS.md`. Uma divergência explicada e sem defeito da KAS vira nova regra de classe; um defeito real reinicia a contagem dos 5 dias depois da correção.
 - Execução vermelha por erro de conexão isolado não reinicia nada; conta em C4.
 
-**Janela oficial registrada (Kadu, 19/11/2026; início ajustado para segunda 23/11)**
+**Janela oficial registrada (Kadu, 19/11/2026 19:35 BRT)**
 - Aquecimento: da ativação da agenda (19/11, 21:05 BRT) até 23/11 00h. Roda igual, aparece nos resumos diários, **não entra no veredito**.
-- Janela oficial: **23/11/2026 00h → 29/11/2026 00h, horário de Brasília** (segunda a sábado, 6 dias completos; fim exclusivo).
+- Janela oficial: **23/11/2026 00h → 28/11/2026 00h, horário de Brasília** (segunda a sexta, 5 dias completos; fim exclusivo).
 - Veredito: **30/11/2026, 10h BRT**.
 
 **Veredito**
-- Run manual do `sombra-reaper-resumo` com `min_days` = 6, `since` = `2026-11-23T00:00:00-03:00` e `until` = `2026-11-29T00:00:00-03:00`. Só os ciclos que começaram dentro da janela contam; período e cobertura (C7) são medidos contra a janela inteira, então um dia faltando reprova.
+- Run manual do `sombra-reaper-resumo` com `min_days` = 5, `since` = `2026-11-23T00:00:00-03:00` e `until` = `2026-11-28T00:00:00-03:00`. Só os ciclos que começaram dentro da janela contam; período e cobertura (C7) são medidos contra a janela inteira, então um dia faltando reprova.
 - Verde em C1–C7 com comparação **conclusiva** = sombra aprovada.
 - **Zero candidatos (ou zero conferências) = comparação INCONCLUSIVA**, mesmo com todos os ciclos saudáveis: C2 e C3 aparecem como `INCONCLUSIVO` e o resumo sai com código 4. Ciclos saudáveis provam que a sombra roda, não que decide como o Node. Inconclusivo não aprova a sombra.
 - Aprovação **não** ativa escrita: a troca de responsabilidade (executor) é outra etapa, com OK separado.

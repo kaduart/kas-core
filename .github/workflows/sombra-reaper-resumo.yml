@@ -19,7 +19,7 @@ on:
         required: false
         default: '0'
       since:
-        description: 'Início da janela oficial, RFC3339 (veredito: 2026-11-24T00:00:00-03:00). Vazio = sem janela'
+        description: 'Início da janela oficial, RFC3339 (veredito: 2026-11-23T00:00:00-03:00). Vazio = sem janela'
         required: false
         default: ''
       until:

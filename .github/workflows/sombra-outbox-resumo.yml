@@ -1,0 +1,96 @@
+# Resumo consolidado da sombra do Outbox (failed): baixa os relatórios criptografados das execuções
+# dos últimos dias, junta e avalia os critérios (docs/outbox-recovery/SOMBRA.md).
+# Diário às 09:30 (BRT) só com SOMBRA_OUTBOX_AGENDA_ATIVA=true; manual a qualquer hora (na main).
+# Publica só contagens, tipos de evento e nomes de fila. Separado da sombra do reaper.
+name: sombra-outbox-resumo
+
+on:
+  schedule:
+    - cron: '30 12 * * *'
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Quantos dias de execuções juntar'
+        required: false
+        default: '6'
+      min_days:
+        description: 'Período mínimo para aprovar (5 = veredito; 0 = parcial)'
+        required: false
+        default: '0'
+      since:
+        description: 'Início da janela oficial, RFC3339 (ex.: 2026-12-01T00:00:00-03:00). Vazio = sem janela'
+        required: false
+        default: ''
+      until:
+        description: 'Fim da janela oficial, exclusivo, RFC3339'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  resumo:
+    if: >-
+      github.repository == 'kaduart/kas-core' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'schedule' && vars.SOMBRA_OUTBOX_AGENDA_ATIVA == 'true'))
+    environment: sombra-outbox
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DAYS: ${{ github.event.inputs.days || '6' }}
+      MIN_DAYS: ${{ github.event.inputs.min_days || '0' }}
+      SINCE: ${{ github.event.inputs.since }}
+      UNTIL: ${{ github.event.inputs.until }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go build -o bin/kas-outbox-shadow-summary ./cmd/kas-outbox-shadow-summary
+      - name: Baixar e decifrar os relatórios
+        env:
+          PASS: ${{ secrets.SOMBRA_OUTBOX_REPORT_PASSPHRASE }}
+        run: |
+          since=$(date -u -d "-${DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
+          if [ -n "$SINCE" ]; then
+            s=$(date -u -d "$SINCE" +%s) || { echo "::error::since inválido"; exit 1; }
+            since=$(date -u -d "@$((s - 21600))" +%Y-%m-%dT%H:%M:%SZ)
+          fi
+          mkdir -p dl all
+          gh run list -R "$GITHUB_REPOSITORY" -w sombra-outbox.yml -L 200 --json databaseId,createdAt,status \
+            -q ".[] | select(.status==\"completed\" and .createdAt >= \"$since\") | .databaseId" > runs.txt
+          echo "execuções no período: $(wc -l < runs.txt)"
+          while read -r id; do
+            gh run download "$id" -R "$GITHUB_REPOSITORY" -D "dl/$id" >/dev/null 2>&1 || continue
+            for f in dl/$id/*/*.gpg; do
+              [ -f "$f" ] || continue
+              printf '%s' "$PASS" | gpg --batch --quiet --pinentry-mode loopback --passphrase-fd 0 -d "$f" | tar xz -C "dl/$id"
+              [ -f "dl/$id/run/report.jsonl" ] && cp "dl/$id/run/report.jsonl" "all/report-$id.jsonl"
+              [ -f "dl/$id/run/health.jsonl" ] && cp "dl/$id/run/health.jsonl" "all/health-$id.jsonl"
+            done
+          done < runs.txt
+          ls all | wc -l
+      - name: Avaliar os critérios
+        run: |
+          ls all/report-*.jsonl >/dev/null 2>&1 || { echo "nenhum relatório no período" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          H=$(ls all/health-*.jsonl 2>/dev/null | paste -sd, -)
+          W=(); [ -n "$SINCE$UNTIL" ] && W=(-since "$SINCE" -until "$UNTIL")
+          set +e
+          bin/kas-outbox-shadow-summary -min-days "$MIN_DAYS" "${W[@]}" ${H:+-health "$H"} all/report-*.jsonl > summary.md
+          rc=$?
+          set -e
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          case $rc in
+            0) echo "VEREDITO: todos os critérios passam" >> "$GITHUB_STEP_SUMMARY" ;;
+            3) echo "VEREDITO: nada reprovado; período ainda curto" >> "$GITHUB_STEP_SUMMARY" ;;
+            4) echo "VEREDITO: INCONCLUSIVO; nada reprovado, mas nenhuma entrada failed no período" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "VEREDITO: há critério reprovado" >> "$GITHUB_STEP_SUMMARY"; exit 1 ;;
+          esac
+          rm -rf dl all

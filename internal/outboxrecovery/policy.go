@@ -113,6 +113,11 @@ type Entry struct {
 	// PermanentError is the adapter's classification of the last error
 	// against Config.PermanentErrorPrefixes. The text itself is never kept.
 	PermanentError bool
+	// Type and CreatedAt are reported by the shadow (what kind of entry, how
+	// old) and never used by the policy: they do not change any decision.
+	Type           string
+	CreatedAt      time.Time
+	CreatedAtValid bool
 	// Recoveries and Exhausted are this package's own bookkeeping.
 	Recoveries int64
 	Exhausted  bool

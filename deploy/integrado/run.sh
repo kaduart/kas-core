@@ -276,8 +276,11 @@ CRM_ENV=(CRM_ISOLADO_API_PORT="$CPORT")
 P2=$(crm apiFlow.mjs post 2 queda); echo "$P2" | tail -1
 CRM_ENV=()
 echo "$P2" | grep -q '"created":2' && ok "com o Redis parado, a API continua aceitando agendamentos (outbox na transação do Mongo)" || bad "POST com Redis parado: $P2"
-for _ in $(seq 1 30); do [ "$(real_failed)" = 2 ] && break; sleep 1; done
-[ "$(real_failed)" = 2 ] && ok "falha REAL de publicação: 2 eventos em failed com 'Connection is closed.' (mesmo erro visto em produção)" || bad "failed reais: $(real_failed)/2"
+for _ in $(seq 1 30); do [ "$(real_failed)" -ge 1 ] && break; sleep 1; done
+# O 1º evento falha com 'Connection is closed.' e a fila presa é descartada; a fila nova
+# espera o Redis (fila offline do ioredis), então o 2º pode ficar pending em vez de failed.
+[ "$(real_failed)" -ge 1 ] && ok "falha REAL de publicação: $(real_failed) evento(s) em failed com 'Connection is closed.' (mesmo erro visto em produção)" || bad "nenhum failed real com o Redis parado"
+[ "$(real_published)" = 3 ] && ok "nada publicado enquanto o Redis estava parado" || bad "publicados durante a queda: $(real_published) (esperado 3)"
 docker start "$R" >/dev/null
 for _ in $(seq 1 30); do docker exec "$R" redis-cli ping >/dev/null 2>&1 && break; sleep 1; done
 "$WORK/kas-outbox-recovery" -mode executor -db "$DB" -executor-confirm-db "$DB" -interval 1s >"$WORK/outbox-queda.log" 2>&1 & OB9=$!; PIDS+=("$OB9")

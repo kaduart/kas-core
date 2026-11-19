@@ -137,3 +137,16 @@ func TestWindowAndCoverage(t *testing.T) {
 		t.Fatalf("short period: code %d", code)
 	}
 }
+
+func TestProcessMemoryIsReported(t *testing.T) {
+	p := writeReport(t, true, 0.1, nil, func(i int, m map[string]any) {
+		m["proc"] = map[string]any{"rss_bytes": (20 + i) << 20, "peak_rss_bytes": 31 << 20, "heap_bytes": 4 << 20}
+	})
+	_, out, r := summarize(t, "-min-days", "0", p)
+	if r.MaxRSSMB < 47 || r.MaxRSSMB > 49 || r.MaxPeakRSSMB != 31 || r.MaxHeapMB != 4 {
+		t.Fatalf("memory %+v", r)
+	}
+	if !strings.Contains(out, "RSS máximo") || !strings.Contains(out, "VmHWM") {
+		t.Fatalf("markdown without memory line:\n%s", out)
+	}
+}

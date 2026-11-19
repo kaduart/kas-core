@@ -37,6 +37,7 @@ A cada 5 min, para cada entrada `failed` ainda não desistida:
 - **elegibilidade**, na política do #11 sem mudança: `recover` (`retry`), `exhaust` (`permanent_error`, `attempts_exhausted`, `recovery_limit`) ou `none` (`backoff_not_elapsed`, `malformed_entry`);
 - **tentativas** (`attempts` do dispatcher) e recuperações anteriores;
 - **idade** (`agora − createdAt`);
+- a **memória do processo Go** em cada ciclo (RSS e pico VmHWM medidos pelo kernel, e heap). O resumo mostra os máximos. Esse dado é informativo e serve de base para a decisão de hospedagem. O `GOMEMLIMIT` não é teto rígido, por isso o que vale é o RSS;
 - **destino proposto** (filas do `eventToQueueMap`, ou "sem rota");
 - um **censo** do Outbox (contagem por status e `pending` atrasadas).
 

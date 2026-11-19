@@ -95,6 +95,7 @@ type cycleLine struct {
 	StartedAt  time.Time     `json:"started_at"`
 	DurationNs time.Duration `json:"duration_ns"`
 	Error      string        `json:"error,omitempty"`
+	Proc       procStats     `json:"proc"`
 	outboxrecovery.Cycle
 }
 
@@ -271,7 +272,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		cy, err := r.RunCycle(cctx)
 		cancel()
 		if report != nil {
-			line := cycleLine{Kind: "cycle", StartedAt: started.UTC(), DurationNs: time.Since(started), Cycle: cy}
+			line := cycleLine{Kind: "cycle", StartedAt: started.UTC(), DurationNs: time.Since(started), Proc: readProcStats(), Cycle: cy}
 			if err != nil && ctx.Err() == nil { // a stop signal is not a failed cycle
 				line.Error = err.Error()
 			}

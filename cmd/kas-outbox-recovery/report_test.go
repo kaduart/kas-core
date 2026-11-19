@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +81,13 @@ func TestShadowReportOnADisposableDatabase(t *testing.T) {
 	}
 	if strings.Contains(string(mustJSON(t, lines)), "PACIENTE-FICTICIO") {
 		t.Fatal("payload leaked into the report")
+	}
+	proc, _ := lines[1]["proc"].(map[string]any)
+	if proc == nil || proc["heap_bytes"].(float64) <= 0 {
+		t.Fatalf("cycle line without process memory: %v", lines[1]["proc"])
+	}
+	if runtime.GOOS == "linux" && (proc["rss_bytes"] == nil || proc["peak_rss_bytes"] == nil) {
+		t.Fatalf("linux cycle line without RSS/peak RSS: %v", proc)
 	}
 	items := lines[1]["items"].([]any)
 	if len(items) != 3 {

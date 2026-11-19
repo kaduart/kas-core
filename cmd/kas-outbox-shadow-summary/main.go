@@ -65,7 +65,12 @@ type line struct {
 	Exhausted int           `json:"exhausted"`
 	LostRaces int           `json:"lostRaces"`
 	Items     []item        `json:"items"`
-	Census    *struct {
+	Proc      struct {
+		RSS     uint64 `json:"rss_bytes"`
+		PeakRSS uint64 `json:"peak_rss_bytes"`
+		Heap    uint64 `json:"heap_bytes"`
+	} `json:"proc"`
+	Census *struct {
 		ByStatus        map[string]int64 `json:"byStatus"`
 		FailedExhausted int64            `json:"failedExhausted"`
 		PendingStale    int64            `json:"pendingStale"`
@@ -100,6 +105,11 @@ type typeRow struct {
 }
 
 type result struct {
+	// Memory of the Go process across the period (informative: input for the
+	// hosting decision, not a criterion). PeakRSS is the kernel high-water mark.
+	MaxRSSMB       float64            `json:"max_rss_mb"`
+	MaxPeakRSSMB   float64            `json:"max_peak_rss_mb"`
+	MaxHeapMB      float64            `json:"max_heap_mb"`
 	WindowFrom     string             `json:"window_from,omitempty"`
 	WindowTo       string             `json:"window_to,omitempty"`
 	FromS          string             `json:"from"`
@@ -329,6 +339,10 @@ func evaluate(lines []line, hs []health, th thresholds) result {
 			}
 			curIn = true
 			cycles = append(cycles, l)
+			const mb = 1024 * 1024
+			res.MaxRSSMB = math.Max(res.MaxRSSMB, float64(l.Proc.RSS)/mb)
+			res.MaxPeakRSSMB = math.Max(res.MaxPeakRSSMB, float64(l.Proc.PeakRSS)/mb)
+			res.MaxHeapMB = math.Max(res.MaxHeapMB, float64(l.Proc.Heap)/mb)
 		}
 	}
 	closeRun()
@@ -496,6 +510,7 @@ func writeMarkdown(w io.Writer, r result) {
 		fmt.Fprintf(w, "Nenhum ciclo no relatório.\n\n")
 	} else {
 		fmt.Fprintf(w, "Período: %s → %s. Execuções: %d. Ciclos: %d. Ciclo p50 %.0f ms, p95 %.0f ms.\n\n", r.FromS, r.ToS, r.Runs, r.Cycles, r.Duration["p50"], r.Duration["p95"])
+		fmt.Fprintf(w, "Memória do processo Go (medida pelo kernel, informativa): RSS máximo %.1f MB; pico desde o início (VmHWM) %.1f MB; heap máximo %.1f MB.\n\n", r.MaxRSSMB, r.MaxPeakRSSMB, r.MaxHeapMB)
 	}
 	fmt.Fprintf(w, "| Critério | Resultado | Detalhe |\n|---|---|---|\n")
 	for _, c := range r.Criteria {

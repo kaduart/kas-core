@@ -8,7 +8,7 @@ Ela cobre **entradas do Outbox transacional do CRM (`outboxes`) com `status: fai
 
 A recuperação (kas-core #11) devolveria essas entradas para `pending`, e o próprio dispatcher do Node publicaria de novo. **A sombra não faz isso.** Ela só lê e registra o que a recuperação faria.
 
-### Tipos de evento que chegam ao Outbox (inventário do código do CRM, `main` 529ca0f)
+### Tipos de evento que chegam ao Outbox (inventário do código do CRM, `main` 529ca0f; fiscais conferidos em f511574)
 
 Levantado pelos `saveToOutbox(...)` do CRM. O destino é o `eventToQueueMap`, embutido em `internal/legacy/crmoutbox/queues.json`. A CI compara esse arquivo com o CRM a cada execução.
 
@@ -28,6 +28,7 @@ Levantado pelos `saveToOutbox(...)` do CRM. O destino é o `eventToQueueMap`, em
 | PATIENT_DELETE_REQUESTED | domínio clínico | patient-processing | não |
 | INSURANCE_GUIDE_CREATED / INSURANCE_PAYMENT_AUTO_SETTLED / LIMINAR_CONTRACT_CREATED | convênio e liminar | patient-projection (e balance-update) | não |
 | INSURANCE_BATCH_PROCESSING / _COMPLETED / _PARTIAL_SUCCESS / INSURANCE_ITEM_RETRYING | insuranceOrchestratorWorker | **sem rota** (UNKNOWN_EVENT_TYPE) | não |
+| FISCAL_INVOICE_REQUESTED, FISCAL_SUBMISSION_STARTED/_SUCCEEDED/_FAILED, FISCAL_INVOICE_AUTHORIZED/_REJECTED/_CANCELLED/_SUBSTITUTED, OFFICIAL_FISCAL_EVENT_RECORDED | publishFiscalDomainEvent (domínio fiscal; o próprio código diz que a rota só chega no "PR4") | **sem rota** (UNKNOWN_EVENT_TYPE) | não |
 
 "Pode enviar a uma pessoa" significa que a fila de destino tem um worker que pode mandar WhatsApp ou e-mail: `notification`, `whatsapp-notification`, `followup-processing`, `whatsapp-auto-reply` ou `lead-orchestrator-v2` (`internal/legacy/crmoutbox/queues.go`). Isso **não** quer dizer que vai enviar: depende do worker e das proteções do CRM (outbound_deliveries). Quer dizer que recuperar a entrada **chega** a um caminho de envio. A tabela da produção sai do relatório, que conta o que realmente existe no `outboxes`.
 
@@ -108,6 +109,7 @@ Mongo 7 com autenticação e o mesmo papel do Atlas, Redis 7 e o **dispatcher re
 
 ## 8. Achados para a etapa seguinte (executor), não para a sombra
 
+- Proposta de validade por tipo (para aprovação do Kadu, levantada no código do CRM em f511574): https://claude.ai/artifact/4L3NvTJrp5r2EZaNDhkcWx
 - **BLOQUEIO do executor (Kadu, 19/11/2026 19:35 BRT): limite de idade.** Eventos antigos **não podem ser republicados indiscriminadamente**. Hoje a política devolveria a `pending` uma entrada `failed` de qualquer idade. Para os tipos cujo destino inclui `notification` (APPOINTMENT_CREATED, _SCHEDULED, _RESCHEDULED, _UPDATED), isso pode gerar um aviso atrasado, por exemplo sobre um agendamento de dias atrás. **A validade depende do tipo de evento e das regras do CRM.** Não existe um prazo único. O executor **não pode ser ligado** enquanto não houver uma tabela "tipo de evento → idade máxima (ou nunca republicar)" aprovada pelo Kadu e conferida contra as regras do CRM, por exemplo se o agendamento ainda existe, se já passou ou se foi cancelado. Os números reais da sombra servem de base. O relatório já separa por idade as entradas que "recuperaria com destino que pode enviar a uma pessoa".
 - **Tipos sem rota** (APPOINTMENT_CONFIRMED, INSURANCE_BATCH_*, INSURANCE_ITEM_RETRYING) nunca serão publicados. A política já desiste deles. A correção é no CRM (mapear a fila ou parar de gravar).
 - **Publicação parcial.** O dispatcher publica fila por fila; uma falha no meio deixa jobs já criados. O jobId `eventId__fila` evita duplicar enquanto o job existir no Redis, mas não depois que ele é removido.

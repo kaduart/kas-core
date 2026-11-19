@@ -221,6 +221,9 @@ jobs:
         working-directory: crm
         run: npm ci --no-audit --no-fund
 
+      - name: Schedule window never overlaps the next slot (deploy/sombra/janela.sh)
+        run: deploy/sombra/janela_test.sh
+
       - name: Run S1-S6 (authenticated Mongo, same role as Atlas, real CRM reaper)
         run: |
           set -o pipefail

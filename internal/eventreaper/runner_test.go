@@ -299,3 +299,17 @@ func TestShadowCheckClassifiesWhoWroteTheObservedMessage(t *testing.T) {
 		t.Fatal("the report must not copy the observed message text")
 	}
 }
+
+func TestLoopCadenceIsFixedLikeSetInterval(t *testing.T) {
+	prev := t0
+	if got := nextTick(prev, 5*time.Minute, t0.Add(40*time.Millisecond)); !got.Equal(t0.Add(5 * time.Minute)) {
+		t.Fatalf("a short cycle must not delay the next start: %v", got.Sub(t0))
+	}
+	// A cycle that took 12 minutes skips the starts at +5 and +10 and keeps the grid.
+	if got := nextTick(prev, 5*time.Minute, t0.Add(12*time.Minute)); !got.Equal(t0.Add(15 * time.Minute)) {
+		t.Fatalf("overrun: next at %v", got.Sub(t0))
+	}
+	if got := nextTick(prev, 5*time.Minute, t0.Add(5*time.Minute)); !got.Equal(t0.Add(10 * time.Minute)) {
+		t.Fatalf("exactly on the tick: next at %v", got.Sub(t0))
+	}
+}

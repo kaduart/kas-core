@@ -18,7 +18,7 @@ Data: 19/11/2026. Estado: **pacote pronto, sombra desligada.** Nada foi criado n
 
 | Opção | Custo | Disponibilidade | Veredito |
 |---|---|---|---|
-| **GitHub Actions no `kaduart/kas-core`** (repo público) | R$ 0 (minutos ilimitados em repo público) | Execuções de ~5h45 em fila, com ciclos a cada 5 min (amostragem, meta ≥ 90% dos ciclos); não depende de PC ligado | **Recomendado** |
+| **GitHub Actions no `kaduart/kas-core`** (repo público) | R$ 0 (minutos ilimitados em repo público) | Quatro execuções por dia, sem sobreposição, com ciclos a cada 5 min (amostragem, meta ≥ 90% dos intervalos com ciclo concluído); não depende de PC ligado | **Recomendado** |
 | KADU-PC (Windows, local) | R$ 0 | Depende do PC ligado e acordado 5 dias; risco de cobertura < 90% | Reserva |
 | Render (workspace atual) | Worker extra pago; web free não recebe tráfego privado e dorme | — | Não usar (custo/regra "nada no Render sem OK") |
 | Atlas, outras nuvens | Pago ou exige conta nova | — | Não usar |
@@ -29,10 +29,12 @@ Rede: a lista de acesso do projeto Atlas de produção já tem a faixa aberta us
 
 Workflows (só rodam depois do merge na `main`, porque agenda do Actions usa a branch padrão):
 
-- `.github/workflows/sombra-reaper.yml`: de hora em hora (minuto 7); grupo de concorrência enfileira a próxima execução. Entre uma execução e outra há uma lacuna de ~2 min (preparo + 30 s de aquecimento), e o agendador do GitHub pode atrasar; é amostragem por ciclos, não acompanhamento contínuo. A cobertura real é medida pelo C7. Cada execução: compila da `main`, roda `kas-event-reaper -mode shadow -protocol v2 -require-read-only on -warmup 30s -interval 5m`, sonda o `/health` do CRM a cada 60 s, publica o resumo (só contagens) e guarda o relatório completo **criptografado (AES256)** como artifact por 14 dias.
-- `.github/workflows/sombra-reaper-resumo.yml`: todo dia às 09:00 (BRT) junta as execuções dos últimos dias e avalia os critérios. Manual com `days` e `min_days`.
-
-Execuções canceladas na fila são normais: o Actions mantém só uma pendente por grupo.
+- `.github/workflows/sombra-reaper.yml`, com dois gatilhos **separados**:
+  - **Manual** (Run workflow, branch `main`): uma execução com `minutes` (padrão 15, máximo 345). Não depende de variável e não liga a agenda.
+  - **Agenda**: 00:05, 06:05, 12:05 e 18:05 UTC (21:05, 03:05, 09:05 e 15:05 em Brasília), **só** com `SOMBRA_AGENDA_ATIVA=true`. Cada execução termina 8 min antes do próximo horário (`deploy/sombra/janela.sh`): até ~5h45 se começar na hora, menos se o GitHub atrasar. O fim é ancorado no próximo horário, então as execuções não se sobrepõem e não dependem de fila; uma execução atrasada demais (< 10 min úteis) não roda.
+  - Cada execução: compila da `main`, roda `kas-event-reaper -mode shadow -protocol v2 -require-read-only on -warmup 30s -interval 5m` (cadência fixa, como o `setInterval` do Node), sonda o `/health` do CRM a cada 60 s, publica o resumo (só contagens) e guarda o relatório completo **criptografado (AES256)** como artifact por 14 dias.
+  - É amostragem por ciclos, não acompanhamento contínuo: há ~10 min sem ciclo a cada 6 h (8 min de margem + preparo), mais qualquer atraso do GitHub. A cobertura (C7) conta só intervalos de 5 min com ciclo **concluído sem erro**, um por intervalo; ciclo com erro, pulado ou duplicado não conta.
+- `.github/workflows/sombra-reaper-resumo.yml`: manual a qualquer hora; diário às 09:00 (BRT) só com `SOMBRA_AGENDA_ATIVA=true`. Junta as execuções dos últimos dias e avalia os critérios.
 
 Segredos: ficam no **ambiente `sombra`**, não nos segredos do repositório. Settings → Environments → New environment `sombra` → Deployment branches and tags → Selected branches → regra `main`. Só jobs da `main` recebem esses segredos; um disparo manual a partir de outra branch, PRs e forks não recebem. Os workflows não têm gatilho `pull_request`.
 
@@ -49,9 +51,9 @@ SOMBRA_REPORT_PASSPHRASE
 Variáveis do repositório (aba Variables):
 
 ```
-SOMBRA_REAPER_ATIVA
+SOMBRA_AGENDA_ATIVA
 ```
-`true` liga, `false` (ou apagar) desliga.
+Liga só a agenda (`true`). **Para o teste manual, não crie esta variável** (ou deixe com qualquer valor diferente de `true`): sem ela nenhuma execução agendada nem resumo diário roda.
 
 ```
 SOMBRA_LEGACY_FENCE
@@ -106,7 +108,7 @@ Para desfazer: apagar o usuário `kas_reaper_shadow` e o papel. Nada mais foi cr
 | C4 | Erros registrados e dentro do limite | Ciclos com erro ≤ 1% e no máximo 3 seguidos |
 | C5 | Sem impacto perceptível no CRM | Ciclo p95 ≤ 2 s, ≤ 100 candidatos por ciclo, `/health` com ≥ 99% de respostas 200 |
 | C6 | Consumo registrado | RSS máximo ≤ 128 MB; CPU total registrada |
-| C7 | Período e cobertura | ≥ 5 dias e ≥ 90% dos ciclos esperados |
+| C7 | Período e cobertura | ≥ 5 dias e ≥ 90% dos intervalos de 5 min com ciclo concluído sem erro |
 
 Saída do resumo: 0 aprovado, 1 algum critério falhou, 3 período ainda curto.
 
@@ -127,11 +129,10 @@ A classe vem de quem escreveu a mensagem observada (`observed_reason`: `reaper`,
 ## 7. Roteiro dos cinco dias
 
 **Dia 0 (pré-condições, ~15 min do Kadu)**
-1. Merge do PR desta branch na `main`.
-2. Criar papel e usuário (seção 4) e os dois segredos.
-3. Copiar `EVENT_LEGACY_FENCE_AT` da API para `SOMBRA_LEGACY_FENCE` (ou deixar vazio).
-4. Teste curto: Actions → `sombra-reaper` → Run workflow com `minutes` = 15, depois de pôr `SOMBRA_REAPER_ATIVA=true`. Esperado: log com "usuário só leitura comprovado pelo servidor", C1 verde, saída 124.
-5. Se o teste passar, deixar a variável em `true`. A agenda horária assume.
+1. Criar o ambiente `sombra` (regra de branch `main`), o papel e o usuário (seção 4) e os dois segredos do ambiente.
+2. Copiar `EVENT_LEGACY_FENCE_AT` do serviço `fono-inova-crm-back` para `SOMBRA_LEGACY_FENCE` (ou não criar a variável).
+3. **Sem** `SOMBRA_AGENDA_ATIVA`: Actions → `sombra-reaper` → Run workflow, branch `main`, `minutes` = 15. Esperado: "usuário só leitura comprovado pelo servidor", saída 124, C1 verde, 3 ciclos.
+4. Avaliar o resultado. Só depois, e com OK separado, criar `SOMBRA_AGENDA_ATIVA=true` para começar os 5 dias.
 
 **Dias 1 a 5**
 - 09:00: o resumo diário roda sozinho. Olhar só C1–C6 e as classes; C7 fica "período curto" até o dia 5.
@@ -141,9 +142,9 @@ A classe vem de quem escreveu a mensagem observada (`observed_reason`: `reaper`,
 **Dia 5 (veredito)**
 - Run manual do `sombra-reaper-resumo` com `days` = 6 e `min_days` = 5. Verde em C1–C7 = sombra aprovada. Isso **não** ativa escrita: a troca de responsabilidade (executor) é outra etapa, com OK separado.
 
-**Parar a qualquer momento**
+**Parar a qualquer momento**: apagar a variável (ou trocar para `false`)
 ```
-SOMBRA_REAPER_ATIVA=false
+SOMBRA_AGENDA_ATIVA
 ```
 A execução em andamento termina sozinha; para cortar na hora, cancelar o run. Para revogar o acesso, apagar o usuário no Atlas.
 

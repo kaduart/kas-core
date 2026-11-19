@@ -1,26 +1,28 @@
 # Sombra do reaper KAS contra o Mongo de produção, SÓ LEITURA (docs/event-reaper/SOMBRA.md).
 #
-# Fica inerte até o Kadu ligar a variável do repositório SOMBRA_REAPER_ATIVA=true e criar os
-# segredos (do ambiente "sombra", restrito à main) KAS_REAPER_SHADOW_MONGO_URI (usuário com o papel kasReaperShadowRead) e
-# SOMBRA_REPORT_PASSPHRASE. Desligar: SOMBRA_REAPER_ATIVA=false (ou apagar a variável).
+# Dois gatilhos SEPARADOS:
+#   - Manual (workflow_dispatch): uma execução com a duração pedida (padrão 15 min). Não liga a
+#     agenda nem dispara outras execuções.
+#   - Agenda: 00:05, 06:05, 12:05 e 18:05 UTC, SÓ com a variável SOMBRA_AGENDA_ATIVA=true.
+#     Sem essa variável (ou com qualquer outro valor) o agendamento não roda.
+# Cada execução agendada termina 8 min antes do próximo horário (deploy/sombra/janela.sh), então
+# as execuções não se sobrepõem e não dependem de fila. É amostragem por ciclos de 5 min; a
+# cobertura (C7) conta só os ciclos concluídos sem erro, um por intervalo.
 #
-# Custo: zero (repositório público, runners do GitHub). Cada execução dura ~5h45; a agenda é de
-# hora em hora e o grupo de concorrência enfileira a próxima. É amostragem (ciclos de 5 min com
-# pequenas lacunas entre execuções), não acompanhamento contínuo; a cobertura é medida pelo C7.
-#
+# Segredos: só no ambiente "sombra" (regra de branch = main). Custo: zero (repo público).
 # O que fica público: só o resumo com contagens (sem eventId). O relatório completo, o log do
 # binário e a sonda do /health saem criptografados (AES256) como artifact por 14 dias.
 name: sombra-reaper
 
 on:
   schedule:
-    - cron: '7 * * * *'
+    - cron: '5 0,6,12,18 * * *'
   workflow_dispatch:
     inputs:
       minutes:
-        description: 'Duração desta execução em minutos (máx. 345)'
+        description: 'Duração desta execução manual em minutos (1 a 345)'
         required: false
-        default: '345'
+        default: '15'
 
 permissions:
   contents: read
@@ -33,7 +35,11 @@ jobs:
   sombra:
     # Só a main: o ambiente "sombra" tem regra de branch = main e guarda os segredos.
     # Disparo manual a partir de outra branch não recebe credenciais.
-    if: github.repository == 'kaduart/kas-core' && vars.SOMBRA_REAPER_ATIVA == 'true' && github.ref == 'refs/heads/main'
+    # Manual: sempre permitido (na main). Agenda: só com SOMBRA_AGENDA_ATIVA=true.
+    if: >-
+      github.repository == 'kaduart/kas-core' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'schedule' && vars.SOMBRA_AGENDA_ATIVA == 'true'))
     environment: sombra
     runs-on: ubuntu-latest
     timeout-minutes: 358
@@ -42,7 +48,7 @@ jobs:
       # Mesmo valor de EVENT_LEGACY_FENCE_AT da API (vazio se a API não tiver a variável).
       LEGACY_FENCE: ${{ vars.SOMBRA_LEGACY_FENCE }}
       HEALTH_URL: ${{ vars.SOMBRA_CRM_HEALTH_URL || 'https://fono-inova-crm-back.onrender.com/health' }}
-      MINUTES: ${{ github.event.inputs.minutes || '345' }}
+      MINUTES: ${{ github.event.inputs.minutes }}
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -68,12 +74,20 @@ jobs:
         run: |
           [ -n "$URI" ] || { echo "::error::segredo KAS_REAPER_SHADOW_MONGO_URI ausente"; exit 1; }
           [ -n "$PASS" ] || { echo "::error::segredo SOMBRA_REPORT_PASSPHRASE ausente"; exit 1; }
-          [ "$MINUTES" -ge 1 ] && [ "$MINUTES" -le 345 ] || { echo "::error::minutes fora de 1..345"; exit 1; }
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            [[ "$MINUTES" =~ ^[0-9]+$ ]] && [ "$MINUTES" -ge 1 ] && [ "$MINUTES" -le 345 ] || { echo "::error::minutes fora de 1..345"; exit 1; }
+            SECS=$((MINUTES * 60))
+          else
+            SECS=$(deploy/sombra/janela.sh)
+          fi
+          echo "duração desta execução: ${SECS}s ($GITHUB_EVENT_NAME)"
+          echo "SECS=$SECS" >> "$GITHUB_ENV"
 
       - name: Sombra (só leitura) e sonda do /health
         env:
           KAS_REAPER_MONGO_URI: ${{ secrets.KAS_REAPER_SHADOW_MONGO_URI }}
         run: |
+          [ "$SECS" -gt 0 ] || { echo "execução agendada atrasada demais: não roda para não encostar na próxima"; exit 0; }
           mkdir -p run
           # Sonda do /health do CRM a cada 60 s (só status e tempo).
           ( while true; do
@@ -84,18 +98,18 @@ jobs:
           set +e
           FENCE_ARGS=(); [ -n "$LEGACY_FENCE" ] && FENCE_ARGS=(-legacy-fence "$LEGACY_FENCE")
           # stdout do binário vai para arquivo (pode citar eventId): nunca para o log público.
-          timeout --signal=TERM --kill-after=60s "${MINUTES}m" bin/kas-event-reaper -mode shadow -protocol v2 \
+          timeout --signal=TERM --kill-after=60s "${SECS}s" bin/kas-event-reaper -mode shadow -protocol v2 \
             -db "$DB" "${FENCE_ARGS[@]}" -require-read-only on -warmup 30s -interval 5m \
             -report run/report.jsonl > run/reaper.log 2>&1
           rc=$?
           kill "$PROBE" 2>/dev/null
           echo "saída da sombra: $rc (124 = fim do tempo, esperado; 2 = recusou iniciar)"
-          grep -q '"msg":"read_only_confirmed"' run/reaper.log && echo "usuário só leitura comprovado pelo servidor" || echo "::error::a sombra não comprovou só leitura"
+          grep -q '"msg":"read_only_confirmed"' run/reaper.log && echo "usuário só leitura comprovado pelo servidor" || { echo "::error::a sombra não comprovou só leitura"; exit 1; }
           grep -q '"msg":"shadow_refused_not_read_only"' run/reaper.log && { echo "::error::recusou: o usuário pode escrever"; exit 1; }
           [ "$rc" = 0 ] || [ "$rc" = 124 ] || exit 1
 
       - name: Resumo desta execução (só contagens)
-        if: always()
+        if: always() && env.SECS != '0'
         run: |
           [ -f run/report.jsonl ] || { echo "sem relatório" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
           set +e

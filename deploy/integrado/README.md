@@ -1,6 +1,21 @@
 # Ambiente integrado CRM + KAS (isolado e descartável)
 
-Itens 7 e 9 da matriz "comando original × entregue". Um comando sobe tudo, roda os cenários e apaga tudo no fim.
+Itens 7 e 9 da matriz "comando original × entregue". Um comando sobe tudo, roda os cenários e apaga tudo no fim. É a **integração dos cortes implementados**, não uma validação da API inteira (ver "Escopo").
+
+## Escopo: integração dos cortes, não da API
+
+Este ambiente integra **só os cortes implementados**: o reaper do Event Store (Node e KAS), a posse de execução de eventos, a recuperação de Outbox `failed` e os alertas. **Não valida a API do CRM.** Nenhuma rota HTTP é chamada, nenhum controller, fila de negócio (agendamento, pagamento, WhatsApp) ou worker de domínio roda. O "worker do CRM" é um simulador que usa só as funções reais de posse (`claimEvent`/`renewLease`/`completeOwned`).
+
+| Fluxo | Atravessa processos reais | Semeado ou simulado |
+|---|---|---|
+| 7.1, 7.2, 7.4 Recuperação de eventos presos | Processo do reaper do CRM (código real do cron) + 1 ou 2 binários `kas-event-reaper` + processo do worker do CRM morto com `kill -9` + MongoDB real (replica set) | Os eventos nascem por `insertMany` (`pending`, dados fictícios). A posse abandonada é real, criada pelo worker simulador antes do `kill -9` |
+| 7.3 Banco indisponível | Os mesmos processos acima com o contêiner do MongoDB pausado 8 s (`docker pause`) | A falha é provocada (pausa do contêiner), não uma queda de rede real |
+| 7.5 Alerta de `dead_letter` | Reaper real do CRM + `alertService` real mandando HTTP para um processo local | **Semeado:** o evento entra direto com `recoveryCount: 2` (não passou por duas recuperações reais). **Simulado:** o canal é `alert-sink.mjs`, não Slack/e-mail; a queda do canal é o processo dele morto |
+| 7.6 Conclusão tardia com token antigo | Processo do worker simulador com as funções reais de posse + MongoDB | Tokens antigos são os gravados no cenário anterior |
+| 7.7 Recuperação de Outbox `failed` | `OutboxDispatcher` real do CRM publicando no Redis real (BullMQ) + 2 binários `kas-outbox-recovery` (um morto com `kill -9`) + Redis pausado 6 s | **Semeado:** as 60 falhas entram direto como `failed` no formato que o dispatcher grava (`lastError: 'Connection is closed.'`). A pausa do Redis não fez o dispatcher marcar `failed`, então a falha real de publicação não foi reproduzida. Os 5 eventos sem fila também são semeados. Nenhum consumidor de fila roda |
+| 9 Reversão Node → Go → Node | Reaper real do CRM reiniciado com outra configuração (SIGTERM) + binário Go (SIGSTOP/SIGCONT) + observador por change stream | Os eventos de cada fase são semeados e abandonados pelo worker simulador. "Go sobe antes do Node sair" é um erro de operação encenado de propósito |
+
+O que isso prova: as peças trocadas (reaper, posse, recuperação de failed, alertas) convivem sem escrita fora da posse e sem duplicata, com processos reais morrendo e voltando. O que não prova: comportamento da API, das telas, dos workers de domínio, de carga real ou do Render.
 
 ## O que sobe
 

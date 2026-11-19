@@ -9,7 +9,9 @@
 # local) e nenhuma fila com consumidor real. Nada lê .env, nada fala com
 # Atlas, Render, WhatsApp ou e-mail.
 #
-#   deploy/integrado/run.sh            # tudo: cortes (item 7) + reversão Node→Go→Node (item 9)
+#   deploy/integrado/run.sh            # tudo: cortes (item 7), reversão Node→Go→Node (item 9)
+#                                       # e guarda do Node na KAS (G1–G5); a KAS roda sempre com
+#                                       # -require-crm-node-lease, como no procedimento de troca
 #   KEEP=1 deploy/integrado/run.sh     # mantém contêineres e logs para inspeção
 #   CRM_DIR=/caminho/fono-inova-crm-back deploy/integrado/run.sh
 #
@@ -25,7 +27,7 @@ APORT=${APORT:-9599}
 M=kas-int-mongo
 R=kas-int-redis
 DB=isolado_crm
-WORK=${WORK:-$(mktemp -d)}
+WORK=${WORK:-$(mktemp -d)}; mkdir -p "$WORK"
 PIDS=()
 FAILS=0
 
@@ -63,19 +65,32 @@ crm() {
 }
 CRM_ENV=()
 
-reaper_node_start() { # $1 = owner (node|kas), $2 = log
-  CRM_ENV=(EVENT_REAPER_OWNER="$1" EVENT_REAPER_SHARED_LEASE=on EVENT_REAPER_LEASE_TTL_MS=6000
+reaper_node_start() { # $1 = owner (node|kas), $2 = log, $3 = EVENT_REAPER_SHARED_LEASE (on|off|ausente; padrão on)
+  local shared=${3:-on}
+  CRM_ENV=(EVENT_REAPER_OWNER="$1" EVENT_REAPER_LEASE_TTL_MS=6000
            EVENT_REAPER_INTERVAL_MS=1000 EVENT_REAPER_WARMUP_MS=200 EVENT_LEASE_MS=3000)
+  [ "$shared" = ausente ] || CRM_ENV+=(EVENT_REAPER_SHARED_LEASE="$shared")
   crm crmReaper.mjs >>"$2" 2>&1 & NODE_PID=$!
   CRM_ENV=()
   PIDS+=("$NODE_PID")
 }
-reaper_go_start() { # $1 = holder, $2 = report
+# A KAS sempre com a guarda do Node (-require-crm-node-lease, padrão do binário),
+# como no procedimento de troca. Marca do Node vale por MAXAGE (o Node renova a cada 1 s).
+MAXAGE=${MAXAGE:-10s}
+reaper_go_start() { # $1 = holder, $2 = report, demais = flags extras
+  local h=$1 rep=$2; shift 2
   "$WORK/kas-event-reaper" -mode executor -protocol v2 -db "$DB" -executor-confirm-db "$DB" \
-    -interval 1s -warmup 0s -lease-ttl 6s -cycle-timeout 3s -batch 50 -holder "$1" -report "$2" \
-    >>"$WORK/$1.log" 2>&1 & GO_PID=$!
+    -interval 1s -warmup 0s -lease-ttl 6s -cycle-timeout 3s -batch 50 -holder "$h" -report "$rep" \
+    -crm-node-marker-max-age "$MAXAGE" "$@" \
+    >>"$WORK/$h.log" 2>&1 & GO_PID=$!
   PIDS+=("$GO_PID")
+  for _ in $(seq 1 50); do grep -q '"msg":"executor requires the CRM Node reaper' "$WORK/$h.log" 2>/dev/null && return 0; sleep 0.1; done
+  bad "KAS $h não registrou a guarda do Node ligada"; cat "$WORK/$h.log"
 }
+go_writes() { # $1 = JSON do analyze, $2 = holder: quantas recuperações cercadas por esse dono
+  echo "$1" | sed -n "s/.*\"$2\":\([0-9]*\).*/\1/p" | head -1
+}
+preflight() { PREFLIGHT_MONGO_URI="$KAS_URI" node "$CRM_DIR/scripts/reaper/preflight-posse.mjs" --db "$DB" --max-age-min 1 "$@"; }
 seed_events() { # $1 = prefixo, $2 = quantidade (pending, prontos para o worker simulado)
   mongo "
     const docs = [];
@@ -164,7 +179,10 @@ say "ITEM 7.4  Reinício: o dono atual cai com kill -9 (sem devolver a posse)"
 seed_events d 80; abandon d 80
 h=$(lease_holder); echo "dono antes da queda: $h"
 case "$h" in
-  kas-A) kill -9 "$GOA" ;; kas-B) kill -9 "$GOB" ;; crm-node*) kill -9 "$NODE1" ;; *) echo "sem dono vivo neste instante" ;;
+  kas-A) kill -9 "$GOA" ;; kas-B) kill -9 "$GOB" ;;
+  # Node caído: a KAS com a guarda para quando a marca envelhece; o Node reinicia (como o Render faria).
+  crm-node*) kill -9 "$NODE1"; echo "Node reiniciado depois do kill -9"; reaper_node_start node "$WORK/node-1b.log"; NODE1=$NODE_PID ;;
+  *) echo "sem dono vivo neste instante" ;;
 esac
 wait_recovered d 80 60 && ok "80/80 recuperados por outro dono depois do prazo da posse vencer" || bad "lote d: $(recovered_once d)/80"
 echo "novo dono: $(lease_holder)"
@@ -231,11 +249,14 @@ seed_events r2 40; abandon r2 40
 wait_recovered r2 40 30 && ok "r2 recuperados 40/40 com Node e Go de pé" || bad "r2: $(recovered_once r2)/40"
 R4=$(analyze "$TR"); echo "observador: $R4"
 echo "$R4" | grep -q '"kas-rev"' && bad "Go gravou enquanto o Node tinha a posse" || ok "Go de pé não gravou nada: o Node segurava a posse"
-echo "-- fase 2b: Node sai (EVENT_REAPER_OWNER=kas + reinício, SIGTERM devolve a posse)"
+echo "conferência antes da troca (só leitura): $(preflight >/dev/null 2>&1 && echo COMPATÍVEL || echo INCOMPATÍVEL)"
+preflight >/dev/null 2>&1 && ok "conferência antes da troca: COMPATÍVEL com o Node em on" || bad "conferência acusou incompatível com o Node em on"
+echo "-- fase 2b: Node CEDE (EVENT_REAPER_OWNER=kas mantendo on + reinício; SIGTERM devolve a posse)"
 kill -TERM "$RN1"; wait "$RN1" 2>/dev/null || true
 reaper_node_start kas "$WORK/rev-node-2.log"; RN2=$NODE_PID
 sleep 2
-grep -q 'crm_reaper_not_started' "$WORK/rev-node-2.log" && ok "Node com EVENT_REAPER_OWNER=kas não iniciou o reaper" || bad "Node com owner=kas iniciou o reaper"
+grep -q '"yieldMarker":true' "$WORK/rev-node-2.log" && ok "Node com EVENT_REAPER_OWNER=kas em modo cedente: não recupera, só renova a marca" || bad "Node com owner=kas não ficou cedente"
+[ "$(mongo 'db.kas_event_reaper_lease.findOne().participants.crmNode.mode')" = yield ] && ok "marca do Node em modo yield (a KAS com a guarda pode assumir)" || bad "marca do Node não está em yield"
 seed_events r3 40; abandon r3 40
 TG=$(cluster_now)
 wait_recovered r3 40 30 && ok "fase 2: Go recuperou 40/40" || bad "fase 2: $(recovered_once r3)/40"
@@ -265,6 +286,83 @@ left=$(mongo "db.eventstore.countDocuments({status:'processing', leaseExpiresAt:
 RT=$(analyze "$TR"); echo "observador, reversão inteira: $RT"
 obs_ok "$RT" 190 && ok "reversão inteira: toda escrita dentro da posse, nenhuma duplicada" || bad "reversão com escrita fora da posse ou duplicada"
 kill -TERM "$RN3" 2>/dev/null || true; sleep 1
+
+# ===========================================================================
+say "GUARDA  KAS com -require-crm-node-lease contra configurações incompatíveis do Node"
+reset_lease() { mongo 'db.kas_event_reaper_lease.deleteMany({}).acknowledged' >/dev/null; }
+refused() { grep -c '"skipped":"incompatible_config"' "$1" 2>/dev/null || true; }
+stop_all() { for p in "$@"; do kill -TERM "$p" 2>/dev/null || true; done; sleep 2; }
+
+guard_off_case() { # $1 = rótulo, $2 = valor de EVENT_REAPER_SHARED_LEASE no Node (ausente|off), $3 = prefixo
+  reset_lease
+  reaper_node_start node "$WORK/g-$3-node.log" "$2"; local n=$NODE_PID
+  reaper_go_start "kas-$3" "$WORK/kas-$3.jsonl"; local g=$GO_PID
+  sleep 3
+  preflight >/dev/null 2>&1 && bad "$1: conferência deveria acusar INCOMPATÍVEL" || ok "$1: conferência antes da troca acusa INCOMPATÍVEL"
+  local t; t=$(cluster_now)
+  seed_events "$3" 40; abandon "$3" 40
+  wait_recovered "$3" 40 40 && ok "$1: o Node segue recuperando (40/40)" || bad "$1: Node recuperou $(recovered_once "$3")/40"
+  local r; r=$(analyze "$t"); echo "observador: $r"
+  [ -z "$(go_writes "$r" "kas-$3")" ] && ok "$1: a KAS não gravou nada" || bad "$1: a KAS gravou com o Node em $2"
+  [ "$(refused "$WORK/kas-$3.jsonl")" -ge 3 ] && ok "$1: a KAS registrou incompatible_config em $(refused "$WORK/kas-$3.jsonl") ciclos" || bad "$1: sem incompatible_config no relatório"
+  [ "$(lease_holder)" != "kas-$3" ] && ok "$1: a KAS não segura a posse" || bad "$1: a KAS ficou com a posse"
+  echo "$r" | grep -q '"dupSameOccurrence":0' && ok "$1: nenhuma recuperação repetida" || bad "$1: recuperação repetida"
+  stop_all "$n" "$g"
+}
+echo "-- G1: Node com EVENT_REAPER_SHARED_LEASE ausente"
+guard_off_case "G1 ausente" ausente g1
+echo "-- G2: Node com EVENT_REAPER_SHARED_LEASE=off"
+guard_off_case "G2 off" off g2
+
+echo "-- G3: configuração divergente (KAS com outra coleção de posse)"
+reset_lease
+reaper_node_start node "$WORK/g3-node.log"; N3=$NODE_PID
+reaper_go_start kas-g3 "$WORK/kas-g3.jsonl" -lease-collection outra_posse; G3=$GO_PID
+sleep 2
+preflight --kas-lease-collection outra_posse >/dev/null 2>&1 && bad "G3: conferência deveria acusar a coleção divergente" || ok "G3: conferência acusa a coleção divergente"
+T3=$(cluster_now); seed_events g3 40; abandon g3 40
+wait_recovered g3 40 40 && ok "G3: o Node segue recuperando (40/40)" || bad "G3: $(recovered_once g3)/40"
+R3G=$(analyze "$T3"); echo "observador: $R3G"
+[ -z "$(go_writes "$R3G" kas-g3)" ] && ok "G3: a KAS não gravou nada" || bad "G3: a KAS gravou com a posse divergente"
+obs_ok "$R3G" 40 && ok "G3: todas as recuperações do Node cercadas na posse padrão, sem repetição" || bad "G3: escrita fora da posse ou repetida"
+[ "$(refused "$WORK/kas-g3.jsonl")" -ge 3 ] && ok "G3: a KAS registrou incompatible_config" || bad "G3: sem incompatible_config"
+[ "$(mongo 'db.outra_posse.countDocuments({})')" = 0 ] && ok "G3: a KAS não criou posse própria na coleção divergente" || bad "G3: a KAS criou posse própria"
+stop_all "$N3" "$G3"
+
+echo "-- G4: perda de compatibilidade DURANTE a execução (KAS executando; Node revertido para off por engano)"
+reset_lease
+reaper_node_start kas "$WORK/g4-node-yield.log"; N4=$NODE_PID
+reaper_go_start kas-g4 "$WORK/kas-g4.jsonl"; G4=$GO_PID
+T4=$(cluster_now); seed_events g4a 30; abandon g4a 30
+wait_recovered g4a 30 30 && ok "G4: com o Node cedente, a KAS recuperou 30/30" || bad "G4: $(recovered_once g4a)/30"
+R4A=$(analyze "$T4"); [ "$(go_writes "$R4A" kas-g4)" = 30 ] && ok "G4: as 30 foram gravadas pela KAS, dentro da posse" || bad "G4 antes da perda: $R4A"
+kill -TERM "$N4"; wait "$N4" 2>/dev/null || true
+reaper_node_start node "$WORK/g4-node-off.log" off; N4B=$NODE_PID
+echo "Node reiniciado com EVENT_REAPER_SHARED_LEASE=off; a marca para de ser renovada"
+for _ in $(seq 1 40); do [ "$(refused "$WORK/kas-g4.jsonl")" -ge 1 ] && break; sleep 1; done
+[ "$(refused "$WORK/kas-g4.jsonl")" -ge 1 ] && ok "G4: a KAS detectou a marca velha (incompatible_config) e devolveu a posse" || bad "G4: a KAS não detectou a perda de compatibilidade"
+grep -q 'reaper_skipped_foreign_lease' "$WORK/g4-node-off.log" && ok "G4: enquanto a posse da KAS estava viva, o Node off pulou o ciclo (um responsável por vez)" || echo "info: o Node off não chegou a ver a posse viva da KAS"
+T4B=$(cluster_now); seed_events g4b 40; abandon g4b 40
+wait_recovered g4b 40 40 && ok "G4: o Node off retomou e recuperou 40/40" || bad "G4: Node off recuperou $(recovered_once g4b)/40"
+R4B=$(analyze "$T4B"); echo "observador depois da perda: $R4B"
+[ -z "$(go_writes "$R4B" kas-g4)" ] && ok "G4: depois da perda, a KAS não gravou nada novo" || bad "G4: a KAS gravou depois de perder a compatibilidade"
+echo "$R4B" | grep -q '"dupSameOccurrence":0' && ok "G4: nenhuma recuperação repetida na passagem" || bad "G4: recuperação repetida"
+kill -0 "$G4" 2>/dev/null && ok "G4: a KAS continua de pé, parada (não derruba nada, só recusa)" || bad "G4: o processo da KAS morreu"
+stop_all "$N4B" "$G4"
+
+echo "-- G5: Node cai (kill -9) com a KAS executando; depois o Node volta"
+reset_lease
+reaper_node_start kas "$WORK/g5-node-yield.log"; N5=$NODE_PID
+reaper_go_start kas-g5 "$WORK/kas-g5.jsonl"; G5=$GO_PID
+sleep 3
+kill -9 "$N5"; echo "Node cedente morto com kill -9"
+for _ in $(seq 1 40); do [ "$(refused "$WORK/kas-g5.jsonl")" -ge 1 ] && break; sleep 1; done
+[ "$(refused "$WORK/kas-g5.jsonl")" -ge 1 ] && ok "G5: a KAS parou sozinha quando a marca do Node envelheceu" || bad "G5: a KAS seguiu sem o Node"
+T5=$(cluster_now); seed_events g5 20; abandon g5 20; sleep 5
+R5G=$(analyze "$T5"); [ -z "$(go_writes "$R5G" kas-g5)" ] && ok "G5: sem o Node, a KAS não gravou nada (eventos esperam: limite conhecido)" || bad "G5: a KAS gravou sem o Node"
+reaper_node_start node "$WORK/g5-node-back.log"; N5B=$NODE_PID
+wait_recovered g5 20 40 && ok "G5: o Node voltou e os 20 foram recuperados uma vez" || bad "G5: $(recovered_once g5)/20"
+stop_all "$N5B" "$G5"
 
 say "resumo"
 echo "logs e relatórios: $WORK"

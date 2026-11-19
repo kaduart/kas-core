@@ -64,7 +64,7 @@ say "2. executor refuses without the database confirmation"
 if "$BIN" -mode executor -db "$DB" -once >/dev/null 2>&1; then echo "FAIL"; exit 1; else echo "OK: refused"; fi
 
 say "3. two executors at once, database paused 8 s, then the leader is killed (kill -9)"
-common=(-mode executor -db "$DB" -executor-confirm-db "$DB" -interval 1s -warmup 0s -lease-ttl 5s -cycle-timeout 3s -batch 25)
+common=(-mode executor -require-crm-node-lease=false -db "$DB" -executor-confirm-db "$DB" -interval 1s -warmup 0s -lease-ttl 5s -cycle-timeout 3s -batch 25)
 "$BIN" "${common[@]}" -holder exec-A -report "$WORK/a.jsonl" >"$WORK/a.log" 2>&1 & PA=$!
 "$BIN" "${common[@]}" -holder exec-B -report "$WORK/b.jsonl" >"$WORK/b.log" 2>&1 & PB=$!
 PIDS="$PA $PB"

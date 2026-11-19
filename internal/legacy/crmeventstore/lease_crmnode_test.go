@@ -144,3 +144,40 @@ func TestRunnerReportsIncompatibleConfig(t *testing.T) {
 		t.Fatalf("nothing may be written, status=%v", got)
 	}
 }
+
+// Compatibility lost DURING execution: the executor holds the lease and is in
+// the middle of a cycle when the Node marker goes stale. The next write is
+// refused by the fence itself (same transaction), not only at the next cycle.
+func TestRequireCRMNodeFenceRefusesMidCycleWhenMarkerGoesStale(t *testing.T) {
+	e := setup(t)
+	markNode(t, e, "", 0)
+	l := NewLease(e.client, e.db, "", "kas-A", time.Minute)
+	l.RequireCRMNode(5 * time.Second)
+	ctx := context.Background()
+	if ok, err := l.Acquire(ctx); err != nil || !ok {
+		t.Fatalf("acquire: %v %v", ok, err)
+	}
+	if err := l.fence(ctx); err != nil {
+		t.Fatalf("fresh marker: fence must pass, got %v", err)
+	}
+	markNode(t, e, "", 60_000)
+	if err := l.fence(ctx); !errors.Is(err, eventreaper.ErrLeaseLost) {
+		t.Fatalf("stale marker mid-cycle: want ErrLeaseLost from the fence, got %v", err)
+	}
+	if ok, err := l.Acquire(ctx); ok || !errors.Is(err, eventreaper.ErrIncompatibleConfig) {
+		t.Fatalf("next cycle must refuse with incompatible_config, got ok=%v err=%v", ok, err)
+	}
+}
+
+// Without the guard the fence keeps the old behaviour (no marker needed).
+func TestFenceWithoutGuardIgnoresMarker(t *testing.T) {
+	e := setup(t)
+	l := NewLease(e.client, e.db, "", "kas-A", time.Minute)
+	ctx := context.Background()
+	if ok, err := l.Acquire(ctx); err != nil || !ok {
+		t.Fatalf("acquire: %v %v", ok, err)
+	}
+	if err := l.fence(ctx); err != nil {
+		t.Fatalf("unguarded fence: %v", err)
+	}
+}

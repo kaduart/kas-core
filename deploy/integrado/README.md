@@ -1,6 +1,6 @@
 # Ambiente integrado CRM + KAS (isolado e descartável)
 
-Itens 7 e 9 da matriz "comando original × entregue". Um comando sobe tudo, roda os cenários e apaga tudo no fim. É a **integração dos cortes implementados**, não uma validação da API inteira (ver "Escopo").
+Itens 7 e 9 da matriz "comando original × entregue", mais os casos da guarda do Node (G1–G5). **A KAS roda sempre com `-require-crm-node-lease`** (padrão do binário), como no procedimento de troca. Um comando sobe tudo, roda os cenários e apaga tudo no fim. É a **integração dos cortes implementados**, não uma validação da API inteira (ver "Escopo").
 
 ## Escopo: integração dos cortes, não da API
 
@@ -13,7 +13,8 @@ Este ambiente integra **só os cortes implementados**: o reaper do Event Store (
 | 7.5 Alerta de `dead_letter` | Reaper real do CRM + `alertService` real mandando HTTP para um processo local | **Semeado:** o evento entra direto com `recoveryCount: 2` (não passou por duas recuperações reais). **Simulado:** o canal é `alert-sink.mjs`, não Slack/e-mail; a queda do canal é o processo dele morto |
 | 7.6 Conclusão tardia com token antigo | Processo do worker simulador com as funções reais de posse + MongoDB | Tokens antigos são os gravados no cenário anterior |
 | 7.7 Recuperação de Outbox `failed` | `OutboxDispatcher` real do CRM publicando no Redis real (BullMQ) + 2 binários `kas-outbox-recovery` (um morto com `kill -9`) + Redis pausado 6 s | **Semeado:** as 60 falhas entram direto como `failed` no formato que o dispatcher grava (`lastError: 'Connection is closed.'`). A pausa do Redis não fez o dispatcher marcar `failed`, então a falha real de publicação não foi reproduzida. Os 5 eventos sem fila também são semeados. Nenhum consumidor de fila roda |
-| 9 Reversão Node → Go → Node | Reaper real do CRM reiniciado com outra configuração (SIGTERM) + binário Go (SIGSTOP/SIGCONT) + observador por change stream | Os eventos de cada fase são semeados e abandonados pelo worker simulador. "Go sobe antes do Node sair" é um erro de operação encenado de propósito |
+| 9 Reversão Node → Go → Node | Reaper real do CRM reiniciado com outra configuração (SIGTERM) + binário Go com a guarda (SIGSTOP/SIGCONT) + conferência `preflight-posse.mjs` + observador por change stream | Os eventos de cada fase são semeados e abandonados pelo worker simulador. "Go sobe antes do Node sair" é um erro de operação encenado de propósito |
+| G1–G5 Guarda do Node | Reaper real do CRM com a variável ausente, `off`, `on` cedente e revertido para `off` no meio; binário Go com a guarda; Node morto com `kill -9` | Configurações erradas encenadas de propósito; eventos semeados e abandonados pelo worker simulador |
 
 O que isso prova: as peças trocadas (reaper, posse, recuperação de failed, alertas) convivem sem escrita fora da posse e sem duplicata, com processos reais morrendo e voltando. O que não prova: comportamento da API, das telas, dos workers de domínio, de carga real ou do Render.
 
@@ -54,7 +55,7 @@ Se o CRM estiver em outra pasta:
 CRM_DIR=/caminho/fono-inova-crm-back deploy/integrado/run.sh
 ```
 
-Leva cerca de 6 minutos. Termina com `TUDO OK` (código 0) ou com a lista do que falhou (código 1).
+Leva cerca de 8 minutos. Roda no CI do kas-core (job `Integrated CRM + KAS`), com o CRM da branch indicada em `CRM_REF`. Termina com `TUDO OK` (código 0) ou com a lista do que falhou (código 1).
 
 ## Cenários e o que cada um prova
 
@@ -74,17 +75,27 @@ Leva cerca de 6 minutos. Termina com `TUDO OK` (código 0) ou com a lista do que
 
 1. Node dono (`EVENT_REAPER_OWNER=node`, `EVENT_REAPER_SHARED_LEASE=on`).
 2. O Go sobe **antes** de o Node sair (erro de operação simulado): o observador mostra 0 escritas do Go enquanto o Node segura a posse.
-3. Node reinicia com `EVENT_REAPER_OWNER=kas` (SIGTERM devolve a posse): não inicia o reaper; o Go assume e recupera.
+3. A conferência só leitura dá `COMPATÍVEL`. O Node reinicia com `EVENT_REAPER_OWNER=kas` **mantendo** `on` (SIGTERM devolve a posse): fica em modo cedente (marca `yield`, não recupera); o Go com a guarda assume e recupera.
 4. O Go **trava com a posse** (SIGSTOP) e o Node volta como dono: o Node espera o prazo vencer e assume.
 5. O Go antigo acorda (SIGCONT): 0 escritas; os ciclos dele são recusados (`not_leader`).
 6. Nenhum evento com posse vencida esquecido em `processing`; na reversão inteira, todas as 190 recuperações foram gravadas dentro da posse e nenhuma duas vezes.
 
-## Resultado da rodada de 19/11/2026
+**Guarda do Node (G1–G5), KAS sempre com `-require-crm-node-lease`**
+
+| # | Cenário | Verificação |
+|---|---|---|
+| G1 | Node com `EVENT_REAPER_SHARED_LEASE` ausente | conferência acusa `INCOMPATÍVEL`; a KAS registra `incompatible_config`, não segura a posse e não grava nada; o Node segue recuperando 40/40 |
+| G2 | Node com `off` | idem |
+| G3 | KAS com `-lease-collection` diferente do Node | conferência acusa a divergência; a KAS recusa e não cria posse própria; o Node recupera 40/40 cercado na posse padrão |
+| G4 | KAS executando (Node cedente); o Node é revertido para `off` por engano | a KAS detecta a marca velha e devolve a posse; enquanto a posse dela vivia, o Node `off` pulou o ciclo; depois o Node retoma 40/40; a KAS não grava mais nada e segue de pé |
+| G5 | Node cedente leva `kill -9` com a KAS executando | a KAS para sozinha; sem Node, ninguém recupera (limite conhecido); o Node volta e recupera 20/20 |
+
+## Resultado da rodada de 19/11/2026 (guarda desligada, versão anterior do roteiro)
 
 Todas as verificações passaram (`TUDO OK`). Observador da reversão inteira: 190 recuperações, 190 cercadas, 0 fora da posse, 0 duplicadas; donos em sequência `crm-node → kas-rev → crm-node`.
 
 ## O que este ambiente não prova
 
 - Redis pausado não fez o dispatcher do CRM marcar `failed` (o cliente espera a volta); as falhas do 7.7 foram semeadas no formato que o dispatcher grava. A pausa provou só que nada se perde nem duplica quando o Redis volta.
-- A perda de posse **no meio** de um ciclo do Go (fence dentro da transação) é coberta pelos testes de unidade da KAS e pelo teste do CRM `reaperLease.mongo.nodetest.mjs`; aqui o Go acordado só tenta renovar e é recusado antes de escrever.
+- A perda de posse ou de compatibilidade **no meio** de um ciclo do Go (fence dentro da transação) é coberta pelos testes de unidade da KAS (`FenceRefusesMidCycleWhenMarkerGoesStale`); aqui o Go é recusado no ciclo seguinte ou na próxima escrita, sem forçar o instante exato.
 - Canal real de alertas, hospedagem da KAS e credenciais de produção não fazem parte (decisões de ativação).

@@ -194,7 +194,20 @@ func (l *Lease) fence(ctx context.Context) error {
 	if tok == "" {
 		return eventreaper.ErrLeaseLost
 	}
-	r, err := l.coll.UpdateOne(ctx, append(bson.D{{Key: "_id", Value: leaseID}, {Key: "token", Value: tok}}, live()...),
+	filter := append(bson.D{{Key: "_id", Value: leaseID}, {Key: "token", Value: tok}}, live()...)
+	if l.requireNode {
+		// Per write, not only per cycle: a Node that stops refreshing its marker
+		// (flag turned off, rolled back, down) stops our writes at once, inside
+		// the same transaction, even in the middle of a cycle.
+		filter = bson.D{{Key: "_id", Value: leaseID}, {Key: "token", Value: tok}, {Key: "$expr", Value: bson.D{{Key: "$and", Value: bson.A{
+			bson.D{{Key: "$gt", Value: bson.A{"$expiresAt", "$$NOW"}}},
+			bson.D{{Key: "$lte", Value: bson.A{
+				bson.D{{Key: "$subtract", Value: bson.A{"$$NOW", bson.D{{Key: "$ifNull", Value: bson.A{"$participants.crmNode.at", time.Unix(0, 0)}}}}}},
+				l.nodeMarkerMaxAge.Milliseconds(),
+			}}},
+		}}}}}
+	}
+	r, err := l.coll.UpdateOne(ctx, filter,
 		mongo.Pipeline{{{Key: "$set", Value: bson.D{{Key: "fencedWriteAt", Value: "$$NOW"}}}}})
 	if err != nil {
 		return err

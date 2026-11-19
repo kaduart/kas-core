@@ -336,12 +336,13 @@ reaper_go_start kas-g4 "$WORK/kas-g4.jsonl"; G4=$GO_PID
 T4=$(cluster_now); seed_events g4a 30; abandon g4a 30
 wait_recovered g4a 30 30 && ok "G4: com o Node cedente, a KAS recuperou 30/30" || bad "G4: $(recovered_once g4a)/30"
 R4A=$(analyze "$T4"); [ "$(go_writes "$R4A" kas-g4)" = 30 ] && ok "G4: as 30 foram gravadas pela KAS, dentro da posse" || bad "G4 antes da perda: $R4A"
+B4=$(refused "$WORK/kas-g4.jsonl")   # recusas de antes (1º ciclo pode vir antes da 1ª marca do Node)
 kill -TERM "$N4"; wait "$N4" 2>/dev/null || true
 reaper_node_start node "$WORK/g4-node-off.log" off; N4B=$NODE_PID
 echo "Node reiniciado com EVENT_REAPER_SHARED_LEASE=off; a marca para de ser renovada"
-for _ in $(seq 1 40); do [ "$(refused "$WORK/kas-g4.jsonl")" -ge 1 ] && break; sleep 1; done
-[ "$(refused "$WORK/kas-g4.jsonl")" -ge 1 ] && ok "G4: a KAS detectou a marca velha (incompatible_config) e devolveu a posse" || bad "G4: a KAS não detectou a perda de compatibilidade"
-grep -q 'reaper_skipped_foreign_lease' "$WORK/g4-node-off.log" && ok "G4: enquanto a posse da KAS estava viva, o Node off pulou o ciclo (um responsável por vez)" || echo "info: o Node off não chegou a ver a posse viva da KAS"
+for _ in $(seq 1 40); do [ "$(refused "$WORK/kas-g4.jsonl")" -gt "$B4" ] && [ "$(lease_holder)" != kas-g4 ] && break; sleep 1; done
+[ "$(refused "$WORK/kas-g4.jsonl")" -gt "$B4" ] && [ "$(lease_holder)" != kas-g4 ] && ok "G4: a KAS detectou a marca velha (incompatible_config) e devolveu a posse" || bad "G4: a KAS não detectou a perda de compatibilidade"
+grep -qE 'reaper_skipped_foreign_lease|posse viva com kas-g4' "$WORK/g4-node-off.log" && ok "G4: enquanto a posse da KAS estava viva, o Node off pulou o ciclo (um responsável por vez)" || echo "info: o Node off não chegou a ver a posse viva da KAS"
 T4B=$(cluster_now); seed_events g4b 40; abandon g4b 40
 wait_recovered g4b 40 40 && ok "G4: o Node off retomou e recuperou 40/40" || bad "G4: Node off recuperou $(recovered_once g4b)/40"
 R4B=$(analyze "$T4B"); echo "observador depois da perda: $R4B"
@@ -355,9 +356,10 @@ reset_lease
 reaper_node_start kas "$WORK/g5-node-yield.log"; N5=$NODE_PID
 reaper_go_start kas-g5 "$WORK/kas-g5.jsonl"; G5=$GO_PID
 sleep 3
+B5=$(refused "$WORK/kas-g5.jsonl")
 kill -9 "$N5"; echo "Node cedente morto com kill -9"
-for _ in $(seq 1 40); do [ "$(refused "$WORK/kas-g5.jsonl")" -ge 1 ] && break; sleep 1; done
-[ "$(refused "$WORK/kas-g5.jsonl")" -ge 1 ] && ok "G5: a KAS parou sozinha quando a marca do Node envelheceu" || bad "G5: a KAS seguiu sem o Node"
+for _ in $(seq 1 40); do [ "$(refused "$WORK/kas-g5.jsonl")" -gt "$B5" ] && [ "$(lease_holder)" != kas-g5 ] && break; sleep 1; done
+[ "$(refused "$WORK/kas-g5.jsonl")" -gt "$B5" ] && [ "$(lease_holder)" != kas-g5 ] && ok "G5: a KAS parou sozinha quando a marca do Node envelheceu" || bad "G5: a KAS seguiu sem o Node"
 T5=$(cluster_now); seed_events g5 20; abandon g5 20; sleep 5
 R5G=$(analyze "$T5"); [ -z "$(go_writes "$R5G" kas-g5)" ] && ok "G5: sem o Node, a KAS não gravou nada (eventos esperam: limite conhecido)" || bad "G5: a KAS gravou sem o Node"
 reaper_node_start node "$WORK/g5-node-back.log"; N5B=$NODE_PID

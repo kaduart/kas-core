@@ -104,6 +104,10 @@ type ShadowCheck struct {
 	Observed  string `json:"observed"`
 	// Verdict: agree, still_processing, diverge, gone.
 	Verdict string `json:"verdict"`
+	// ObservedReason classifies who wrote the observed error message, without
+	// copying its text: "reaper" (one of the reaper messages), "other" (some
+	// other writer, e.g. a worker or an operator), "none" (no message).
+	ObservedReason string `json:"observed_reason,omitempty"`
 }
 
 // CycleReport summarises one run. It contains identifiers and states only.
@@ -310,12 +314,22 @@ func (r *Runner) verifyShadow(ctx context.Context, rep *CycleReport) {
 	for _, id := range ids {
 		o := seen[id]
 		c := ShadowCheck{EventID: id, Predicted: prev[id], Observed: o.Status}
+		reaperMsg := o.ErrorMessage == msg || o.ErrorMessage == LeaseMessage || o.ErrorMessage == r.Config.ExhaustedMessage()
+		switch {
+		case !o.Found:
+		case reaperMsg:
+			c.ObservedReason = "reaper"
+		case o.ErrorMessage != "":
+			c.ObservedReason = "other"
+		default:
+			c.ObservedReason = "none"
+		}
 		switch {
 		case !o.Found:
 			c.Verdict = "gone"
 		case o.Status == StatusProcessing:
 			c.Verdict = "still_processing"
-		case o.Status == prev[id] && (o.ErrorMessage == msg || o.ErrorMessage == LeaseMessage || o.ErrorMessage == r.Config.ExhaustedMessage()):
+		case o.Status == prev[id] && reaperMsg:
 			c.Verdict = "agree"
 		default:
 			c.Verdict = "diverge"
@@ -366,6 +380,11 @@ func (r *Runner) Loop(ctx context.Context, warmup, interval time.Duration, onRep
 		}
 		rep := r.RunCycle(cctx)
 		cancel()
+		if ctx.Err() != nil {
+			// Shutdown (SIGTERM) in the middle of a cycle: the cycle was cut by
+			// us, not by the database; reporting it would count a false error.
+			return
+		}
 		if onReport != nil {
 			onReport(rep)
 		}

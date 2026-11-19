@@ -188,3 +188,46 @@ jobs:
         if: failure()
         run: |
           for f in "$RUNNER_TEMP"/integrado/*.log; do echo "=== $f"; tail -n 60 "$f"; done
+
+  sombra:
+    name: Shadow reaper isolated validation (deploy/sombra/validate.sh)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Check out the CRM (public)
+        uses: actions/checkout@v7
+        with:
+          repository: kaduart/fono-inova-crm-back
+          ref: main
+          path: crm
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: CRM dependencies
+        working-directory: crm
+        run: npm ci --no-audit --no-fund
+
+      - name: Run S1-S6 (authenticated Mongo, same role as Atlas, real CRM reaper)
+        run: |
+          set -o pipefail
+          CRM_DIR="$GITHUB_WORKSPACE/crm" WORK="$RUNNER_TEMP/sombra" deploy/sombra/validate.sh 2>&1 | tee "$RUNNER_TEMP/sombra.log"
+          grep -q '^TUDO OK$' "$RUNNER_TEMP/sombra.log"
+
+      - name: Logs (on failure)
+        if: failure()
+        run: |
+          for f in "$RUNNER_TEMP"/sombra/*.log; do echo "=== $f"; tail -n 60 "$f"; done

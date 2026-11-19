@@ -105,3 +105,25 @@ func TestGuardIsOnByDefault(t *testing.T) {
 		t.Fatalf("want guard on by default, got %v err=%v", c.requireCRMNode, err)
 	}
 }
+
+func TestShadowOnARealDatabaseCannotSkipTheReadOnlyProof(t *testing.T) {
+	env := map[string]string{"KAS_REAPER_MONGO_URI": "mongodb+srv://cluster.example.net"}
+	code, out := runWith(t, env, "-db", "x", "-once", "-require-read-only", "off")
+	if code != 2 || !strings.Contains(out, "only accepted on a loopback host") {
+		t.Fatalf("code=%d out=%s", code, out)
+	}
+	if code, _ := runWith(t, env, "-db", "x", "-once", "-require-read-only", "talvez"); code != 2 {
+		t.Fatal("invalid -require-read-only accepted")
+	}
+}
+
+func TestReadOnlyActionListHasNoWriteAction(t *testing.T) {
+	for _, a := range []string{"insert", "update", "remove", "createCollection", "createIndex", "dropCollection", "dropDatabase", "renameCollectionSameDB", "bypassDocumentValidation", "applyOps"} {
+		if readOnlyActions[a] {
+			t.Fatalf("%s must not be accepted as read only", a)
+		}
+	}
+	if !readOnlyActions["find"] {
+		t.Fatal("find is the one action the shadow needs")
+	}
+}

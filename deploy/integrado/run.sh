@@ -254,7 +254,7 @@ for _ in $(seq 1 90); do grep -q 'Back pronto' "$WORK/api.log" 2>/dev/null && br
 grep -q 'Back pronto' "$WORK/api.log" && ok "API real (server.js) no ar em 127.0.0.1:${CPORT}, rede externa bloqueada" || { bad "API não subiu"; tail -40 "$WORK/api.log"; }
 grep -q 'ISOLADO_NETWORK_BLOCKED' "$WORK/api.log" && echo "info: a API tentou sair para a rede e foi bloqueada (esperado: SDKs/integrações sem credencial)" || true
 CRM_ENV=(CRM_ISOLADO_API_PORT="$CPORT")
-crm apiFlow.mjs seed >/dev/null
+SEED=$(crm apiFlow.mjs seed); echo "$SEED" | grep -q api_flow_seeded || bad "cadastro fictício falhou: $SEED"
 P1=$(crm apiFlow.mjs post 3 normal); echo "$P1" | tail -1
 echo "$P1" | grep -q '"created":3' && ok "3 agendamentos criados pela rota real POST /api/v2/appointments (201)" || bad "POST: $P1"
 [ "$(real_total)" = 3 ] && ok "3 APPOINTMENT_CREATED no outbox, gravados na transação do agendamento" || bad "outbox real: $(real_total)"

@@ -177,7 +177,12 @@ jobs:
           npm ci --no-audit --no-fund
 
       - name: Run the integrated script (items 7, 9 and guard cases G1-G5)
-        run: CRM_DIR="$GITHUB_WORKSPACE/crm" WORK="$RUNNER_TEMP/integrado" deploy/integrado/run.sh
+        # Só passa se o roteiro chegou ao fim ("TUDO OK"): uma saída antecipada com código 0
+        # (ex.: exec de um processo em primeiro plano) não pode virar verde.
+        run: |
+          set -o pipefail
+          CRM_DIR="$GITHUB_WORKSPACE/crm" WORK="$RUNNER_TEMP/integrado" deploy/integrado/run.sh 2>&1 | tee "$RUNNER_TEMP/integrado.log"
+          grep -q '^TUDO OK$' "$RUNNER_TEMP/integrado.log"
 
       - name: Logs (on failure)
         if: failure()

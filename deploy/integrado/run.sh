@@ -119,7 +119,12 @@ for _ in $(seq 1 30); do docker exec "$R" redis-cli ping >/dev/null 2>&1 && brea
 mongo 'db.createCollection("eventstore"); db.eventstore.createIndex({eventId:1},{unique:true}); db.createCollection("kas_event_reaper_lease"); db.createCollection("outboxes"); db.outboxes.createIndex({eventId:1},{unique:true}); 1' >/dev/null
 
 say "canal de alertas simulado e observador do banco (change stream)"
-node "$HERE/alert-sink.mjs" "$APORT" "$WORK/alerts.jsonl" >"$WORK/alert-sink.log" 2>&1 & SINK_PID=$!; PIDS+=("$SINK_PID")
+start_sink() {
+  node "$HERE/alert-sink.mjs" "$APORT" "$WORK/alerts.jsonl" >>"$WORK/alert-sink.log" 2>&1 & SINK_PID=$!; PIDS+=("$SINK_PID")
+  for _ in $(seq 1 50); do kill -0 "$SINK_PID" 2>/dev/null || break; grep -q "alert-sink em" "$WORK/alert-sink.log" 2>/dev/null && return 0; sleep 0.1; done
+  echo "canal de alertas simulado não subiu (porta ${APORT} ocupada? defina APORT=outra)"; cat "$WORK/alert-sink.log"; exit 2
+}
+start_sink
 crm observer.mjs "$WORK/observer.jsonl" >"$WORK/observer.log" 2>&1 & PIDS+=($!)
 for _ in $(seq 1 50); do grep -q observer_ready "$WORK/observer.log" 2>/dev/null && break; sleep 0.2; done
 grep -q observer_ready "$WORK/observer.log" && ok "observador pronto" || { bad "observador não subiu"; cat "$WORK/observer.log"; exit 1; }
@@ -174,13 +179,13 @@ reaper_node_start node "$WORK/node-2.log"; NODE2=$NODE_PID
 for _ in $(seq 1 30); do [ "$(mongo "db.eventstore.findOne({eventId:'dl-0'}).status")" = dead_letter ] && break; sleep 1; done
 sleep 1
 grep -q '"type":"event_recovery_limit"' "$WORK/alerts.jsonl" && ok "alerta crítico event_recovery_limit chegou ao canal simulado" || bad "alerta não chegou ao canal"
-kill "$SINK_PID" 2>/dev/null || true; sleep 0.5
+kill "$SINK_PID" 2>/dev/null || true; wait "$SINK_PID" 2>/dev/null || true; : >"$WORK/alert-sink.log"
 mongo "db.eventstore.insertOne({eventId:'dl-1', eventType:'SESSION_COMPLETED', aggregateType:'session', aggregateId:'y', payload:{}, status:'processing', attempts:1, recoveryCount:2, processingToken:'morto', leaseExpiresAt:new Date(Date.now()-60000), createdAt:new Date()}).acknowledged" >/dev/null
 seed_events e 30; abandon e 30
 wait_recovered e 30 40 && ok "com o canal fora do ar o reaper seguiu: 30/30 recuperados" || bad "reaper travou sem canal de alertas"
 [ "$(mongo "db.eventstore.findOne({eventId:'dl-1'}).status")" = dead_letter ] && ok "dead_letter gravado mesmo sem canal (aviso perdido fica no log: limite conhecido)" || bad "dl-1 não foi para dead_letter"
 kill -TERM "$NODE2" 2>/dev/null || true; sleep 2
-node "$HERE/alert-sink.mjs" "$APORT" "$WORK/alerts.jsonl" >>"$WORK/alert-sink.log" 2>&1 & SINK_PID=$!; PIDS+=("$SINK_PID")
+start_sink
 
 say "ITEM 7.6  Worker que perdeu a posse do EVENTO não conclui (eventOwnership real)"
 out=$(CRM_ENV=(); crm crmWorkerSim.mjs late-complete x 0 2>&1 | tail -1); echo "$out"

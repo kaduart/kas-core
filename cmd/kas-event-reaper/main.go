@@ -37,7 +37,8 @@ type cliConfig struct {
 	mode, protocol, legacyFence, uriEnv, db, collection, leaseCollection, confirmDB, reportPath, metricsAddr, holder string
 	interval, warmup, threshold, leaseTTL, cycleTimeout                                                              time.Duration
 	maxAttempts, maxRecoveries, batch                                                                                int
-	once, allowRemoteExecutor                                                                                        bool
+	once, allowRemoteExecutor, requireCRMNode                                                                        bool
+	crmNodeMaxAge                                                                                                    time.Duration
 }
 
 func parse(args []string, stderr io.Writer) (cliConfig, error) {
@@ -66,6 +67,8 @@ func parse(args []string, stderr io.Writer) (cliConfig, error) {
 	fs.IntVar(&c.maxRecoveries, "max-recoveries", 3, "protocol v2: recoveries before dead_letter (CRM MAX_RECOVERIES: 3)")
 	fs.IntVar(&c.batch, "batch", 100, "events per cycle (legacy: 100)")
 	fs.BoolVar(&c.once, "once", false, "run a single cycle without warmup and exit")
+	fs.BoolVar(&c.requireCRMNode, "require-crm-node-lease", true, "executor mode: act (and fence every write) only while the CRM Node reaper refreshes participants.crmNode in the same lease document (EVENT_REAPER_SHARED_LEASE=on). On by default; prevents two owners when the Node flag is absent/off or points elsewhere. =false is accepted only on a loopback MongoDB host (disposable test database with no CRM Node), never together with -allow-remote-executor")
+	fs.DurationVar(&c.crmNodeMaxAge, "crm-node-marker-max-age", 15*time.Minute, "with -require-crm-node-lease: maximum age of the CRM Node marker (server clock)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
@@ -146,6 +149,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 			logger.Error("executor mode refuses a non-loopback MongoDB host; this phase only runs the executor on a disposable local database")
 			return 2
 		}
+		if !c.requireCRMNode && (!loop || c.allowRemoteExecutor) {
+			logger.Error("executor without the CRM Node guard (-require-crm-node-lease=false) is only allowed on a loopback MongoDB host, never with -allow-remote-executor: on a real CRM database it could become a second owner")
+			return 2
+		}
 		if c.leaseTTL <= c.interval {
 			logger.Warn("lease TTL is not longer than the interval; the lease will change hands between cycles", "lease_ttl", c.leaseTTL.String(), "interval", c.interval.String())
 		}
@@ -173,6 +180,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var lease *crmeventstore.Lease
 	if mode == eventreaper.ModeExecutor {
 		lease = crmeventstore.NewLease(client, c.db, c.leaseCollection, c.holder, c.leaseTTL)
+		if c.requireCRMNode {
+			lease.RequireCRMNode(c.crmNodeMaxAge)
+			logger.Info("executor requires the CRM Node reaper on the shared lease", "max_marker_age", c.crmNodeMaxAge.String(), "lease_collection", c.leaseCollection)
+		} else {
+			logger.Warn("executor WITHOUT the CRM Node guard (-require-crm-node-lease=false): allowed only on this loopback test database; never part of the activation procedure")
+		}
 		defer func() {
 			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()

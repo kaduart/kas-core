@@ -137,3 +137,49 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  integrated:
+    name: Integrated CRM + KAS (deploy/integrado/run.sh, CRM Node guard on)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).
+      # Repositório público; nada de segredo, banco descartável e dados fictícios.
+      CRM_REPO: kaduart/fono-inova-crm-back
+      CRM_REF: feat/fechar-parciais-financeiro-envios
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Check out the CRM (public)
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.CRM_REPO }}
+          ref: ${{ env.CRM_REF }}
+          path: crm
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: CRM dependencies
+        working-directory: crm
+        run: |
+          echo "CRM em $(git rev-parse HEAD)"
+          npm ci --no-audit --no-fund
+
+      - name: Run the integrated script (items 7, 9 and guard cases G1-G5)
+        run: CRM_DIR="$GITHUB_WORKSPACE/crm" WORK="$RUNNER_TEMP/integrado" deploy/integrado/run.sh
+
+      - name: Logs (on failure)
+        if: failure()
+        run: |
+          for f in "$RUNNER_TEMP"/integrado/*.log; do echo "=== $f"; tail -n 60 "$f"; done

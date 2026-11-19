@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"time"
 
@@ -30,6 +31,69 @@ type Lease struct {
 
 	mu    sync.Mutex
 	token string
+
+	// requireNode: act only while the CRM Node reaper proves, through a fresh
+	// participants.crmNode marker in THIS lease document, that it runs with
+	// EVENT_REAPER_SHARED_LEASE=on (and so competes for and fences this lease).
+	requireNode      bool
+	nodeMarkerMaxAge time.Duration
+}
+
+// RequireCRMNode makes Acquire refuse (ErrIncompatibleConfig) unless the CRM
+// Node reaper refreshed participants.crmNode.at within maxAge, by the server
+// clock. A Node with the flag absent/off, or pointed at another database or
+// lease collection, never writes that marker here, so the executor stays idle
+// instead of becoming a second owner. When it refuses, it also gives up a
+// lease it holds, so the Node (off) can resume at once.
+func (l *Lease) RequireCRMNode(maxAge time.Duration) {
+	l.requireNode, l.nodeMarkerMaxAge = true, maxAge
+}
+
+// crmNodeMarkerAge returns the marker age by the server clock; ok=false when absent.
+func (l *Lease) crmNodeMarkerAge(ctx context.Context) (time.Duration, bool, error) {
+	cur, err := l.coll.Aggregate(ctx, mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{{Key: "_id", Value: leaseID}}}},
+		{{Key: "$project", Value: bson.D{
+			{Key: "at", Value: "$participants.crmNode.at"},
+			{Key: "ageMs", Value: bson.D{{Key: "$subtract", Value: bson.A{"$$NOW", "$participants.crmNode.at"}}}},
+		}}},
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	defer cur.Close(ctx)
+	var doc struct {
+		At    any   `bson:"at"`
+		AgeMs int64 `bson:"ageMs"`
+	}
+	if !cur.Next(ctx) {
+		return 0, false, cur.Err()
+	}
+	if err := cur.Decode(&doc); err != nil {
+		return 0, false, err
+	}
+	if doc.At == nil {
+		return 0, false, nil
+	}
+	return time.Duration(doc.AgeMs) * time.Millisecond, true, nil
+}
+
+func (l *Lease) checkCRMNode(ctx context.Context) error {
+	if !l.requireNode {
+		return nil
+	}
+	age, ok, err := l.crmNodeMarkerAge(ctx)
+	if err != nil {
+		return err
+	}
+	if ok && age <= l.nodeMarkerMaxAge {
+		return nil
+	}
+	_ = l.Release(ctx)
+	if !ok {
+		return fmt.Errorf("%w: no participants.crmNode marker in the lease document (CRM Node reaper not running with EVENT_REAPER_SHARED_LEASE=on, or using another database/lease collection)", eventreaper.ErrIncompatibleConfig)
+	}
+	return fmt.Errorf("%w: participants.crmNode marker is %s old (max %s); the CRM Node reaper stopped refreshing it (flag turned off, process down or rolled back)", eventreaper.ErrIncompatibleConfig, age.Truncate(time.Second), l.nodeMarkerMaxAge)
 }
 
 // NewLease returns a lease for holder (for logs only; the token is what fences).
@@ -73,6 +137,9 @@ func (l *Lease) setPipeline(token string) mongo.Pipeline {
 // expired one with a new token, or create it. It returns false if another
 // holder has a live lease.
 func (l *Lease) Acquire(ctx context.Context) (bool, error) {
+	if err := l.checkCRMNode(ctx); err != nil {
+		return false, err
+	}
 	if tok := l.currentToken(); tok != "" {
 		r, err := l.coll.UpdateOne(ctx, append(bson.D{{Key: "_id", Value: leaseID}, {Key: "token", Value: tok}}, live()...), l.setPipeline(tok))
 		if err != nil {
@@ -127,7 +194,20 @@ func (l *Lease) fence(ctx context.Context) error {
 	if tok == "" {
 		return eventreaper.ErrLeaseLost
 	}
-	r, err := l.coll.UpdateOne(ctx, append(bson.D{{Key: "_id", Value: leaseID}, {Key: "token", Value: tok}}, live()...),
+	filter := append(bson.D{{Key: "_id", Value: leaseID}, {Key: "token", Value: tok}}, live()...)
+	if l.requireNode {
+		// Per write, not only per cycle: a Node that stops refreshing its marker
+		// (flag turned off, rolled back, down) stops our writes at once, inside
+		// the same transaction, even in the middle of a cycle.
+		filter = bson.D{{Key: "_id", Value: leaseID}, {Key: "token", Value: tok}, {Key: "$expr", Value: bson.D{{Key: "$and", Value: bson.A{
+			bson.D{{Key: "$gt", Value: bson.A{"$expiresAt", "$$NOW"}}},
+			bson.D{{Key: "$lte", Value: bson.A{
+				bson.D{{Key: "$subtract", Value: bson.A{"$$NOW", bson.D{{Key: "$ifNull", Value: bson.A{"$participants.crmNode.at", time.Unix(0, 0)}}}}}},
+				l.nodeMarkerMaxAge.Milliseconds(),
+			}}},
+		}}}}}
+	}
+	r, err := l.coll.UpdateOne(ctx, filter,
 		mongo.Pipeline{{{Key: "$set", Value: bson.D{{Key: "fencedWriteAt", Value: "$$NOW"}}}}})
 	if err != nil {
 		return err

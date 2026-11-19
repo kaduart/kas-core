@@ -45,6 +45,12 @@ type Transition struct {
 // ErrLeaseLost means the executor no longer owns the lease; no write was made.
 var ErrLeaseLost = errors.New("executor lease lost")
 
+// ErrIncompatibleConfig means the lease refused to act because a required
+// co-owner is not lease-aware (for the CRM reaper: the Node reaper is not
+// running with EVENT_REAPER_SHARED_LEASE=on against the same lease document).
+// The cycle is skipped and nothing is written.
+var ErrIncompatibleConfig = errors.New("incompatible reaper configuration")
+
 // Observation is the current state of an event, used by shadow verification.
 type Observation struct {
 	EventID      string
@@ -178,6 +184,11 @@ func (r *Runner) RunCycle(ctx context.Context) CycleReport {
 			return rep
 		}
 		ok, err := r.Lease.Acquire(ctx)
+		if errors.Is(err, ErrIncompatibleConfig) {
+			rep.Skipped, rep.Err = "incompatible_config", err.Error()
+			r.finish(&rep, started)
+			return rep
+		}
 		if err != nil {
 			rep.Skipped, rep.Err = "lease_error", err.Error()
 			r.finish(&rep, started)

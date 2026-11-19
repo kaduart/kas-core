@@ -82,3 +82,26 @@ func TestLoopbackDetection(t *testing.T) {
 		}
 	}
 }
+
+// The CRM Node guard is on by default. Turning it off is accepted only on a
+// loopback host and never with -allow-remote-executor, so the unguarded mode
+// cannot be used by accident against a real CRM database.
+func TestUnguardedExecutorOnlyOnLoopback(t *testing.T) {
+	code, out := runWith(t, map[string]string{"KAS_REAPER_MONGO_URI": "mongodb://cluster.example.net:27017"},
+		"-mode", "executor", "-db", "x", "-executor-confirm-db", "x", "-allow-remote-executor", "-require-crm-node-lease=false", "-once")
+	if code != 2 || !strings.Contains(out, "only allowed on a loopback") {
+		t.Fatalf("remote unguarded: code=%d out=%s", code, out)
+	}
+	code, out = runWith(t, map[string]string{"KAS_REAPER_MONGO_URI": "mongodb://127.0.0.1:27017"},
+		"-mode", "executor", "-db", "x", "-executor-confirm-db", "x", "-allow-remote-executor", "-require-crm-node-lease=false", "-once")
+	if code != 2 || !strings.Contains(out, "only allowed on a loopback") {
+		t.Fatalf("loopback but with -allow-remote-executor: code=%d out=%s", code, out)
+	}
+}
+
+func TestGuardIsOnByDefault(t *testing.T) {
+	c, err := parse([]string{"-mode", "executor", "-db", "x"}, &bytes.Buffer{})
+	if err != nil || !c.requireCRMNode {
+		t.Fatalf("want guard on by default, got %v err=%v", c.requireCRMNode, err)
+	}
+}

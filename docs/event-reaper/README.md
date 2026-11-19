@@ -71,6 +71,8 @@ Nada disto foi feito. O runbook completo está no CRM, em `docs/EVENTSTORE_OWNER
 
 **O protocolo da KAS precisa ser igual ao do CRM implantado.** Use `-protocol v1` contra um CRM sem posse e `-protocol v2` contra um CRM com posse. O v2 rodando contra um CRM v1 não libera nenhum evento sem token sem `-legacy-fence`, ou seja, não faz nada de perigoso, mas também não ajuda.
 
+**Posse compartilhada com o Node (novo, CRM `EVENT_REAPER_SHARED_LEASE`).** Com `on` no CRM, o reaper do Node disputa o MESMO documento `kas_event_reaper_lease` e cerca cada escrita como a KAS. Aí a ordem da troca deixa de ser o que impede dois executores: quem não tem a posse pula o ciclo. Com `off` (padrão), o Node só lê o documento e pula o ciclo se a KAS tiver posse viva. Demonstrado em `deploy/integrado/run.sh` (item 9 abaixo).
+
 **Reversão**
 1. Parar o executor da KAS (SIGTERM). Ele libera o lease ao sair.
 2. Conferir que nenhum `kas-event-reaper` está rodando e que o lease está expirado.

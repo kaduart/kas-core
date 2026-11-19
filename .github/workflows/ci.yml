@@ -3,12 +3,12 @@ name: KAS Core CI
 on:
   push:
     branches:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- kas-core/validacao-core
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- kas-core/operacional
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- kas-core/event-reaper
+      - kas-core/validacao-core
+      - kas-core/operacional
+      - kas-core/event-reaper
   pull_request:
     branches:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- main
+      - main
   workflow_dispatch:
 
 permissions:
@@ -20,166 +20,166 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).postgres:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  image: postgres:16
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  env:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    POSTGRES_USER: kas
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    POSTGRES_PASSWORD: kas_teste_ci
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    POSTGRES_DB: kas_core_test
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  ports:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    - 5432:5432
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  options: >-
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    --health-cmd "pg_isready -U kas -d kas_core_test"
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    --health-interval 5s
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    --health-timeout 5s
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    --health-retries 10
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kas
+          POSTGRES_PASSWORD: kas_teste_ci
+          POSTGRES_DB: kas_core_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kas -d kas_core_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).# Disposable CI database with fictitious credentials; no external data.
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).KAS_TEST_DATABASE_URL: postgres://kas:kas_teste_ci@localhost:5432/kas_core_test?sslmode=disable
+      # Disposable CI database with fictitious credentials; no external data.
+      KAS_TEST_DATABASE_URL: postgres://kas:kas_teste_ci@localhost:5432/kas_core_test?sslmode=disable
     steps:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Check out source
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  uses: actions/checkout@v7
+      - name: Check out source
+        uses: actions/checkout@v7
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Set up Go
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  uses: actions/setup-go@v7
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  with:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    go-version-file: go.mod
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    cache: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Set up Node.js
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  uses: actions/setup-node@v7
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  with:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    node-version: 22
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Disposable MongoDB (single-node replica set) for the event reaper
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: |
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    docker run -d --name mongo -p 127.0.0.1:27017:27017 mongo:7 --replSet rs0 --bind_ip_all
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    for i in $(seq 1 30); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' && break; sleep 1; done
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    docker exec mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    for i in $(seq 1 30); do [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = true ] && break; sleep 1; done
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    echo "KAS_TEST_MONGO_URI=mongodb://127.0.0.1:27017/?directConnection=true" >> "$GITHUB_ENV"
+      - name: Disposable MongoDB (single-node replica set) for the event reaper
+        run: |
+          docker run -d --name mongo -p 127.0.0.1:27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' && break; sleep 1; done
+          docker exec mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+          for i in $(seq 1 30); do [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = true ] && break; sleep 1; done
+          echo "KAS_TEST_MONGO_URI=mongodb://127.0.0.1:27017/?directConnection=true" >> "$GITHUB_ENV"
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Legacy oracle (unmodified CRM reaper) dependencies
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  working-directory: legacy-oracle/eventreaper
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: |
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    npm install --no-audit --no-fund
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    echo "KAS_TEST_ORACLE_DIR=$GITHUB_WORKSPACE/legacy-oracle/eventreaper" >> "$GITHUB_ENV"
+      - name: Legacy oracle (unmodified CRM reaper) dependencies
+        working-directory: legacy-oracle/eventreaper
+        run: |
+          npm install --no-audit --no-fund
+          echo "KAS_TEST_ORACLE_DIR=$GITHUB_WORKSPACE/legacy-oracle/eventreaper" >> "$GITHUB_ENV"
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Legacy oracle v2 (CRM reaper with execution ownership) dependencies
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  working-directory: legacy-oracle/eventreaper-v2
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: |
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    npm install --no-audit --no-fund
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    echo "KAS_TEST_ORACLE_V2_DIR=$GITHUB_WORKSPACE/legacy-oracle/eventreaper-v2" >> "$GITHUB_ENV"
+      - name: Legacy oracle v2 (CRM reaper with execution ownership) dependencies
+        working-directory: legacy-oracle/eventreaper-v2
+        run: |
+          npm install --no-audit --no-fund
+          echo "KAS_TEST_ORACLE_V2_DIR=$GITHUB_WORKSPACE/legacy-oracle/eventreaper-v2" >> "$GITHUB_ENV"
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Legacy oracle (unmodified CRM outbox dispatcher) dependencies
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  working-directory: legacy-oracle/outbox
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: |
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    npm install --no-audit --no-fund
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    echo "KAS_TEST_ORACLE_OUTBOX_DIR=$GITHUB_WORKSPACE/legacy-oracle/outbox" >> "$GITHUB_ENV"
+      - name: Legacy oracle (unmodified CRM outbox dispatcher) dependencies
+        working-directory: legacy-oracle/outbox
+        run: |
+          npm install --no-audit --no-fund
+          echo "KAS_TEST_ORACLE_OUTBOX_DIR=$GITHUB_WORKSPACE/legacy-oracle/outbox" >> "$GITHUB_ENV"
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Legacy oracle (unmodified CRM alert service), no dependencies
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: echo "KAS_TEST_ORACLE_ALERTS_DIR=$GITHUB_WORKSPACE/legacy-oracle/alerts" >> "$GITHUB_ENV"
+      - name: Legacy oracle (unmodified CRM alert service), no dependencies
+        run: echo "KAS_TEST_ORACLE_ALERTS_DIR=$GITHUB_WORKSPACE/legacy-oracle/alerts" >> "$GITHUB_ENV"
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Go tests
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: go test ./...
+      - name: Go tests
+        run: go test ./...
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Static analysis
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: go vet ./...
+      - name: Static analysis
+        run: go vet ./...
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Go race detector
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  env:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    CGO_ENABLED: "1"
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: go test -race ./...
+      - name: Go race detector
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./...
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Node unit and process integration tests
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  working-directory: node-integration
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: npm test
+      - name: Node unit and process integration tests
+        working-directory: node-integration
+        run: npm test
 
   docker:
     name: Docker image and compose stack
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Check out source
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  uses: actions/checkout@v7
+      - name: Check out source
+        uses: actions/checkout@v7
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Build the image
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: docker build -t kas-core:ci .
+      - name: Build the image
+        run: docker build -t kas-core:ci .
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: The image runs as a non-root user
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: |
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    user="$(docker image inspect --format '{{.Config.User}}' kas-core:ci)"
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    echo "image user: $user"
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    test "$user" = "65532:65532"
+      - name: The image runs as a non-root user
+        run: |
+          user="$(docker image inspect --format '{{.Config.User}}' kas-core:ci)"
+          echo "image user: $user"
+          test "$user" = "65532:65532"
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: The static binary starts (a missing configuration exits with code 2)
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: |
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    set +e
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    docker run --rm kas-core:ci -config /nonexistent
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    code=$?
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    echo "exit code: $code"
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    test "$code" -eq 2
+      - name: The static binary starts (a missing configuration exits with code 2)
+        run: |
+          set +e
+          docker run --rm kas-core:ci -config /nonexistent
+          code=$?
+          echo "exit code: $code"
+          test "$code" -eq 2
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: The compose file is valid
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: |
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    ./scripts/dev-certs.sh
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    docker compose config --quiet
+      - name: The compose file is valid
+        run: |
+          ./scripts/dev-certs.sh
+          docker compose config --quiet
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Start the stack and run the smoke test
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: |
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    docker compose up -d --build kas
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    ./scripts/compose-smoke.sh
+      - name: Start the stack and run the smoke test
+        run: |
+          docker compose up -d --build kas
+          ./scripts/compose-smoke.sh
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Container logs (on failure)
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  if: failure()
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: docker compose logs --no-color
+      - name: Container logs (on failure)
+        if: failure()
+        run: docker compose logs --no-color
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Tear down
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  if: always()
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: docker compose down -v
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
 
   integrated:
     name: Integrated CRM + KAS (deploy/integrado/run.sh, CRM Node guard on)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).# Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).# Repositório público; nada de segredo, banco descartável e dados fictícios.
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).CRM_REPO: kaduart/fono-inova-crm-back
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).CRM_REF: feat/integrado-api-workers
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).PUPPETEER_SKIP_DOWNLOAD: 'true'
+      # PR único do CRM (item 4 + API/workers reais do item 7). Depois do merge, voltar para main.
+      # Repositório público; nada de segredo, banco descartável e dados fictícios.
+      CRM_REPO: kaduart/fono-inova-crm-back
+      CRM_REF: feat/envios-item4
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
     steps:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Check out source
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  uses: actions/checkout@v7
+      - name: Check out source
+        uses: actions/checkout@v7
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Check out the CRM (public)
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  uses: actions/checkout@v7
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  with:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    repository: ${{ env.CRM_REPO }}
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    ref: ${{ env.CRM_REF }}
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    path: crm
+      - name: Check out the CRM (public)
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.CRM_REPO }}
+          ref: ${{ env.CRM_REF }}
+          path: crm
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Set up Go
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  uses: actions/setup-go@v7
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  with:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    go-version-file: go.mod
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    cache: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Set up Node.js
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  uses: actions/setup-node@v7
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  with:
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    node-version: 22
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: CRM dependencies
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  working-directory: crm
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: |
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    echo "CRM em $(git rev-parse HEAD)"
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    npm ci --no-audit --no-fund
+      - name: CRM dependencies
+        working-directory: crm
+        run: |
+          echo "CRM em $(git rev-parse HEAD)"
+          npm ci --no-audit --no-fund
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Run the integrated script (items 7, 9 and guard cases G1-G5)
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: CRM_DIR="$GITHUB_WORKSPACE/crm" WORK="$RUNNER_TEMP/integrado" deploy/integrado/run.sh
+      - name: Run the integrated script (items 7, 9 and guard cases G1-G5)
+        run: CRM_DIR="$GITHUB_WORKSPACE/crm" WORK="$RUNNER_TEMP/integrado" deploy/integrado/run.sh
 
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).- name: Logs (on failure)
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  if: failure()
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).  run: |
- Branch do CRM com scripts/isolado e o modo cedente do reaper (CRM #89).    for f in "$RUNNER_TEMP"/integrado/*.log; do echo "=== $f"; tail -n 60 "$f"; done
+      - name: Logs (on failure)
+        if: failure()
+        run: |
+          for f in "$RUNNER_TEMP"/integrado/*.log; do echo "=== $f"; tail -n 60 "$f"; done

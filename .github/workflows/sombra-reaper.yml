@@ -74,6 +74,8 @@ jobs:
         run: |
           [ -n "$URI" ] || { echo "::error::segredo KAS_REAPER_SHADOW_MONGO_URI ausente"; exit 1; }
           [ -n "$PASS" ] || { echo "::error::segredo SOMBRA_REPORT_PASSPHRASE ausente"; exit 1; }
+          # Só a forma da URI (esquema, usuário, presença de senha, < >, espaços, domínio): nunca o valor.
+          deploy/sombra/forma-uri.sh
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
             [[ "$MINUTES" =~ ^[0-9]+$ ]] && [ "$MINUTES" -ge 1 ] && [ "$MINUTES" -le 345 ] || { echo "::error::minutes fora de 1..345"; exit 1; }
             SECS=$((MINUTES * 60))
@@ -104,6 +106,8 @@ jobs:
           rc=$?
           kill "$PROBE" 2>/dev/null
           echo "saída da sombra: $rc (124 = fim do tempo, esperado; 2 = recusou iniciar)"
+          # Em falha: só a mensagem fixa e o tipo do erro, nunca o texto do motivo.
+          [ "$rc" = 0 ] || [ "$rc" = 124 ] || deploy/sombra/tipo-erro.sh run/reaper.log
           grep -q '"msg":"read_only_confirmed"' run/reaper.log && echo "usuário só leitura comprovado pelo servidor" || { echo "::error::a sombra não comprovou só leitura"; exit 1; }
           grep -q '"msg":"shadow_refused_not_read_only"' run/reaper.log && { echo "::error::recusou: o usuário pode escrever"; exit 1; }
           [ "$rc" = 0 ] || [ "$rc" = 124 ] || exit 1

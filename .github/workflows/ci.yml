@@ -224,6 +224,9 @@ jobs:
       - name: Schedule window never overlaps the next slot (deploy/sombra/janela.sh)
         run: deploy/sombra/janela_test.sh
 
+      - name: Public diagnostics never print password or host
+        run: deploy/sombra/diagnostico_test.sh
+
       - name: Run S1-S6 (authenticated Mongo, same role as Atlas, real CRM reaper)
         run: |
           set -o pipefail

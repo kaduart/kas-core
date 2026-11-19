@@ -24,7 +24,10 @@ permissions:
 
 jobs:
   resumo:
-    if: github.repository == 'kaduart/kas-core' && vars.SOMBRA_REAPER_ATIVA == 'true'
+    # Só a main: o ambiente "sombra" tem regra de branch = main e guarda os segredos.
+    # Disparo manual a partir de outra branch não recebe credenciais.
+    if: github.repository == 'kaduart/kas-core' && vars.SOMBRA_REAPER_ATIVA == 'true' && github.ref == 'refs/heads/main'
+    environment: sombra
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

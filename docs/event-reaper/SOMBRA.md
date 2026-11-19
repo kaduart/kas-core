@@ -18,7 +18,7 @@ Data: 19/11/2026. Estado: **pacote pronto, sombra desligada.** Nada foi criado n
 
 | Opção | Custo | Disponibilidade | Veredito |
 |---|---|---|---|
-| **GitHub Actions no `kaduart/kas-core`** (repo público) | R$ 0 (minutos ilimitados em repo público) | Execuções de ~5h45 em fila, cobertura quase contínua; não depende de PC ligado | **Recomendado** |
+| **GitHub Actions no `kaduart/kas-core`** (repo público) | R$ 0 (minutos ilimitados em repo público) | Execuções de ~5h45 em fila, com ciclos a cada 5 min (amostragem, meta ≥ 90% dos ciclos); não depende de PC ligado | **Recomendado** |
 | KADU-PC (Windows, local) | R$ 0 | Depende do PC ligado e acordado 5 dias; risco de cobertura < 90% | Reserva |
 | Render (workspace atual) | Worker extra pago; web free não recebe tráfego privado e dorme | — | Não usar (custo/regra "nada no Render sem OK") |
 | Atlas, outras nuvens | Pago ou exige conta nova | — | Não usar |
@@ -29,12 +29,14 @@ Rede: a lista de acesso do projeto Atlas de produção já tem a faixa aberta us
 
 Workflows (só rodam depois do merge na `main`, porque agenda do Actions usa a branch padrão):
 
-- `.github/workflows/sombra-reaper.yml`: de hora em hora (minuto 7); grupo de concorrência enfileira a próxima execução, então sempre há uma rodando. Cada execução: compila da `main`, roda `kas-event-reaper -mode shadow -protocol v2 -require-read-only on -warmup 30s -interval 5m`, sonda o `/health` do CRM a cada 60 s, publica o resumo (só contagens) e guarda o relatório completo **criptografado (AES256)** como artifact por 14 dias.
+- `.github/workflows/sombra-reaper.yml`: de hora em hora (minuto 7); grupo de concorrência enfileira a próxima execução. Entre uma execução e outra há uma lacuna de ~2 min (preparo + 30 s de aquecimento), e o agendador do GitHub pode atrasar; é amostragem por ciclos, não acompanhamento contínuo. A cobertura real é medida pelo C7. Cada execução: compila da `main`, roda `kas-event-reaper -mode shadow -protocol v2 -require-read-only on -warmup 30s -interval 5m`, sonda o `/health` do CRM a cada 60 s, publica o resumo (só contagens) e guarda o relatório completo **criptografado (AES256)** como artifact por 14 dias.
 - `.github/workflows/sombra-reaper-resumo.yml`: todo dia às 09:00 (BRT) junta as execuções dos últimos dias e avalia os critérios. Manual com `days` e `min_days`.
 
 Execuções canceladas na fila são normais: o Actions mantém só uma pendente por grupo.
 
-Segredos do repositório (Settings → Secrets and variables → Actions → Secrets):
+Segredos: ficam no **ambiente `sombra`**, não nos segredos do repositório. Settings → Environments → New environment `sombra` → Deployment branches and tags → Selected branches → regra `main`. Só jobs da `main` recebem esses segredos; um disparo manual a partir de outra branch, PRs e forks não recebem. Os workflows não têm gatilho `pull_request`.
+
+Segredos do ambiente `sombra` (Environment secrets):
 
 ```
 KAS_REAPER_SHADOW_MONGO_URI
@@ -54,7 +56,7 @@ SOMBRA_REAPER_ATIVA
 ```
 SOMBRA_LEGACY_FENCE
 ```
-Mesmo valor de `EVENT_LEGACY_FENCE_AT` da API no Render; vazio se a API não tiver essa variável.
+Mesmo valor de `EVENT_LEGACY_FENCE_AT` no serviço Render `fono-inova-crm-back` (é o processo que roda o reaper: `server.js` → `startAllCrons()` → `legacyFenceFromEnv()` em `config/cronManager.js`). Se a variável não existir lá, deixe vazio: o Node então não libera eventos sem posse, e a sombra sem cerca prevê o mesmo. Nunca inventar uma data.
 
 Opcionais, com padrão: `SOMBRA_DB` (`fono_inova_prod`) e `SOMBRA_CRM_HEALTH_URL` (`https://fono-inova-crm-back.onrender.com/health`).
 
@@ -159,3 +161,9 @@ A execução em andamento termina sozinha; para cortar na hora, cancelar o run. 
 | S6 | Banco pausado | ciclos com erro registrados, depois recupera; SIGTERM não gera erro falso |
 
 Roda localmente (`CRM_DIR=<checkout do CRM com npm ci> deploy/sombra/validate.sh`) e no CI (job `sombra`).
+
+## 9. O que os cinco dias demonstram (e o que não)
+
+- Demonstram: para os eventos que ficaram presos em `processing` durante os ciclos amostrados, a KAS tomaria a mesma decisão do Node (C2), sem escrever (C1), sem efeito medido no CRM (C5) e com consumo e erros conhecidos (C4, C6).
+- Não demonstram: casos raros que não aconteceram na janela; comportamento fora dos ciclos amostrados; carga maior que a do período. Se houver poucos eventos presos, a amostra é pequena e o resumo mostra o número exato de conferências.
+- Não medem tempo de reação: a conferência acontece no ciclo seguinte (5 min), não no mesmo instante do Node.

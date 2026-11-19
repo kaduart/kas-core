@@ -1,11 +1,12 @@
 # Sombra do reaper KAS contra o Mongo de produção, SÓ LEITURA (docs/event-reaper/SOMBRA.md).
 #
 # Fica inerte até o Kadu ligar a variável do repositório SOMBRA_REAPER_ATIVA=true e criar os
-# segredos KAS_REAPER_SHADOW_MONGO_URI (usuário com o papel kasReaperShadowRead) e
+# segredos (do ambiente "sombra", restrito à main) KAS_REAPER_SHADOW_MONGO_URI (usuário com o papel kasReaperShadowRead) e
 # SOMBRA_REPORT_PASSPHRASE. Desligar: SOMBRA_REAPER_ATIVA=false (ou apagar a variável).
 #
 # Custo: zero (repositório público, runners do GitHub). Cada execução dura ~5h45; a agenda é de
-# hora em hora e o grupo de concorrência enfileira a próxima, então há sempre uma rodando.
+# hora em hora e o grupo de concorrência enfileira a próxima. É amostragem (ciclos de 5 min com
+# pequenas lacunas entre execuções), não acompanhamento contínuo; a cobertura é medida pelo C7.
 #
 # O que fica público: só o resumo com contagens (sem eventId). O relatório completo, o log do
 # binário e a sonda do /health saem criptografados (AES256) como artifact por 14 dias.
@@ -30,7 +31,10 @@ concurrency:
 
 jobs:
   sombra:
-    if: github.repository == 'kaduart/kas-core' && vars.SOMBRA_REAPER_ATIVA == 'true'
+    # Só a main: o ambiente "sombra" tem regra de branch = main e guarda os segredos.
+    # Disparo manual a partir de outra branch não recebe credenciais.
+    if: github.repository == 'kaduart/kas-core' && vars.SOMBRA_REAPER_ATIVA == 'true' && github.ref == 'refs/heads/main'
+    environment: sombra
     runs-on: ubuntu-latest
     timeout-minutes: 358
     env:

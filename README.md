@@ -125,6 +125,12 @@ Telefone e e-mail nunca são gravados: viram uma impressão digital HMAC por emp
 
 As regras são as mesmas do CRM da Fono Inova; a amostra em `testdata/attribution/amostra-fono` fecha os mesmos R$ 1.290,00. Contrato completo em [contract/v1/attribution.md](contract/v1/attribution.md).
 
+## KAS Reports e piloto da segunda empresa
+
+`GET /internal/v1/reports/revenue` (capacidade `reports:read`, módulo `reports`, que depende do attribution) entrega o relatório de receita por campanha pronto para a empresa: página HTML para imprimir, com nome e cor da empresa vindos das chaves `branding.name` e `branding.color` da configuração, ou CSV. Contrato em [contract/v1/reports.md](contract/v1/reports.md).
+
+O piloto da escola fictícia (`escola-demo`) prova que uma empresa nova é só configuração: `deploy/piloto-escola/run.sh` sobe o executável real, cria a empresa, ativa os módulos, importa os CSVs de `testdata/attribution/escola-demo`, reimporta, pausa e reativa, confere o isolamento com a `fono-demo` e verifica que nenhum módulo cita empresa ou entidade de negócio. Termina com "TUDO OK". O mesmo roteiro roda no `go test` (`TestEscolaDemoPilot`).
+
 ## Módulo de configuração
 
 Contrato `v1`: `POST /internal/v1/config/evaluate`, descrito em [contract/v1/config-evaluate.md](contract/v1/config-evaluate.md) e em [openapi.yaml](openapi.yaml). O esquema JSON declara chaves, tipo (`integer`, `boolean`, `string`) e faixa opcional de inteiros. O serviço autenticado precisa estar autorizado para o tenant solicitado e possuir a capacidade `config:read`. A configuração é somente leitura durante a vida do processo.

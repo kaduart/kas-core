@@ -1,0 +1,10 @@
+external_id,customer_ref,amount_cents,received_at,payment_ref,unit,voided
+mat-01,resp-01,95000,2026-11-03T13:00:00Z,pay-a1,centro,false
+men-01,resp-01,120000,2026-11-05T13:00:00Z,pay-a1,centro,false
+mat-02,resp-02,95000,2026-11-04T13:00:00Z,pay-b1,centro,false
+mat-03,resp-03,95000,2026-11-06T13:00:00Z,pay-c1,norte,false
+mat-04,resp-04,95000,2026-11-06T14:00:00Z,pay-d1,norte,false
+mat-05,resp-05,95000,2026-11-06T15:00:00Z,pay-d2,norte,false
+mat-06,resp-06,95000,2026-11-07T13:00:00Z,pay-e1,centro,false
+mat-07,resp-07,95000,2026-11-08T13:00:00Z,pay-f1,norte,false
+mat-99,resp-02,95000,2026-11-09T13:00:00Z,pay-b9,centro,sim

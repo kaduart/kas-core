@@ -1,0 +1,6 @@
+external_id,customer_ref,source,contacted_at,campaign,ad_id,gclid,ctwa_clid,method,acquisition
+ct-01,resp-01,google_ads,2026-10-01T12:00:00Z,gg-matriculas-2027,,GCLID-ESC-01,,site_signature,true
+ct-02,resp-02,meta_ads,2026-10-03T12:00:00Z,meta-open-day,AD-ESC-7,,CLID-ESC-02,ctwa,true
+ct-03,resp-03,instagram,2026-10-05T12:00:00Z,insta-organico-out,,,,,false
+ct-04,resp-04,google_ads,2026-10-02T12:00:00Z,gg-matriculas-2027,,GCLID-ESC-04,,site_signature,true
+ct-07,resp-07,meta_ads,2026-11-20T12:00:00Z,meta-open-day,AD-ESC-7,,,,false

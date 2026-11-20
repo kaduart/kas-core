@@ -26,6 +26,7 @@ tags:
   - name: Events
   - name: Modules
   - name: Attribution
+  - name: Reports
 paths:
   /healthz:
     get:
@@ -632,6 +633,62 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AttributionRevenueResponse'
+            text/csv:
+              schema:
+                type: string
+        '400':
+          description: invalid_request, model_unsupported, tenant_required or invalid_correlation_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Service authentication failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: tenant_inactive, tenant_forbidden, capability_forbidden, module_not_contracted or module_paused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: attribution_unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/v1/reports/revenue:
+    get:
+      tags: [Reports]
+      summary: Revenue report for the company (HTML or CSV)
+      description: >-
+        Requires `reports:read` and the module `reports` active (it depends on
+        `attribution`). Same parameters as /internal/v1/attribution/revenue. HTML
+        is one self-contained page with the company's branding from the
+        configuration keys `branding.name` and `branding.color`; CSV is the same
+        as the Attribution CSV.
+      operationId: getRevenueReport
+      security:
+        - ServiceIdentity: []
+          ServiceBearer: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+        - {name: tenant_id, in: query, required: false, schema: {$ref: '#/components/schemas/TenantID'}}
+        - {name: from, in: query, required: false, schema: {type: string}}
+        - {name: to, in: query, required: false, schema: {type: string}}
+        - {name: unit, in: query, required: false, schema: {type: string, maxLength: 128}}
+        - {name: model, in: query, required: false, schema: {type: string, enum: [primeiro-contato-por-recebimento-v1]}}
+        - {name: format, in: query, required: false, schema: {type: string, enum: [html, csv], default: html}}
+      responses:
+        '200':
+          description: The report.
+          content:
+            text/html:
+              schema:
+                type: string
             text/csv:
               schema:
                 type: string

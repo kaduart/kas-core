@@ -102,6 +102,7 @@ func newHandler(store *configstore.Store, auditService *audit.Service, maxConcur
 	h.mux.HandleFunc("/internal/v1/modules", h.getModules)
 	h.registerProcessRoutes()
 	h.registerAttributionRoutes()
+	h.registerReportsRoutes()
 	return h
 }
 

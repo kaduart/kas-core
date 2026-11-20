@@ -1,6 +1,6 @@
 # Resumo consolidado da sombra do reaper KAS: baixa os relatórios criptografados das execuções
 # dos últimos dias, junta e avalia os critérios (docs/event-reaper/SOMBRA.md §5).
-# Diário às 09:00 (BRT) só com SOMBRA_AGENDA_ATIVA=true; manual a qualquer hora (na main).
+# Diário às 09:47 (BRT) só com SOMBRA_AGENDA_ATIVA=true; manual a qualquer hora (na main).
 # Publica só contagens. Janela oficial (docs/event-reaper/SOMBRA.md §7): 23/11 00h → 28/11 00h BRT,
 # nas variáveis SOMBRA_JANELA_INICIO/SOMBRA_JANELA_FIM (com esses valores como padrão). Sem since/until
 # manuais, o resumo escolhe sozinho:
@@ -12,7 +12,7 @@ name: sombra-reaper-resumo
 
 on:
   schedule:
-    - cron: '0 12 * * *'
+    - cron: '47 12 * * *'
   workflow_dispatch:
     inputs:
       days:

@@ -148,3 +148,10 @@ fieldset.deadline { min-width: 0; }
 .field input, .field select { width: 100%; }
 .row > .field { flex: 1; }
 .row > .field.small { flex: 0 0 100px; }
+
+/* Create and remove steps */
+button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+button.danger-text { color: var(--danger); margin-top: 16px; }
+button.small { padding: 2px 8px; font-size: 12px; }
+.hint.error { color: var(--danger); }
+.notice .row { margin-top: 8px; }

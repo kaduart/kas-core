@@ -1,4 +1,4 @@
-import type { Deadline, Definition, LayoutNode, Step } from './types'
+import type { Deadline, Definition, LayoutNode, Step, StepType } from './types'
 
 export type EdgeKind = 'next' | 'deadline' | 'route' | 'confirmed' | 'rejected' | 'no_reply' | 'event' | 'interrupt'
 
@@ -192,4 +192,115 @@ export const STEP_LABEL: Record<string, string> = {
 export function newPublishId(): string {
   const r = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : Math.random().toString(36).slice(2)
   return `studio-${r}`
+}
+
+// Step names follow the engine (internal/process/definition.go namePattern).
+export const STEP_NAME = /^[a-z][a-z0-9_]{0,62}$/
+export const MAX_STEPS = 100
+
+// Starting shape of a new step. Fields the engine requires but that only the
+// person can choose (next step, routes, events) start empty, so Validar points
+// them out instead of the editor guessing a path.
+export function stepTemplate(type: StepType): Step {
+  switch (type) {
+    case 'human_task':
+      return { type, roles: ['responsavel'], outcomes: ['concluido'] }
+    case 'decision':
+      return { type, routes: {} }
+    case 'external_command':
+      return { type, command_type: 'crm.command.nome', reply_timeout: 'PT1H' }
+    case 'wait_event':
+      return { type, on_events: {} }
+    case 'end':
+      return { type, result: 'concluido' }
+  }
+}
+
+// stepNameProblem explains why a name cannot be used, or returns '' when it can.
+export function stepNameProblem(def: Definition, name: string): string {
+  if (!STEP_NAME.test(name)) return 'Use letras minúsculas, números e _ (começando por letra, até 63).'
+  if (def.steps[name]) return `Já existe uma etapa ${name}.`
+  if (Object.keys(def.steps).length >= MAX_STEPS) return `O fluxo já tem o máximo de ${MAX_STEPS} etapas.`
+  return ''
+}
+
+// addStep creates a step of the given type and places it to the right of the
+// drawing (or right of `near`), keeping every other position as it is.
+export function addStep(def: Definition, name: string, type: StepType, near?: string): Definition {
+  const problem = stepNameProblem(def, name)
+  if (problem) throw new Error(problem)
+  const pos = positionsOf(def)
+  const anchor = near && pos[near]
+  const maxX = Math.max(0, ...Object.values(pos).map((p) => p.x))
+  const at = anchor ? { x: anchor.x + COL_GAP, y: anchor.y + ROW_GAP } : { x: maxX + COL_GAP, y: 0 }
+  const next: Definition = { ...def, steps: { ...def.steps, [name]: stepTemplate(type) } }
+  return withLayout(next, { ...pos, [name]: at })
+}
+
+export interface Removal {
+  definition: Definition
+  // Every reference that pointed to the removed step and was cleared, as
+  // "etapa.campo" (or "interrupts.evento"), for the editor to show.
+  cleared: string[]
+}
+
+const SCALAR_REFS = ['next', 'on_deadline', 'on_confirmed', 'on_rejected', 'on_no_reply'] as const
+
+// removeStep deletes a step and clears every transition that pointed to it.
+// The start step cannot be removed: choose another start first.
+export function removeStep(def: Definition, name: string): Removal {
+  if (!def.steps[name]) throw new Error(`Etapa ${name} não existe.`)
+  if (def.start === name) throw new Error('A etapa de início não pode ser apagada.')
+  if (Object.keys(def.steps).length <= 1) throw new Error('O fluxo precisa de pelo menos uma etapa.')
+  return clearRefs(def, name)
+}
+
+function clearRefs(def: Definition, name: string): Removal {
+  const cleared: string[] = []
+  const steps: Record<string, Step> = {}
+  for (const [sname, s] of Object.entries(def.steps)) {
+    if (sname === name) continue
+    let cur: Step = s
+    for (const k of SCALAR_REFS) {
+      if (cur[k] === name) {
+        cur = { ...cur }
+        delete cur[k]
+        if (k === 'on_deadline') delete cur.late_response
+        cleared.push(`${sname}.${k}`)
+      }
+    }
+    for (const field of ['routes', 'on_events'] as const) {
+      const m = cur[field]
+      if (!m) continue
+      const hits = Object.keys(m).filter((k) => m[k] === name)
+      if (!hits.length) continue
+      const rest = { ...m }
+      for (const k of hits) {
+        delete rest[k]
+        cleared.push(`${sname}.${field}.${k}`)
+      }
+      cur = { ...cur, [field]: rest }
+    }
+    steps[sname] = cur
+  }
+  let interrupts = def.interrupts
+  if (interrupts) {
+    const hits = Object.keys(interrupts).filter((k) => interrupts![k] === name)
+    if (hits.length) {
+      interrupts = { ...interrupts }
+      for (const k of hits) {
+        delete interrupts[k]
+        cleared.push(`interrupts.${k}`)
+      }
+    }
+  }
+  const out: Definition = { ...def, steps, interrupts }
+  if (!interrupts || !Object.keys(interrupts).length) delete out.interrupts
+  if (def.layout?.nodes) out.layout = { ...def.layout, nodes: def.layout.nodes.filter((n) => n.id !== name) }
+  return { definition: out, cleared: cleared.sort() }
+}
+
+// referencesTo lists who points to a step, so the editor can warn before removing it.
+export function referencesTo(def: Definition, name: string): string[] {
+  return clearRefs(def, name).cleared
 }

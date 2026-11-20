@@ -33,19 +33,21 @@ var (
 )
 
 type Handler struct {
-	store    *configstore.Store
-	audit    *audit.Service
-	events   *events.Service
-	puller   *events.Puller
-	process  *process.Engine
-	metrics  *metricsState
-	logger   *slog.Logger
-	mux      *http.ServeMux
-	active   atomic.Int64
-	limit    int64
-	stateMu  sync.Mutex
-	draining bool
-	inFlight sync.WaitGroup
+	store   *configstore.Store
+	audit   *audit.Service
+	events  *events.Service
+	puller  *events.Puller
+	process *process.Engine
+	// readiness holds the integration check of each enabled module.
+	readiness map[string]ModuleReadiness
+	metrics   *metricsState
+	logger    *slog.Logger
+	mux       *http.ServeMux
+	active    atomic.Int64
+	limit     int64
+	stateMu   sync.Mutex
+	draining  bool
+	inFlight  sync.WaitGroup
 }
 
 type evaluateRequest struct {
@@ -94,6 +96,7 @@ func newHandler(store *configstore.Store, auditService *audit.Service, maxConcur
 	h.mux.HandleFunc("/internal/v1/events/deliveries/claim", h.claimDeliveries)
 	h.mux.HandleFunc("/internal/v1/events/deliveries/ack", h.ackDelivery)
 	h.mux.HandleFunc("/internal/v1/events/deliveries/nack", h.nackDelivery)
+	h.mux.HandleFunc("/internal/v1/modules", h.getModules)
 	h.registerProcessRoutes()
 	return h
 }
@@ -405,6 +408,8 @@ func (h *Handler) writeAuthorizationError(w http.ResponseWriter, r *http.Request
 		h.writeError(w, r, http.StatusForbidden, "tenant_inactive", "tenant is inactive")
 	case errors.Is(err, configstore.ErrTenantForbidden):
 		h.writeError(w, r, http.StatusForbidden, "tenant_forbidden", "service is not authorized for this tenant")
+	case errors.Is(err, configstore.ErrModuleNotContracted), errors.Is(err, configstore.ErrModulePaused):
+		h.writeModuleError(w, r, err)
 	case errors.Is(err, configstore.ErrCapabilityForbidden):
 		h.writeError(w, r, http.StatusForbidden, "capability_forbidden", "service is not authorized for this capability")
 	case errors.Is(err, configstore.ErrTenantRequired):

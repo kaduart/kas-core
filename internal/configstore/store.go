@@ -73,6 +73,10 @@ type rawConfig struct {
 	// EventConsumers declares outbox consumers; deliveries are created at
 	// publication time for each consumer that matches the event's type and tenant.
 	EventConsumers map[string]rawEventConsumer `json:"event_consumers"`
+	// Modules declares, per tenant, which catalog modules it contracted and
+	// whether each is active or paused (see modules.go). Optional: a tenant
+	// without a block keeps today's behavior.
+	Modules map[string]map[string]rawModule `json:"modules"`
 }
 
 type rawEventConsumer struct {
@@ -138,6 +142,8 @@ type Store struct {
 	// eventTypes and eventConsumers are fixed at startup.
 	eventTypes     map[string]struct{}
 	eventConsumers map[string]eventConsumer
+	// modules maps tenant -> module -> status, fixed at startup.
+	modules map[string]map[string]string
 	// rotating lists services that currently accept two tokens.
 	rotating []string
 	// usedPrimary and usedNext count successful token checks by slot, without
@@ -268,10 +274,7 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 		}
 		capabilities := make(map[string]struct{}, len(rawCaller.Capabilities))
 		for _, capability := range rawCaller.Capabilities {
-			switch capability {
-			case CapabilityConfigRead, CapabilityAuditWrite, CapabilityAuditRead, CapabilityEventsPublish, CapabilityEventsConsume,
-				CapabilityProcessDefine, CapabilityProcessRun, CapabilityProcessTask, CapabilityProcessCommand, CapabilityProcessEvent:
-			default:
+			if !knownCapability(capability) {
 				return nil, fmt.Errorf("service caller %q declares an unknown capability", serviceID)
 			}
 			if _, duplicate := capabilities[capability]; duplicate {
@@ -297,6 +300,9 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 			store.rotating = append(store.rotating, serviceID)
 		}
 		store.callers[serviceID] = caller{tokens: tokens, tenants: authorizedTenants, capabilities: capabilities}
+	}
+	if err := store.loadModules(raw.Modules); err != nil {
+		return nil, err
 	}
 	for id, consumer := range store.eventConsumers {
 		if consumer.service == "" {
@@ -551,7 +557,8 @@ func (s *Store) authorizeTenant(c caller, tenantID, capability string) error {
 	if _, allowed := c.capabilities[capability]; !allowed {
 		return ErrCapabilityForbidden
 	}
-	return nil
+	// Last: the module that guards the capability must be contracted and active.
+	return s.moduleGate(tenantID, capability)
 }
 
 func (s *Store) Evaluate(tenantID, key, expectedType string) (json.RawMessage, error) {

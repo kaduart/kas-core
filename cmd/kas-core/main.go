@@ -16,6 +16,7 @@ import (
 	"kas-core-pilot/internal/events"
 	"kas-core-pilot/internal/httpapi"
 	"kas-core-pilot/internal/metrics"
+	"kas-core-pilot/internal/modules"
 	"kas-core-pilot/internal/process"
 )
 
@@ -42,6 +43,9 @@ func run() int {
 	processAutoMigrate := flag.Bool("process-auto-migrate", true, "with -process-store postgres: apply pending process migrations at startup; set false when the runtime role has no DDL rights")
 	processMigrateOnly := flag.Bool("process-migrate-only", false, "apply process PostgreSQL migrations with the events migration role and exit (run after the events migrations)")
 	processTimerInterval := flag.Duration("process-timer-interval", time.Second, "with -process-store postgres: how often due timers are checked")
+	modulesBackend := flag.String("modules-store", "none", "module catalog state: none (default) or postgres; postgres requires -events-store postgres and, at startup, records each module change of the configuration and announces it on the outbox")
+	modulesAutoMigrate := flag.Bool("modules-auto-migrate", true, "with -modules-store postgres: apply pending module migrations at startup; set false when the runtime role has no DDL rights")
+	modulesMigrateOnly := flag.Bool("modules-migrate-only", false, "apply module PostgreSQL migrations with the events migration role and exit (run after the events migrations)")
 	metricsTokenEnv := flag.String("metrics-token-env", "", "environment variable holding a bearer token that GET /metrics requires; without it /metrics is served only on a loopback listener")
 	addr := flag.String("addr", "127.0.0.1:8088", "listen address")
 	maxConcurrent := flag.Int("max-concurrent", 32, "maximum concurrent HTTP requests (1-128)")
@@ -50,7 +54,7 @@ func run() int {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if *auditMigrateOnly || *eventsMigrateOnly || *eventsPurge || *processMigrateOnly {
+	if *auditMigrateOnly || *eventsMigrateOnly || *eventsPurge || *processMigrateOnly || *modulesMigrateOnly {
 		if *auditMigrateOnly {
 			if *auditBackend != "postgres" {
 				logger.Error("-audit-migrate-only requires -audit-store postgres")
@@ -98,6 +102,22 @@ func run() int {
 				return 1
 			}
 			logger.Info("process migrations applied")
+		}
+		if *modulesMigrateOnly {
+			if *modulesBackend != "postgres" || *eventsBackend != "postgres" {
+				logger.Error("-modules-migrate-only requires -modules-store postgres and -events-store postgres")
+				return 2
+			}
+			dsn, found := os.LookupEnv(*eventsMigrationURLEnv)
+			if !found || dsn == "" {
+				logger.Error("events migration connection variable is not set; module migrations use the same role", "env", *eventsMigrationURLEnv)
+				return 2
+			}
+			if err := modules.Migrate(context.Background(), dsn); err != nil {
+				logger.Error("module migration failed", "reason", err.Error())
+				return 1
+			}
+			logger.Info("module migrations applied")
 		}
 		if *eventsPurge {
 			if *eventsBackend != "postgres" {
@@ -237,6 +257,33 @@ func run() int {
 		logger.Info("process studio engine enabled", "timer_interval", processTimerInterval.String())
 	default:
 		logger.Error("invalid process store; use none or postgres")
+		return 2
+	}
+
+	switch *modulesBackend {
+	case "none":
+	case "postgres":
+		if eventStore == nil {
+			logger.Error("-modules-store postgres requires -events-store postgres (same database)")
+			return 2
+		}
+		dsn, _ := os.LookupEnv(*eventsDatabaseURLEnv)
+		moduleStore, err := modules.Open(context.Background(), dsn, *modulesAutoMigrate)
+		if err != nil {
+			logger.Error("module store unavailable", "reason", err.Error())
+			return 2
+		}
+		changes, err := moduleStore.Sync(context.Background(), store)
+		moduleStore.Close()
+		if err != nil {
+			logger.Error("module state sync failed", "reason", err.Error())
+			return 2
+		}
+		for _, c := range changes {
+			logger.Info("module state changed", "tenant_id", c.TenantID, "module", c.Module, "from", c.From, "to", c.To, "event_id", c.EventID)
+		}
+	default:
+		logger.Error("invalid modules store; use none or postgres")
 		return 2
 	}
 

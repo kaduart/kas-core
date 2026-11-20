@@ -265,3 +265,74 @@ func TestNormalizeRejections(t *testing.T) {
 		}
 	}
 }
+
+// Refunds consume each receipt's balance (estorno-v3-saldo-por-recebimento).
+// The sample is the CRM export of the analyst's three cases; the CRM gives the
+// same numbers (tests/unit/revenueAttribution.estornos.test.js).
+func TestRefundBalanceSampleMatchesCRM(t *testing.T) {
+	d := loadSample(t, "fono-demo", "estornos-saldo")
+	nov := Query{From: ts("2026-11-01T03:00:00Z"), To: ts("2026-12-01T02:59:59Z")}
+	res, err := Compute(d, nov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int64{"gg-caso-1": 10000, "gg-caso-2": 50000, "gg-caso-3": -10000}
+	for camp, cents := range want {
+		if l := lineOf(res, LevelProven, "google_ads", camp); l == nil || l.Net != cents {
+			t.Fatalf("%s: want %d, got %+v", camp, cents, l)
+		}
+	}
+	if len(res.Lines) != 3 || res.NetTotal != 45000 || res.ByLevel[LevelProven] != 50000 || res.ByLevel[LevelNone] != -5000 || !res.Invariant.Closes {
+		t.Fatalf("totals: %+v", res)
+	}
+	if res.Unlinked.Reasons["estorno_antes_do_recebimento"] != -5000 || res.Unlinked.Reasons["contato_da_campanha_depois_do_recebimento"] != 0 {
+		t.Fatalf("unlinked reasons: %+v", res.Unlinked.Reasons)
+	}
+	if res.Rules["estorno"] != "estorno-v3-saldo-por-recebimento" {
+		t.Fatalf("rule: %v", res.Rules)
+	}
+	// October shows its own side: receipts 400, earlier refund 200, net 200.
+	oct, _ := Compute(d, Query{From: ts("2026-10-01T03:00:00Z"), To: ts("2026-11-01T02:59:59Z")})
+	if oct.NetTotal != 20000 || !oct.Invariant.Closes || lineOf(oct, LevelProven, "google_ads", "gg-caso-3").Net != 20000 {
+		t.Fatalf("october: %+v", oct)
+	}
+	// Without the October refund, the November one would be split half and half.
+	var noPrior Dataset = d
+	noPrior.Refunds = nil
+	for _, f := range d.Refunds {
+		if f.ExternalID != "00000000000000000000e304" {
+			noPrior.Refunds = append(noPrior.Refunds, f)
+		}
+	}
+	res2, _ := Compute(noPrior, nov)
+	if l := lineOf(res2, LevelProven, "google_ads", "gg-caso-3"); l.Net != -5000 {
+		t.Fatalf("no prior refund: %+v", l)
+	}
+}
+
+func TestRefundBeyondBalanceAndOrder(t *testing.T) {
+	acq := Record{ExternalID: "acq", CustomerRef: "px", Source: "google_ads", Gclid: "G", Acquisition: true, At: ts("2026-11-01T13:00:00Z")}
+	d := Dataset{Customers: []Record{cust("px")}, Contacts: []Record{acq},
+		Receipts: []Record{{ExternalID: "r", CustomerRef: "px", AmountCents: 10000, PaymentRef: "p", At: ts("2026-11-05T15:00:00Z")}},
+		// Listed out of order on purpose: they are applied by date.
+		Refunds: []Record{
+			{ExternalID: "z2", AmountCents: 6000, PaymentRef: "p", At: ts("2026-11-20T15:00:00Z")},
+			{ExternalID: "z1", AmountCents: 7000, ReceiptRef: "r", At: ts("2026-11-10T15:00:00Z")},
+		}}
+	res, _ := Compute(d, Query{})
+	l := lineOf(res, LevelProven, "google_ads", "")
+	if l == nil || l.Net != 0 || res.Unlinked.Reasons["estorno_acima_do_saldo"] != -3000 || res.NetTotal != -3000 || !res.Invariant.Closes {
+		t.Fatalf("beyond balance: %+v %+v", l, res.Unlinked)
+	}
+	// Remainder cents never go above a receipt's balance.
+	d.Receipts = []Record{
+		{ExternalID: "a", CustomerRef: "px", AmountCents: 1, PaymentRef: "q", At: ts("2026-10-05T15:00:00Z")},
+		{ExternalID: "b", CustomerRef: "px", AmountCents: 1, PaymentRef: "q", At: ts("2026-10-06T15:00:00Z")},
+		{ExternalID: "c", CustomerRef: "px", AmountCents: 9998, PaymentRef: "q", At: ts("2026-11-06T15:00:00Z")},
+	}
+	d.Refunds = []Record{{ExternalID: "w", AmountCents: 10000, PaymentRef: "q", At: ts("2026-11-20T15:00:00Z")}}
+	res, _ = Compute(d, Query{})
+	if res.NetTotal != 0 || res.ByLevel[LevelNone] != 0 || res.ByLevel[LevelProven] != 0 || res.Unlinked.Reasons["estorno_acima_do_saldo"] != 0 {
+		t.Fatalf("cents within balance: %+v", res)
+	}
+}

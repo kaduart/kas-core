@@ -134,10 +134,18 @@ Rules (the same as the Fono Inova CRM, so both reconcile):
 - **Levels**: `comprovada` = strong signal (click id or strong method) on a
   contact point used by one household only; `provavel` = shared contact point or
   weak signal; `sem_vinculo` = no contact before the receipt, with reasons.
-- **Refunds** `estorno-v2-rateio-por-recebimento`: with `receipt_ref`, the refund
-  follows that receipt; with only `payment_ref`, it is split over the receipts of
-  that payment up to the refund date in proportion to their amounts (remainder
-  cents to the oldest).
+- **Refunds** `estorno-v3-saldo-por-recebimento`: every refund of the history
+  is applied in date order (also those before `from` or of another unit), and
+  each one consumes the **balance** of the receipts it undoes (amount minus
+  earlier refunds). With `receipt_ref`, it goes to that receipt up to its
+  balance. With only `payment_ref`, it is split over that payment's receipts
+  received up to the refund date that still have balance, in proportion to the
+  balance (remainder cents to the oldest receipt with room). What exceeds the
+  balance stays in the total as `sem_vinculo` with reason
+  `estorno_acima_do_saldo`; a refund dated before every receipt of its payment is
+  `sem_vinculo` with `estorno_antes_do_recebimento` (it never takes a later
+  receipt's campaign); one whose receipt/payment is unknown,
+  `estorno_sem_recebimento_original`.
 - **Invariant**: `comprovada + provavel + sem_vinculo = total_liquido_centavos`
   (`invariante.fecha`).
 

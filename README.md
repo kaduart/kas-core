@@ -113,6 +113,18 @@ A empresa sem bloco `modules` funciona como antes (o process continua aberto). C
 
 Contrato completo em [contract/v1/modules.md](contract/v1/modules.md).
 
+## KAS Attribution (receita por campanha)
+
+Primeiro módulo comercial. Recebe quatro entradas genéricas, que qualquer empresa consegue enviar: clientes, contatos, recebimentos e estornos. Não conhece paciente, pacote, aluno ou qualquer entidade de um negócio específico. Devolve a receita líquida por campanha com nível de evidência (comprovada, provável, sem vínculo) e a conferência de que os níveis somam o total.
+
+- `POST /internal/v1/attribution/{customers|contacts|receipts|refunds}:batch` (capacidade `attribution:import`): lotes de até 500 itens, idempotentes por lote e por item, com histórico de versões e cancelamento sem apagar nada.
+- `GET /internal/v1/attribution/revenue` (capacidade `attribution:read`): relatório em JSON ou CSV, com filtro de período e unidade.
+- `kas-attribution-import`: envia um CSV em lotes de 500; rodar de novo é seguro.
+
+Telefone e e-mail nunca são gravados: viram uma impressão digital HMAC por empresa (`-attribution-fingerprint-key-env`). As tabelas do Attribution são o único lugar da KAS com valores em dinheiro; eventos, auditoria e logs continuam sem dinheiro e sem dados pessoais. Desligado por padrão (`-attribution-store none`); `-attribution-store postgres` exige `-events-store postgres`.
+
+As regras são as mesmas do CRM da Fono Inova; a amostra em `testdata/attribution/amostra-fono` fecha os mesmos R$ 1.290,00. Contrato completo em [contract/v1/attribution.md](contract/v1/attribution.md).
+
 ## Módulo de configuração
 
 Contrato `v1`: `POST /internal/v1/config/evaluate`, descrito em [contract/v1/config-evaluate.md](contract/v1/config-evaluate.md) e em [openapi.yaml](openapi.yaml). O esquema JSON declara chaves, tipo (`integer`, `boolean`, `string`) e faixa opcional de inteiros. O serviço autenticado precisa estar autorizado para o tenant solicitado e possuir a capacidade `config:read`. A configuração é somente leitura durante a vida do processo.

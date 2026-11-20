@@ -1,0 +1,2 @@
+external_id,amount_cents,refunded_at,payment_ref,customer_ref
+est-31,18000,2026-11-14T15:00:00Z,pay-92,cli-carla

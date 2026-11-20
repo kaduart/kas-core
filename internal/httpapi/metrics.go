@@ -62,6 +62,15 @@ func routeLabel(path string) string {
 	if strings.HasPrefix(path, "/internal/v1/process/") {
 		return "/internal/v1/process"
 	}
+	if strings.HasPrefix(path, "/internal/v1/attribution/") {
+		return "/internal/v1/attribution"
+	}
+	if strings.HasPrefix(path, "/internal/v1/reports/") {
+		return "/internal/v1/reports"
+	}
+	if path == "/internal/v1/modules" {
+		return path
+	}
 	return "other"
 }
 

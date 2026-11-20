@@ -1,0 +1,10 @@
+external_id,customer_ref,source,contacted_at,campaign,ad_id,gclid,ttclid,ctwa_clid,method,acquisition
+conv-ana,cli-ana,google_ads,2026-11-05T13:00:00Z,gg-fono-infantil,,GCLID-FICTICIO-ANA,,,site_signature,true
+conv-bruno,cli-bruno,meta_ads,2026-11-05T13:00:00Z,,AD-FICTICIO-1,,,CLID-FICTICIO-BRUNO,ctwa,true
+conv-carla,cli-carla,tiktok_ads,2026-11-05T13:00:00Z,tt-avaliacao,,,TTCLID-FICTICIO,,token,true
+conv-davi,cli-davi,google_ads,2026-11-05T13:00:00Z,gg-fono-infantil,,GCLID-FICTICIO-MAE,,,site_signature,true
+conv-eva,cli-eva,google_ads,2026-11-05T13:00:00Z,gg-fono-infantil,,GCLID-FICTICIO-MAE,,,site_signature,true
+conv-hugo,cli-hugo,meta_ads,2026-11-20T13:00:00Z,,AD-FICTICIO-2,,,CLID-FICTICIO-HUGO,ctwa,true
+conv-iris,cli-iris,google_ads,2026-11-05T13:00:00Z,gg-fono-infantil,,GCLID-FICTICIO-IRIS,,,site_signature,true
+la-mae,cli-davi,google_ads,2026-10-01T12:00:00Z,gg-fono-infantil,,GCLID-FICTICIO-MAE,,,site_signature,false
+la-fabio,cli-fabio,instagram,2026-10-02T12:00:00Z,,,,,,keyword,false

@@ -25,6 +25,8 @@ tags:
   - name: Audit
   - name: Events
   - name: Modules
+  - name: Attribution
+  - name: Reports
 paths:
   /healthz:
     get:
@@ -508,6 +510,208 @@ paths:
           $ref: '#/components/responses/MethodNotAllowed'
         '503':
           description: module_readiness_unavailable or server unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/v1/attribution/{kind}:batch:
+    post:
+      tags: [Attribution]
+      summary: Import one batch of generic Attribution inputs
+      description: >-
+        Requires the capability `attribution:import` and the module `attribution`
+        contracted and active for the tenant. `kind` is customers, contacts,
+        receipts or refunds; columns per kind are in contract/v1/attribution.md.
+        Idempotent by batch (same batch_id and content returns the original answer
+        with 200 and `duplicate: true`; other content is 409 `batch_conflict`) and
+        by item (tenant + kind + external_id: same content is `unchanged`, other
+        content is a new version, `voided: true` removes the item from reports as
+        a new version). Invalid lines are listed in `rejected` without stopping the
+        batch. Phones and e-mails are turned into keyed fingerprints and never
+        stored. Each new batch is audited (`attribution.batch_imported`) with
+        identifiers only.
+      operationId: importAttributionBatch
+      security:
+        - ServiceIdentity: []
+          ServiceBearer: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+        - name: kind
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [customers, contacts, receipts, refunds]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttributionBatchRequest'
+      responses:
+        '200':
+          description: Replay of a stored batch; nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttributionBatchResponse'
+        '201':
+          description: Batch stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttributionBatchResponse'
+        '400':
+          description: invalid_request, invalid_batch, unsupported_contract_version, tenant_required or invalid_correlation_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Service authentication failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: tenant_inactive, tenant_forbidden, capability_forbidden, module_not_contracted or module_paused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: batch_conflict.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: payload_too_large (limit 1 MiB).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: unsupported_media_type.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: attribution_unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/v1/attribution/revenue:
+    get:
+      tags: [Attribution]
+      summary: Revenue by campaign with level of evidence
+      description: >-
+        Requires `attribution:read` and the module `attribution` active. Computes
+        the report from the latest, not voided version of every input of the
+        tenant (model primeiro-contato-por-recebimento-v1). Values are integer
+        cents (BRL). The invariant `invariante.fecha` is true when the levels add
+        up to the net total. `from`/`to` filter by cash date and accept RFC 3339
+        or YYYY-MM-DD (UTC; a plain `to` date includes the whole day).
+      operationId: getAttributionRevenue
+      security:
+        - ServiceIdentity: []
+          ServiceBearer: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+        - {name: tenant_id, in: query, required: false, schema: {$ref: '#/components/schemas/TenantID'}}
+        - {name: from, in: query, required: false, schema: {type: string}}
+        - {name: to, in: query, required: false, schema: {type: string}}
+        - {name: unit, in: query, required: false, schema: {type: string, maxLength: 128}}
+        - {name: model, in: query, required: false, schema: {type: string, enum: [primeiro-contato-por-recebimento-v1]}}
+        - {name: format, in: query, required: false, schema: {type: string, enum: [json, csv], default: json}}
+      responses:
+        '200':
+          description: The report (JSON, or CSV with one row per line plus sem_vinculo and total rows).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttributionRevenueResponse'
+            text/csv:
+              schema:
+                type: string
+        '400':
+          description: invalid_request, model_unsupported, tenant_required or invalid_correlation_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Service authentication failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: tenant_inactive, tenant_forbidden, capability_forbidden, module_not_contracted or module_paused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: attribution_unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/v1/reports/revenue:
+    get:
+      tags: [Reports]
+      summary: Revenue report for the company (HTML or CSV)
+      description: >-
+        Requires `reports:read` and the module `reports` active (it depends on
+        `attribution`). Same parameters as /internal/v1/attribution/revenue. HTML
+        is one self-contained page with the company's branding from the
+        configuration keys `branding.name` and `branding.color`; CSV is the same
+        as the Attribution CSV.
+      operationId: getRevenueReport
+      security:
+        - ServiceIdentity: []
+          ServiceBearer: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+        - {name: tenant_id, in: query, required: false, schema: {$ref: '#/components/schemas/TenantID'}}
+        - {name: from, in: query, required: false, schema: {type: string}}
+        - {name: to, in: query, required: false, schema: {type: string}}
+        - {name: unit, in: query, required: false, schema: {type: string, maxLength: 128}}
+        - {name: model, in: query, required: false, schema: {type: string, enum: [primeiro-contato-por-recebimento-v1]}}
+        - {name: format, in: query, required: false, schema: {type: string, enum: [html, csv], default: html}}
+      responses:
+        '200':
+          description: The report.
+          content:
+            text/html:
+              schema:
+                type: string
+            text/csv:
+              schema:
+                type: string
+        '400':
+          description: invalid_request, model_unsupported, tenant_required or invalid_correlation_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Service authentication failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: tenant_inactive, tenant_forbidden, capability_forbidden, module_not_contracted or module_paused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: attribution_unavailable.
           content:
             application/json:
               schema:
@@ -1284,6 +1488,113 @@ components:
         entity_id:
           type: string
           pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+    AttributionItem:
+      type: object
+      additionalProperties: false
+      description: One input. Which fields are allowed or required depends on the kind (contract/v1/attribution.md).
+      required: [external_id]
+      properties:
+        external_id: {type: string, maxLength: 128}
+        customer_ref: {type: string, maxLength: 128}
+        phone: {type: string, maxLength: 32, description: Fingerprinted on arrival; never stored.}
+        email: {type: string, maxLength: 254, description: Fingerprinted on arrival; never stored.}
+        unit: {type: string, maxLength: 128}
+        source: {type: string, enum: [google_ads, meta_ads, tiktok_ads, instagram, organic, referral, other]}
+        campaign: {type: string, maxLength: 128}
+        ad_id: {type: string, maxLength: 128}
+        gclid: {type: string}
+        fbclid: {type: string}
+        ttclid: {type: string}
+        ctwa_clid: {type: string}
+        method: {type: string, maxLength: 32}
+        acquisition: {type: boolean}
+        contacted_at: {type: string, format: date-time}
+        amount_cents: {type: integer, format: int64, minimum: 1}
+        received_at: {type: string, format: date-time}
+        payment_ref: {type: string, maxLength: 128}
+        receipt_ref: {type: string, maxLength: 128}
+        refunded_at: {type: string, format: date-time}
+        voided: {type: boolean}
+    AttributionBatchRequest:
+      type: object
+      additionalProperties: false
+      required: [contract_version, batch_id, actor, items]
+      properties:
+        contract_version: {type: string, enum: [v1]}
+        tenant_id: {$ref: '#/components/schemas/TenantID'}
+        batch_id: {type: string, maxLength: 128}
+        actor: {type: string, pattern: '^(user|service|system)\.[a-z0-9][a-z0-9._-]{0,95}$'}
+        items:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: {$ref: '#/components/schemas/AttributionItem'}
+    AttributionBatchResponse:
+      type: object
+      required: [contract_version, tenant_id, batch_id, kind, created, updated, unchanged, rejected, duplicate]
+      properties:
+        contract_version: {type: string}
+        tenant_id: {type: string}
+        batch_id: {type: string}
+        kind: {type: string}
+        created: {type: integer}
+        updated: {type: integer}
+        unchanged: {type: integer}
+        duplicate: {type: boolean}
+        rejected:
+          type: array
+          items:
+            type: object
+            required: [index, code]
+            properties:
+              index: {type: integer, description: Position of the item in the batch (0-based).}
+              external_id: {type: string}
+              code: {type: string}
+    AttributionRevenueResponse:
+      type: object
+      required: [contract_version, tenant_id, moeda, total_liquido_centavos, por_nivel_centavos, linhas, sem_vinculo, invariante, regras]
+      properties:
+        contract_version: {type: string}
+        tenant_id: {type: string}
+        from: {type: string, format: date-time}
+        to: {type: string, format: date-time}
+        unit: {type: string}
+        moeda: {type: string, enum: [BRL]}
+        total_liquido_centavos: {type: integer, format: int64}
+        por_nivel_centavos:
+          type: object
+          additionalProperties: {type: integer, format: int64}
+        linhas:
+          type: array
+          items:
+            type: object
+            properties:
+              nivel: {type: string, enum: [comprovada, provavel]}
+              origem: {type: string}
+              campanha: {type: string}
+              ad_id: {type: string}
+              recebido_centavos: {type: integer}
+              estornos_centavos: {type: integer}
+              liquido_centavos: {type: integer}
+              clientes: {type: integer}
+              lancamentos: {type: integer}
+              motivos_por_lancamento: {type: object, additionalProperties: {type: integer}}
+        sem_vinculo:
+          type: object
+          properties:
+            recebido_centavos: {type: integer}
+            estornos_centavos: {type: integer}
+            liquido_centavos: {type: integer}
+            clientes: {type: integer}
+            lancamentos: {type: integer}
+            motivos_centavos: {type: object, additionalProperties: {type: integer}}
+        invariante:
+          type: object
+          properties:
+            soma_niveis_centavos: {type: integer}
+            total_liquido_centavos: {type: integer}
+            fecha: {type: boolean}
+        regras: {type: object, additionalProperties: {type: string}}
     ModulesResponse:
       type: object
       additionalProperties: false

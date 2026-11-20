@@ -1,0 +1,24 @@
+{
+  "contract_version": "v1",
+  "config_version": "piloto-escola-demo-2026-11-20",
+  "tenant_registry": [
+    {"id": "fono-demo", "status": "active"},
+    {"id": "escola-demo", "status": "active"}
+  ],
+  "key_schema": {
+    "branding.name": {"type": "string"},
+    "branding.color": {"type": "string"}
+  },
+  "tenants": {
+    "fono-demo": {"branding.name": "Clínica Fictícia"},
+    "escola-demo": {"branding.name": "Escola Fictícia Aurora", "branding.color": "#3355cc"}
+  },
+  "modules": {
+    "fono-demo": {"attribution": {"status": "active"}, "reports": {"status": "active"}},
+    "escola-demo": {"attribution": {"status": "active"}, "reports": {"status": "active"}}
+  },
+  "callers": {
+    "fono-crm": {"token_env": "PILOTO_FONO_TOKEN", "tenants": ["fono-demo"], "capabilities": ["attribution:import", "attribution:read", "reports:read"]},
+    "escola-sis": {"token_env": "PILOTO_ESCOLA_TOKEN", "tenants": ["escola-demo"], "capabilities": ["attribution:import", "attribution:read", "reports:read"]}
+  }
+}

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"kas-core-pilot/internal/attribution"
 	"kas-core-pilot/internal/audit"
 	"kas-core-pilot/internal/configstore"
 	"kas-core-pilot/internal/events"
@@ -46,6 +47,10 @@ func run() int {
 	modulesBackend := flag.String("modules-store", "none", "module catalog state: none (default) or postgres; postgres requires -events-store postgres and, at startup, records each module change of the configuration and announces it on the outbox")
 	modulesAutoMigrate := flag.Bool("modules-auto-migrate", true, "with -modules-store postgres: apply pending module migrations at startup; set false when the runtime role has no DDL rights")
 	modulesMigrateOnly := flag.Bool("modules-migrate-only", false, "apply module PostgreSQL migrations with the events migration role and exit (run after the events migrations)")
+	attributionBackend := flag.String("attribution-store", "none", "KAS Attribution inputs: none (default, routes answer 503) or postgres; postgres requires -events-store postgres and uses the same database")
+	attributionAutoMigrate := flag.Bool("attribution-auto-migrate", true, "with -attribution-store postgres: apply pending attribution migrations at startup; set false when the runtime role has no DDL rights")
+	attributionMigrateOnly := flag.Bool("attribution-migrate-only", false, "apply attribution PostgreSQL migrations with the events migration role and exit (run after the events migrations)")
+	attributionKeyEnv := flag.String("attribution-fingerprint-key-env", "KAS_ATTRIBUTION_FINGERPRINT_KEY", "environment variable holding the secret key (32+ bytes) that turns phones and e-mails into fingerprints; changing it breaks matching with stored inputs")
 	metricsTokenEnv := flag.String("metrics-token-env", "", "environment variable holding a bearer token that GET /metrics requires; without it /metrics is served only on a loopback listener")
 	addr := flag.String("addr", "127.0.0.1:8088", "listen address")
 	maxConcurrent := flag.Int("max-concurrent", 32, "maximum concurrent HTTP requests (1-128)")
@@ -54,7 +59,7 @@ func run() int {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if *auditMigrateOnly || *eventsMigrateOnly || *eventsPurge || *processMigrateOnly || *modulesMigrateOnly {
+	if *auditMigrateOnly || *eventsMigrateOnly || *eventsPurge || *processMigrateOnly || *modulesMigrateOnly || *attributionMigrateOnly {
 		if *auditMigrateOnly {
 			if *auditBackend != "postgres" {
 				logger.Error("-audit-migrate-only requires -audit-store postgres")
@@ -118,6 +123,22 @@ func run() int {
 				return 1
 			}
 			logger.Info("module migrations applied")
+		}
+		if *attributionMigrateOnly {
+			if *attributionBackend != "postgres" || *eventsBackend != "postgres" {
+				logger.Error("-attribution-migrate-only requires -attribution-store postgres and -events-store postgres")
+				return 2
+			}
+			dsn, found := os.LookupEnv(*eventsMigrationURLEnv)
+			if !found || dsn == "" {
+				logger.Error("events migration connection variable is not set; attribution migrations use the same role", "env", *eventsMigrationURLEnv)
+				return 2
+			}
+			if err := attribution.Migrate(context.Background(), dsn); err != nil {
+				logger.Error("attribution migration failed", "reason", err.Error())
+				return 1
+			}
+			logger.Info("attribution migrations applied")
 		}
 		if *eventsPurge {
 			if *eventsBackend != "postgres" {
@@ -284,6 +305,37 @@ func run() int {
 		}
 	default:
 		logger.Error("invalid modules store; use none or postgres")
+		return 2
+	}
+
+	switch *attributionBackend {
+	case "none":
+	case "postgres":
+		if eventStore == nil {
+			logger.Error("-attribution-store postgres requires -events-store postgres (same database)")
+			return 2
+		}
+		key, found := os.LookupEnv(*attributionKeyEnv)
+		if !found {
+			logger.Error("attribution fingerprint key variable is not set", "env", *attributionKeyEnv)
+			return 2
+		}
+		fp, err := attribution.NewFingerprinter([]byte(key))
+		if err != nil {
+			logger.Error("attribution fingerprint key is invalid", "env", *attributionKeyEnv, "reason", err.Error())
+			return 2
+		}
+		dsn, _ := os.LookupEnv(*eventsDatabaseURLEnv)
+		attributionStore, err := attribution.Open(context.Background(), dsn, *attributionAutoMigrate, fp)
+		if err != nil {
+			logger.Error("attribution store unavailable", "reason", err.Error())
+			return 2
+		}
+		defer attributionStore.Close()
+		api.EnableAttribution(attributionStore)
+		logger.Info("kas attribution enabled")
+	default:
+		logger.Error("invalid attribution store; use none or postgres")
 		return 2
 	}
 

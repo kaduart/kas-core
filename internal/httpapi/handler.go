@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"kas-core-pilot/internal/attribution"
 	"kas-core-pilot/internal/audit"
 	"kas-core-pilot/internal/configstore"
 	"kas-core-pilot/internal/events"
@@ -38,6 +39,8 @@ type Handler struct {
 	events  *events.Service
 	puller  *events.Puller
 	process *process.Engine
+	// attribution is the KAS Attribution store (nil = routes answer 503).
+	attribution *attribution.Store
 	// readiness holds the integration check of each enabled module.
 	readiness map[string]ModuleReadiness
 	metrics   *metricsState
@@ -98,6 +101,8 @@ func newHandler(store *configstore.Store, auditService *audit.Service, maxConcur
 	h.mux.HandleFunc("/internal/v1/events/deliveries/nack", h.nackDelivery)
 	h.mux.HandleFunc("/internal/v1/modules", h.getModules)
 	h.registerProcessRoutes()
+	h.registerAttributionRoutes()
+	h.registerReportsRoutes()
 	return h
 }
 
@@ -260,6 +265,15 @@ func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && h.processReady(r.Context()) != nil {
 		h.writeError(w, r, http.StatusServiceUnavailable, "process_unavailable", "process storage is not ready")
 		return
+	}
+	if r.Method == http.MethodGet && h.attribution != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		err := h.attribution.Ready(ctx)
+		cancel()
+		if err != nil {
+			h.writeError(w, r, http.StatusServiceUnavailable, "attribution_unavailable", "attribution storage is not ready")
+			return
+		}
 	}
 	h.health(w, r)
 }

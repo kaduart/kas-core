@@ -1,0 +1,11 @@
+external_id,customer_ref,amount_cents,received_at,payment_ref
+rec-10,cli-ana,12000,2026-11-10T15:00:00Z,pay-90
+rec-20,cli-bruno,20000,2026-11-10T15:00:00Z,pay-91
+rec-30,cli-carla,18000,2026-11-10T15:00:00Z,pay-92
+rec-40,cli-davi,20000,2026-11-10T15:00:00Z,pay-93
+rec-50,cli-eva,14000,2026-11-10T15:00:00Z,pay-94
+rec-61,cli-fabio,10000,2026-11-10T15:00:00Z,pay-96
+rec-70,cli-gabi,15000,2026-11-10T15:00:00Z,pay-97
+rec-83,cli-hugo,9000,2026-11-03T15:00:00Z,pay-86
+rec-84,cli-hugo,16000,2026-11-25T15:00:00Z,pay-87
+rec-85,cli-iris,13000,2026-11-10T15:00:00Z,pay-88

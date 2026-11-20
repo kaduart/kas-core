@@ -57,12 +57,14 @@ Saúde: `GET /healthz` (vivo) e `GET /readyz` (também checa a auditoria e os ev
 
 ## 2. Migrar
 
-Migrações vêm embutidas no executável e têm uma tabela de controle por módulo (`audit_schema_migrations`, `events_schema_migrations`). Não há reversão automática.
+Migrações vêm embutidas no executável e têm uma tabela de controle por módulo (`audit_schema_migrations`, `events_schema_migrations`, `process_schema_migrations`). Não há reversão automática.
 
 ```bash
 export KAS_AUDIT_MIGRATION_DATABASE_URL='postgres://kas_migrator:SENHA@db.example.com:5432/kas_core?sslmode=verify-full'
 export KAS_EVENTS_MIGRATION_DATABASE_URL="$KAS_AUDIT_MIGRATION_DATABASE_URL"
 ./kas-core -audit-store postgres -audit-migrate-only -events-store postgres -events-migrate-only
+# Process Studio (só se for ligar o motor; roda depois das migrações de eventos, mesmo papel e banco)
+./kas-core -events-store postgres -process-store postgres -process-migrate-only
 psql "$KAS_AUDIT_MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -v schema=public -v runtime_role=kas_runtime -f deploy/grants.sql
 ```
 

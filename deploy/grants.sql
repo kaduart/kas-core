@@ -19,3 +19,15 @@ GRANT SELECT ON :"schema".audit_schema_migrations TO :"runtime_role";
 GRANT INSERT, SELECT ON :"schema".outbox_events TO :"runtime_role";
 GRANT INSERT, SELECT, UPDATE ON :"schema".outbox_deliveries TO :"runtime_role";
 GRANT SELECT ON :"schema".events_schema_migrations TO :"runtime_role";
+
+-- Process Studio: published definitions, role changes and history are
+-- append-only; instance state, tasks, timers, commands and waits move state.
+GRANT INSERT, SELECT ON :"schema".process_definitions TO :"runtime_role";
+GRANT INSERT, SELECT ON :"schema".process_history TO :"runtime_role";
+GRANT INSERT, SELECT ON :"schema".process_role_changes TO :"runtime_role";
+GRANT INSERT, SELECT ON :"schema".process_events_received TO :"runtime_role";
+GRANT SELECT ON :"schema".process_unmatched_events TO :"runtime_role";
+GRANT INSERT, SELECT, UPDATE ON :"schema".process_role_assignments, :"schema".process_instances,
+    :"schema".process_tasks, :"schema".process_task_submissions, :"schema".process_commands,
+    :"schema".process_waits, :"schema".process_timers TO :"runtime_role";
+GRANT SELECT ON :"schema".process_schema_migrations TO :"runtime_role";

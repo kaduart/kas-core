@@ -84,6 +84,20 @@ go run ./cmd/kas-core -config ./config.example.json -events-store postgres -addr
 
 A ordem é estável por `recorded_at` (o `received_at` atribuído pela KAS, em microssegundos) e depois pelo id do registro (identidade do PostgreSQL ou número da linha no JSON Lines). O `limit` vai de 1 a 200 (padrão 50); valores inválidos, parâmetros desconhecidos ou repetidos e cursor malformado dão `400`. Funciona nos dois armazenamentos. No PostgreSQL a migração `0003` acrescenta `entity_type`/`entity_id` e os índices de leitura; o papel de runtime só precisa de `SELECT` (que já tem). O contrato de escrita ganhou os campos **opcionais** `entity_type` e `entity_id` (juntos ou nenhum, só identificadores); quem não os envia continua funcionando. Detalhes e limites (inclusive o caso de um registro confirmado depois com `recorded_at` anterior) em [contract/internal/v1/audit-events.md](contract/internal/v1/audit-events.md) e no [openapi.yaml](openapi.yaml).
 
+## Process Studio — motor (piloto)
+
+Contrato em [contract/v1/process.md](contract/v1/process.md). Desligado por padrão (`-process-store none`). Com `-process-store postgres`, usa o **mesmo banco** do Outbox (`KAS_EVENTS_DATABASE_URL`, exige `-events-store postgres`), porque a mudança de etapa e o comando ao CRM são gravados na mesma transação. Um trabalhador de timers roda dentro do executável (`-process-timer-interval`, padrão 1 s) com `FOR UPDATE SKIP LOCKED`; vários executáveis podem rodar juntos sem disparar o mesmo timer duas vezes.
+
+```bash
+export KAS_EVENTS_DATABASE_URL='postgres://kas:kas_teste_local@localhost:5432/kas_core_test?sslmode=disable'
+go run ./cmd/kas-core -config ./config.example.json -events-store postgres -process-store postgres -addr 127.0.0.1:8088
+```
+
+- Módulo `internal/process`; calendário de dias úteis em `internal/calendar`.
+- Testes de aceite T1–T23 em `internal/process/acceptance_test.go`, com um CRM simulado que usa o pull real. Os tenants dos testes são fictícios (`demo-empresa-a`, 2 dias úteis; `demo-empresa-b`, 5 dias úteis).
+- Papel de runtime: veja a seção Process Studio de `deploy/grants.sql` (histórico, definições e eventos recebidos são só `INSERT`/`SELECT`).
+- Editor visual fica para depois, em `studio/`.
+
 ## Módulo de configuração
 
 Contrato `v1`: `POST /internal/v1/config/evaluate`, descrito em [contract/v1/config-evaluate.md](contract/v1/config-evaluate.md) e em [openapi.yaml](openapi.yaml). O esquema JSON declara chaves, tipo (`integer`, `boolean`, `string`) e faixa opcional de inteiros. O serviço autenticado precisa estar autorizado para o tenant solicitado e possuir a capacidade `config:read`. A configuração é somente leitura durante a vida do processo.

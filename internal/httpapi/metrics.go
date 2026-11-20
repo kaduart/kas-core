@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"kas-core-pilot/internal/metrics"
@@ -57,6 +58,9 @@ func routeLabel(path string) string {
 		"/internal/v1/events/deliveries/ack",
 		"/internal/v1/events/deliveries/nack":
 		return path
+	}
+	if strings.HasPrefix(path, "/internal/v1/process/") {
+		return "/internal/v1/process"
 	}
 	return "other"
 }

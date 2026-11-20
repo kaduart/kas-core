@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import type { Vertical } from "@/lib/tenant/types";
 import { dashboardFixture } from "./fixtures";
 import type { DashboardData, Period } from "./types";
 
@@ -9,14 +10,14 @@ import type { DashboardData, Period } from "./types";
  * passa a chamar o KAS Core (Go), ex.: GET /internal/v1/reports/dashboard?period=30d,
  * com o tenant vindo da sessão. Nada de regra de negócio aqui.
  */
-async function fetchDashboard(tenantId: string, period: Period): Promise<DashboardData> {
-  return dashboardFixture(tenantId, period);
+async function fetchDashboard(tenantId: string, period: Period, vertical: Vertical): Promise<DashboardData> {
+  return dashboardFixture(tenantId, period, vertical);
 }
 
-export function useDashboard(tenantId: string, period: Period) {
+export function useDashboard(tenantId: string, period: Period, vertical: Vertical = "saude") {
   return useQuery({
     queryKey: ["dashboard", tenantId, period],
-    queryFn: () => fetchDashboard(tenantId, period),
+    queryFn: () => fetchDashboard(tenantId, period, vertical),
     staleTime: 60_000,
     placeholderData: (prev) => prev,
   });

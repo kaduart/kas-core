@@ -16,7 +16,7 @@ import { RevenueCard } from "./RevenueCard";
 export function DashboardView() {
   const { tenant } = useTenant();
   const [period, setPeriod] = useState<Period>("30d");
-  const { data, isError, refetch } = useDashboard(tenant.id, period);
+  const { data, isError, refetch } = useDashboard(tenant.id, period, tenant.vertical);
 
   if (isError) {
     return (

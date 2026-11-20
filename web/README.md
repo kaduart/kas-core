@@ -19,15 +19,34 @@ Verificações (as mesmas do CI `.github/workflows/web.yml`):
 npm run lint && npm run typecheck && npm test && npm run build
 ```
 
+## Modo demonstração x modo real
+
+Quem decide o que cada empresa pode usar é o **KAS Core (Go)**. O painel só mostra essa decisão; as APIs do Go recusam de novo
+(`403 module_not_contracted` / `module_paused`).
+
+| | Demonstração | Real |
+|---|---|---|
+| Liga quando | faltam as variáveis abaixo | `KAS_API_URL`, `KAS_SERVICE_ID` e `KAS_SERVICE_TOKEN` definidos no servidor |
+| Empresa | cookie `kas_tenant` ou domínio; troca livre no topo | **só pelo domínio**; domínio desconhecido dá erro, sem empresa padrão |
+| Módulos | simulados (`src/lib/kas/demo.ts`), liga/desliga no catálogo via cookie | `GET /internal/v1/modules?tenant_id=` (contrato v1, kas-core #26); liga/desliga não existe na tela |
+| CRM, Omnichannel, Amanda IA | abrem como **prévia** com aviso | bloqueados: estão `planned` no catálogo do Go |
+
+- `src/lib/session.ts` monta a sessão no servidor a cada requisição. As credenciais do serviço ficam só no servidor (`src/lib/kas/core-client.ts`).
+- `src/lib/kas/contract.ts` espelha o contrato v1 e tem `moduleAccess`: ativo, ativo com integração pendente, pausado, não contratado, planejado.
+- `ModuleGate` é componente de servidor: a tela bloqueada nem chega ao navegador.
+- Saúde (Agenda, Financeiro clínico, Prontuário, Estoque) é **extensão vertical**: aparece só para empresas do segmento saúde, fora do catálogo comum.
+- Pendente: login de pessoas (hoje o usuário é fixo) e marca vinda do configstore.
+
+Empresas de demonstração: Fono Inova, Clínica Aurora, Odonto Sorriso (Attribution com integração pendente e Relatórios pausado)
+e **Escola Exemplo** (empresa 2, educação, só Attribution + Relatórios, sem o CRM da Fono Inova).
+
 ## Como funciona o white-label
 
-- `src/lib/tenant/presets.ts`: empresas de demonstração (Fono Inova, Clínica Aurora, Odonto Sorriso), domínios e módulos ativos.
-- A empresa é resolvida no servidor pelo cookie de sessão `kas_tenant` e, sem ele, pelo domínio (`resolveTenant`).
+- `src/lib/tenant/presets.ts`: empresas de demonstração e domínios.
 - `src/lib/tenant/color.ts` deriva a paleta inteira (escuro, fundo do menu, tom claro, texto sobre destaque) a partir de **duas cores**.
   O formulário de marca recusa cor principal clara demais para o texto branco do menu (contraste AA).
 - A marca personalizada é salva em cookie `kas_brand_<tenant>` para o servidor já renderizar com as cores certas.
   Na integração, passa a vir do configstore do KAS Core.
-- O menu mostra só os módulos ativos da empresa.
 
 ## Dados
 
@@ -50,10 +69,10 @@ React Hook Form + Zod · sonner (avisos) · lucide-react. React Flow continua no
 | `/process-studio` | Process Studio | pausar/ativar fluxo; editor visual segue no `studio/` |
 | `/amanda-ia` | Amanda IA | classificações e o que a IA fez |
 | `/relatorios` | Relatórios | baixar CSV/PDF (simulado) |
-| `/modulos` | Catálogo | ligar/desligar módulo da empresa; menu e telas acompanham. Módulos do ERP de clínicas aparecem como "Em breve" |
+| `/modulos` | Catálogo | estado de cada módulo; na demonstração, liga/desliga respeitando dependências (Relatórios precisa de Attribution) |
 | `/configuracoes` | Marca | nome, cores e ícone |
 
-Telas de módulo ficam atrás de `ModuleGate`: se a empresa não tem o módulo, aparece o convite para ativar.
+Telas de módulo ficam atrás de `ModuleGate` (servidor): não contratado, pausado e planejado têm mensagens próprias; integração pendente e prévia mostram aviso no topo.
 
 ## Componentes de interface
 
@@ -63,7 +82,7 @@ componentes foram escritos no mesmo formato. Para novos: `npx shadcn@latest add 
 
 ## Próximos passos
 
-1. Módulos do ERP de clínicas: Agenda, Financeiro, Prontuário e Estoque.
-2. Login e sessão vindos do KAS Core; troca de empresa só entre as permitidas.
-3. Upload de logo próprio da empresa.
-4. Ligar `fetchDashboard` ao endpoint de relatórios do KAS Core.
+1. Login e sessão de pessoas pelo KAS Core; troca de empresa só entre as permitidas.
+2. Attribution e Relatórios lendo os contratos reais (`/internal/v1/reports/revenue`, kas-core #28).
+3. Demonstração da Escola Exemplo com dados isolados, CSV idempotente e receita conciliada.
+4. Só depois: extensão Saúde (ERP de clínicas).

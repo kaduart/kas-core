@@ -57,7 +57,7 @@ export function CampaignCard({ data }: { data: CampaignRevenue[] }) {
                 className={cn("grid min-h-[31px] w-full grid-cols-[12px_minmax(0,1fr)_36px_auto] whitespace-nowrap items-center gap-2 rounded-lg px-1 text-left text-sm hover:bg-[#eef2f0]", off[d.channel] && "opacity-40")}
               >
                 <span className="size-3 rounded-full" style={{ background: d.color }} aria-hidden />
-                <span>{d.channel}</span>
+                <span className="truncate" title={d.channel}>{d.channel}</span>
                 <span className="text-right tabular-nums">{off[d.channel] ? "0%" : `${Math.round(pct(d.amount))}%`}</span>
                 <span className="text-right font-semibold tabular-nums">
                   {mode === "brl" ? brl(d.amount) : `${pct(off[d.channel] ? 0 : d.amount).toFixed(1).replace(".", ",")}%`}

@@ -1,5 +1,6 @@
 import { Bot, Boxes, CalendarDays, ClipboardList, Package, Wallet, ChartNoAxesColumnIncreasing, FileText, House, MessageSquareText, Settings, UsersRound, Workflow, type LucideIcon } from "lucide-react";
-import type { ModuleKey } from "./tenant/types";
+import type { ModuleKey } from "./kas/contract";
+import type { Vertical } from "./tenant/types";
 
 export interface NavItem {
   href: string;
@@ -36,10 +37,24 @@ export const NAV_BOTTOM: NavItem[] = [
   { href: "/configuracoes", label: "Configurações", icon: Settings },
 ];
 
-/** Módulos do ERP de clínicas ainda em construção: aparecem no catálogo como "Em breve". */
-export const PLANNED: { label: string; description: string; icon: LucideIcon }[] = [
-  { label: "Agenda clínica", description: "Agenda por profissional, confirmação e lista de espera", icon: CalendarDays },
-  { label: "Financeiro", description: "Recebimentos, pacotes, cobranças e despesas", icon: Wallet },
-  { label: "Prontuário", description: "Evolução, anexos e histórico do paciente", icon: ClipboardList },
-  { label: "Estoque", description: "Materiais e insumos com alerta de reposição", icon: Package },
-];
+export interface VerticalExtension {
+  label: string;
+  description: string;
+  icon: LucideIcon;
+}
+
+/**
+ * Extensões verticais: produtos de um segmento, fora do catálogo universal de módulos KAS.
+ * Aparecem só para empresas daquele segmento. Nenhuma está pronta ainda.
+ */
+export const VERTICAL_EXTENSIONS: Partial<Record<Vertical, { title: string; items: VerticalExtension[] }>> = {
+  saude: {
+    title: "Extensão Saúde",
+    items: [
+      { label: "Agenda clínica", description: "Agenda por profissional, confirmação e lista de espera", icon: CalendarDays },
+      { label: "Financeiro clínico", description: "Recebimentos, pacotes, cobranças e despesas", icon: Wallet },
+      { label: "Prontuário", description: "Evolução, anexos e histórico do paciente", icon: ClipboardList },
+      { label: "Estoque", description: "Materiais e insumos com alerta de reposição", icon: Package },
+    ],
+  },
+};

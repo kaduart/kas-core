@@ -3,13 +3,20 @@
 import Link from "next/link";
 import { useState } from "react";
 import { CircleGauge, Plus } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { MODULES } from "@/lib/modules";
+import type { ModuleAccess } from "@/lib/kas/contract";
 import { useTenant } from "@/lib/tenant/TenantProvider";
 import { cn } from "@/lib/cn";
 
+function StatusPill({ access }: { access: ModuleAccess }) {
+  if (access.allowed && !access.preview && access.missing?.length) return <Badge tone="warn">Falta integrar</Badge>;
+  return <Badge>Ativo</Badge>;
+}
+
 export function ModulesRow() {
-  const { tenant } = useTenant();
-  const mods = MODULES.filter((m) => tenant.modules.includes(m.key));
+  const { access } = useTenant();
+  const mods = MODULES.map((m) => ({ ...m, access: access(m.key) })).filter((m) => m.access.allowed && !m.access.preview);
   const [sel, setSel] = useState(mods[0]?.key);
   return (
     <section aria-label="Seus Módulos" className="mb-[18px]">
@@ -35,7 +42,7 @@ export function ModulesRow() {
             >
               <span className="mb-1.5 flex items-center justify-between text-brand-dark">
                 <Icon className="size-[22px]" strokeWidth={1.8} aria-hidden />
-                <span className="rounded-full bg-brand-tint px-2.5 py-0.5 text-[12.5px] font-semibold text-brand-ink">Ativo</span>
+                <StatusPill access={m.access} />
               </span>
               <b className="text-[17.5px] font-bold">{m.label}</b>
               <span className="text-[13.5px] leading-snug text-muted">{m.description}</span>

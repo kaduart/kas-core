@@ -34,8 +34,13 @@ function NavLink({ item, active, onNavigate }: { item: NavItem; active: boolean;
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
-  const { tenant } = useTenant();
-  const top = NAV_TOP.filter((n) => !n.module || tenant.modules.includes(n.module));
+  const { tenant, access } = useTenant();
+  // Menu = o que a empresa contratou (inclusive com integração pendente). Prévias ficam só no catálogo.
+  const top = NAV_TOP.filter((n) => {
+    if (!n.module) return true;
+    const a = access(n.module);
+    return a.allowed && !a.preview;
+  });
   const isActive = (href: string) => pathname === href || pathname.startsWith(href + "/");
 
   return (

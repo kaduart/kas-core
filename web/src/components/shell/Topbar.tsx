@@ -15,8 +15,10 @@ function greeting(d = new Date()) {
 const round =
   "relative hidden size-[52px] shrink-0 place-items-center rounded-full bg-white shadow-[0_1px_3px_rgba(15,31,23,.06)] transition-colors hover:bg-brand-tint md:grid";
 
-export function Topbar({ userName = "Ricardo Maia", role = "Administrador" }: { userName?: string; role?: string }) {
-  const { tenant } = useTenant();
+export function Topbar() {
+  const { tenant, user } = useTenant();
+  const userName = user.name;
+  const role = user.role;
   const isDash = usePathname() === "/dashboard";
   const first = userName.split(" ")[0];
   const initials = userName.split(" ").map((p) => p[0]).slice(0, 2).join("");

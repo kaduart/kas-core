@@ -60,6 +60,6 @@ describe("módulos por empresa", () => {
   });
   it("empresas de demonstração só usam módulos conhecidos", () => {
     const keys = MODULES.map((m) => m.key);
-    for (const t of TENANTS) for (const k of t.modules) expect(keys).toContain(k);
+    for (const t of TENANTS) for (const k of Object.keys(t.demoModules)) expect(keys).toContain(k);
   });
 });

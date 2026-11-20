@@ -2,22 +2,30 @@
 
 import { createContext, useCallback, useContext, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
+import { moduleAccess, type ContractState, type ModuleAccess, type ModuleKey, type ModuleState, type SessionMode } from "@/lib/kas/contract";
+import { demoModulesCookie } from "@/lib/kas/demo";
+import type { Session } from "@/lib/session";
 import { brandCookieName, serializeBrandCookie } from "./brand-cookie";
 import { themeTokens } from "./color";
 import { findTenant, KAS_DEFAULT_BRAND, TENANT_COOKIE, TENANTS } from "./presets";
-import type { ModuleKey, Tenant, TenantBrand } from "./types";
+import type { Tenant, TenantBrand } from "./types";
 
 interface TenantContextValue {
+  mode: SessionMode;
   tenant: Tenant;
+  /** Empresas que a sessão pode abrir. No modo real, só a do domínio/login. */
   tenants: Tenant[];
+  user: Session["user"];
+  /** Estado de cada módulo como o servidor decidiu (contrato v1 do KAS Core). */
+  modules: ModuleState[];
+  access: (key: ModuleKey) => ModuleAccess;
+  /** Só no modo demonstração. No modo real é ignorado. */
   switchTenant: (id: string) => void;
-  /** Aplica a marca na hora (pré-visualização). */
+  /** Só no modo demonstração: simula o contrato do módulo e pede ao servidor para recalcular. */
+  setDemoModule: (key: ModuleKey, state: ContractState) => void;
   previewBrand: (brand: TenantBrand) => void;
-  /** Grava a marca. Nesta entrega fica em cookie; na integração vai para o KAS Core. */
   saveBrand: (brand: TenantBrand) => void;
   resetBrand: () => TenantBrand;
-  /** Liga ou desliga um módulo para a empresa atual. Demonstração: na integração, quem decide é o KAS Core. */
-  setModuleActive: (key: ModuleKey, on: boolean) => void;
 }
 
 const TenantContext = createContext<TenantContextValue | null>(null);
@@ -27,35 +35,36 @@ function writeCookie(name: string, value: string | null) {
   document.cookie = base + (value === null ? "0" : "31536000");
 }
 
-export function TenantProvider({
-  initialTenantId,
-  initialBrands = {},
-  children,
-}: {
-  initialTenantId: string;
-  /** Marcas personalizadas lidas no servidor, por empresa. */
-  initialBrands?: Record<string, TenantBrand>;
-  children: ReactNode;
-}) {
+export function TenantProvider({ session, children }: { session: Session; children: ReactNode }) {
   const router = useRouter();
-  const [tenantId, setTenantId] = useState(initialTenantId);
-  const [overrides, setOverrides] = useState<Record<string, TenantBrand>>(initialBrands);
-
-  const [moduleOverrides, setModuleOverrides] = useState<Record<string, ModuleKey[]>>({});
+  const [overrides, setOverrides] = useState<Record<string, TenantBrand>>(session.brands);
+  const tenantId = session.tenantId;
   const base = findTenant(tenantId) ?? TENANTS[0];
-  const tenant = useMemo<Tenant>(
-    () => ({ ...base, brand: overrides[base.id] ?? base.brand, modules: moduleOverrides[base.id] ?? base.modules }),
-    [base, overrides, moduleOverrides],
-  );
+  const tenant = useMemo<Tenant>(() => ({ ...base, brand: overrides[base.id] ?? base.brand }), [base, overrides]);
+  const tenants = useMemo(() => TENANTS.filter((t) => session.allowedTenantIds.includes(t.id)), [session.allowedTenantIds]);
+  const modules = session.modules.modules;
+
+  const access = useCallback((key: ModuleKey) => moduleAccess(session.mode, modules, key), [session.mode, modules]);
 
   const switchTenant = useCallback(
     (id: string) => {
-      if (!findTenant(id)) return;
+      if (session.mode !== "demo" || !session.allowedTenantIds.includes(id)) return;
       writeCookie(TENANT_COOKIE, encodeURIComponent(id));
-      setTenantId(id);
       router.refresh();
     },
-    [router],
+    [router, session.mode, session.allowedTenantIds],
+  );
+
+  const setDemoModule = useCallback(
+    (key: ModuleKey, state: ContractState) => {
+      if (session.mode !== "demo") return;
+      const current: Record<string, ContractState> = {};
+      for (const m of modules) if (m.contract !== "planned") current[m.key] = m.contract;
+      current[key] = state;
+      writeCookie(demoModulesCookie(tenantId), encodeURIComponent(JSON.stringify(current)));
+      router.refresh();
+    },
+    [router, session.mode, modules, tenantId],
   );
 
   const previewBrand = useCallback((brand: TenantBrand) => setOverrides((o) => ({ ...o, [tenantId]: brand })), [tenantId]);
@@ -75,19 +84,9 @@ export function TenantProvider({
     return brand;
   }, [tenantId]);
 
-  const setModuleActive = useCallback(
-    (key: ModuleKey, on: boolean) =>
-      setModuleOverrides((o) => {
-        const current = o[tenantId] ?? (findTenant(tenantId) ?? TENANTS[0]).modules;
-        const next = on ? Array.from(new Set([...current, key])) : current.filter((k) => k !== key);
-        return { ...o, [tenantId]: next };
-      }),
-    [tenantId],
-  );
-
   const value = useMemo(
-    () => ({ tenant, tenants: TENANTS, switchTenant, previewBrand, saveBrand, resetBrand, setModuleActive }),
-    [tenant, switchTenant, previewBrand, saveBrand, resetBrand, setModuleActive],
+    () => ({ mode: session.mode, tenant, tenants, user: session.user, modules, access, switchTenant, setDemoModule, previewBrand, saveBrand, resetBrand }),
+    [session.mode, session.user, tenant, tenants, modules, access, switchTenant, setDemoModule, previewBrand, saveBrand, resetBrand],
   );
 
   const style = themeTokens(tenant.brand.primary, tenant.brand.accent) as unknown as CSSProperties;

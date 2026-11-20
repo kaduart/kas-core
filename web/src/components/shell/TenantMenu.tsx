@@ -7,7 +7,7 @@ import { useTenant } from "@/lib/tenant/TenantProvider";
 
 /** Troca de empresa. Na integração, só lista empresas às quais o usuário tem acesso (decidido no Go). */
 export function TenantMenu({ children, align = "end", side = "bottom" }: { children: ReactNode; align?: "start" | "end"; side?: "top" | "bottom" }) {
-  const { tenant, tenants, switchTenant } = useTenant();
+  const { mode, tenant, tenants, switchTenant } = useTenant();
   return (
     <Dropdown.Root>
       <Dropdown.Trigger asChild>{children}</Dropdown.Trigger>
@@ -18,7 +18,7 @@ export function TenantMenu({ children, align = "end", side = "bottom" }: { child
           sideOffset={8}
           className="z-50 min-w-[280px] rounded-2xl bg-white p-1.5 text-ink shadow-[0_18px_40px_rgba(15,31,23,.16)]"
         >
-          <Dropdown.Label className="px-3 pb-1 pt-2 text-xs font-semibold text-muted">Empresas</Dropdown.Label>
+          <Dropdown.Label className="px-3 pb-1 pt-2 text-xs font-semibold text-muted">{mode === "demo" ? "Empresas de demonstração" : "Sua empresa"}</Dropdown.Label>
           {tenants.map((t) => (
             <Dropdown.Item
               key={t.id}

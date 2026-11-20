@@ -9,8 +9,9 @@ export const TENANTS: Tenant[] = [
     id: "fono-inova",
     name: "Fono Inova",
     segment: "Clínica Multidisciplinar",
+    vertical: "saude",
     domains: ["app.kascore.com.br", "localhost"],
-    modules: ["attribution", "crm", "omnichannel", "process", "ai", "reports"],
+    demoModules: { attribution: "active", reports: "active", process: "active" },
     brand: {
       name1: "KAS",
       name2: " Core",
@@ -24,8 +25,9 @@ export const TENANTS: Tenant[] = [
     id: "clinica-aurora",
     name: "Clínica Aurora",
     segment: "Fisioterapia e Pilates",
+    vertical: "saude",
     domains: ["painel.clinicaaurora.com.br"],
-    modules: ["attribution", "crm", "reports"],
+    demoModules: { attribution: "active", reports: "active" },
     brand: {
       name1: "Aurora",
       name2: " Gestão",
@@ -39,8 +41,10 @@ export const TENANTS: Tenant[] = [
     id: "odonto-sorriso",
     name: "Odonto Sorriso",
     segment: "Clínica Odontológica",
+    vertical: "saude",
     domains: ["painel.odontosorriso.com.br"],
-    modules: ["attribution", "crm", "omnichannel", "reports"],
+    demoModules: { attribution: "active", reports: "paused" },
+    demoMissing: { attribution: ["receipts"] },
     brand: {
       name1: "Sorriso",
       name2: " Pro",
@@ -48,6 +52,23 @@ export const TENANTS: Tenant[] = [
       primary: "#6B3FD1",
       accent: "#FFC94D",
       icon: "tooth",
+    },
+  },
+  {
+    // Mesmo tenant do piloto do kas-core (deploy/piloto-escola): segunda empresa, sem CRM da Fono Inova.
+    id: "escola-demo",
+    name: "Escola Exemplo",
+    segment: "Escola de idiomas",
+    vertical: "educacao",
+    domains: ["painel.escolaexemplo.com.br"],
+    demoModules: { attribution: "active", reports: "active" },
+    brand: {
+      name1: "Exemplo",
+      name2: " Painel",
+      tagline: "Matrículas e marketing em um lugar",
+      primary: "#C2410C",
+      accent: "#FDE68A",
+      icon: "leaf",
     },
   },
 ];
@@ -67,4 +88,10 @@ export function resolveTenant(opts: { cookie?: string | null; host?: string | nu
   const host = (opts.host ?? "").split(":")[0].toLowerCase();
   const byHost = TENANTS.find((t) => t.domains.includes(host));
   return byHost ?? TENANTS[0];
+}
+
+/** Modo real: só o domínio decide a empresa. Domínio desconhecido não cai em empresa nenhuma. */
+export function tenantByHost(host?: string | null): Tenant | undefined {
+  const h = (host ?? "").split(":")[0].toLowerCase();
+  return TENANTS.find((t) => t.domains.includes(h));
 }

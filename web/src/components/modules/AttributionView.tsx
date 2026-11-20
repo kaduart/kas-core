@@ -10,14 +10,17 @@ import { PageHeader, Stat } from "@/components/ui/page-header";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { brl, num } from "@/lib/kas/api";
-import { ATTRIBUTION } from "@/lib/kas/modules-fixtures";
+import { ATTRIBUTION, ATTRIBUTION_SCHOOL } from "@/lib/kas/modules-fixtures";
+import { useTenant } from "@/lib/tenant/TenantProvider";
 
 const F: Record<string, number> = { "7d": 0.24, "30d": 1, "90d": 2.7 };
 
 export function AttributionView() {
   const [period, setPeriod] = useState("30d");
   const f = F[period];
-  const rows = ATTRIBUTION.map((r) => ({ ...r, leads: Math.round(r.leads * f), scheduled: Math.round(r.scheduled * f), revenue: Math.round(r.revenue * f), spend: Math.round(r.spend * f) }));
+  const { tenant } = useTenant();
+  const school = tenant.vertical === "educacao";
+  const rows = (school ? ATTRIBUTION_SCHOOL : ATTRIBUTION).map((r) => ({ ...r, leads: Math.round(r.leads * f), scheduled: Math.round(r.scheduled * f), revenue: Math.round(r.revenue * f), spend: Math.round(r.spend * f) }));
   const tot = rows.reduce((a, r) => ({ leads: a.leads + r.leads, revenue: a.revenue + r.revenue, spend: a.spend + r.spend }), { leads: 0, revenue: 0, spend: 0 });
 
   return (
@@ -54,7 +57,7 @@ export function AttributionView() {
             <TR>
               <TH>Campanha</TH>
               <TH className="text-right">Leads</TH>
-              <TH className="text-right">Agendados</TH>
+              <TH className="text-right">{school ? "Visitas" : "Agendados"}</TH>
               <TH className="text-right">Investimento</TH>
               <TH className="text-right">Receita</TH>
               <TH className="text-right">Retorno</TH>

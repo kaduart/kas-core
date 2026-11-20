@@ -12,6 +12,20 @@ export interface CampaignRow {
   spend: number;
 }
 
+/**
+ * Escola Exemplo: a receita por canal fecha com o painel (Receita por Campanha, 30 dias = R$ 25.676),
+ * leads somam 273 e visitas 115. Ver dashboardFixture.
+ */
+export const ATTRIBUTION_SCHOOL: CampaignRow[] = [
+  { channel: "Meta Ads", color: "#F0216F", campaign: "Inglês para adultos, vídeo", leads: 70, scheduled: 29, revenue: 6820, spend: 1640 },
+  { channel: "Meta Ads", color: "#F0216F", campaign: "Turmas infantis, carrossel", leads: 38, scheduled: 16, revenue: 3596, spend: 910 },
+  { channel: "Google Ads", color: "#0E9F55", campaign: "Curso de inglês perto de mim", leads: 62, scheduled: 26, revenue: 5210, spend: 1380 },
+  { channel: "Google Ads", color: "#0E9F55", campaign: "Espanhol intensivo", leads: 31, scheduled: 13, revenue: 2658, spend: 720 },
+  { channel: "Indicação", color: "#2468F2", campaign: "Aluno indica aluno", leads: 40, scheduled: 17, revenue: 4144, spend: 0 },
+  { channel: "Orgânico", color: "#FF8A1F", campaign: "Instagram e Google Meu Negócio", leads: 22, scheduled: 9, revenue: 2422, spend: 0 },
+  { channel: "Outros", color: "#C9CED1", campaign: "Feiras e eventos", leads: 10, scheduled: 5, revenue: 826, spend: 0 },
+];
+
 export const ATTRIBUTION: CampaignRow[] = [
   { channel: "Google Ads", color: "#0E9F55", campaign: "Avaliação TEA, pesquisa", leads: 142, scheduled: 74, revenue: 14280, spend: 3120 },
   { channel: "Meta Ads", color: "#F0216F", campaign: "Fala infantil, vídeo", leads: 168, scheduled: 81, revenue: 12960, spend: 2840 },
@@ -141,4 +155,11 @@ export const REPORTS = [
   { id: "r3", name: "Pacotes a renovar", desc: "Pacotes que terminam nos próximos 14 dias.", updated: "hoje, 07:30" },
   { id: "r4", name: "Tempo de primeira resposta", desc: "Quanto cada contato esperou pela primeira resposta.", updated: "ontem, 23:00" },
   { id: "r5", name: "Faltas e remarcações", desc: "Faltas, remarcações e horários recuperados.", updated: "ontem, 23:00" },
+];
+
+export const REPORTS_SCHOOL = [
+  { id: "r1", name: "Receita por campanha", desc: "Mensalidades recebidas atribuídas a cada canal e campanha.", updated: "hoje, 07:05" },
+  { id: "r2", name: "Funil de matrículas", desc: "Leads, visitas, aulas teste e matrículas no período.", updated: "hoje, 07:05" },
+  { id: "r3", name: "Conciliação de mensalidades", desc: "Linhas do CSV importadas, ignoradas por duplicidade e sem origem.", updated: "hoje, 07:00" },
+  { id: "r4", name: "Custo por matrícula", desc: "Investimento em anúncios dividido pelas matrículas de cada canal.", updated: "hoje, 07:05" },
 ];

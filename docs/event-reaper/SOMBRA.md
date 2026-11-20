@@ -31,10 +31,10 @@ Workflows (só rodam depois do merge na `main`, porque agenda do Actions usa a b
 
 - `.github/workflows/sombra-reaper.yml`, com dois gatilhos **separados**:
   - **Manual** (Run workflow, branch `main`): uma execução com `minutes` (padrão 15, máximo 345). Não depende de variável e não liga a agenda.
-  - **Agenda**: 00:05, 06:05, 12:05 e 18:05 UTC (21:05, 03:05, 09:05 e 15:05 em Brasília), **só** com `SOMBRA_AGENDA_ATIVA=true`. Cada execução termina 8 min antes do próximo horário (`deploy/sombra/janela.sh`): até ~5h45 se começar na hora, menos se o GitHub atrasar. O fim é ancorado no próximo horário, então as execuções não se sobrepõem e não dependem de fila; uma execução atrasada demais (< 10 min úteis) não roda.
+  - **Agenda**: 00:23, 06:23, 12:23 e 18:23 UTC (21:23, 03:23, 09:23 e 15:23 em Brasília; fora do início da hora porque o GitHub descartou as rodadas de 06:05 e 12:05 de 20/11), **só** com `SOMBRA_AGENDA_ATIVA=true`. Cada execução termina 8 min antes do próximo horário (`deploy/sombra/janela.sh`): até ~5h45 se começar na hora, menos se o GitHub atrasar. O fim é ancorado no próximo horário, então as execuções não se sobrepõem e não dependem de fila; uma execução atrasada demais (< 10 min úteis) não roda.
   - Cada execução: compila da `main`, roda `kas-event-reaper -mode shadow -protocol v2 -require-read-only on -warmup 30s -interval 5m` (cadência fixa, como o `setInterval` do Node), sonda o `/health` do CRM a cada 60 s, publica o resumo (só contagens) e guarda o relatório completo **criptografado (AES256)** como artifact por 14 dias.
   - É amostragem por ciclos, não acompanhamento contínuo: há ~10 min sem ciclo a cada 6 h (8 min de margem + preparo), mais qualquer atraso do GitHub. A cobertura (C7) conta só intervalos de 5 min com ciclo **concluído sem erro**, um por intervalo; ciclo com erro, pulado ou duplicado não conta.
-- `.github/workflows/sombra-reaper-resumo.yml`: manual a qualquer hora; diário às 09:00 (BRT) só com `SOMBRA_AGENDA_ATIVA=true`. Junta as execuções dos últimos dias e avalia os critérios.
+- `.github/workflows/sombra-reaper-resumo.yml`: manual a qualquer hora; diário às 09:47 (BRT) só com `SOMBRA_AGENDA_ATIVA=true`. Junta as execuções dos últimos dias e avalia os critérios.
 
 Segredos: ficam no **ambiente `sombra`**, não nos segredos do repositório. Settings → Environments → New environment `sombra` → Deployment branches and tags → Selected branches → regra `main`. Só jobs da `main` recebem esses segredos; um disparo manual a partir de outra branch, PRs e forks não recebem. Os workflows não têm gatilho `pull_request`.
 
@@ -135,7 +135,7 @@ A classe vem de quem escreveu a mensagem observada (`observed_reason`: `reaper`,
 4. Avaliar o resultado. Só depois, e com OK separado, criar `SOMBRA_AGENDA_ATIVA=true` para começar os 5 dias.
 
 **Dias 1 a 5**
-- 09:00: o resumo diário roda sozinho. Olhar só C1–C6 e as classes; C7 fica "período curto" até o dia 5.
+- 09:47: o resumo diário roda sozinho. Olhar só C1–C6 e as classes; C7 fica "período curto" até o dia 5.
 - Qualquer `decision_mismatch`, `unclassified` ou `node_not_acting`: baixar o artifact, rodar com `-with-ids`, explicar o caso em `DIVERGENCIAS.md`. Uma divergência explicada e sem defeito da KAS vira nova regra de classe; um defeito real reinicia a contagem dos 5 dias depois da correção.
 - Execução vermelha por erro de conexão isolado não reinicia nada; conta em C4.
 

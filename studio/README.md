@@ -17,6 +17,8 @@ Editor visual dos fluxos do motor (`internal/process`), com visual inspirado em 
 
 ## Rodar localmente
 
+No Windows (WSL), siga o [roteiro passo a passo](ROTEIRO-WINDOWS.md).
+
 Pré-requisitos: Go 1.25+, Node 22, `psql`, e Docker (ou um Postgres local passado em `PG_ADMIN_URL`).
 
 ```bash

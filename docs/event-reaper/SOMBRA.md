@@ -139,8 +139,16 @@ A classe vem de quem escreveu a mensagem observada (`observed_reason`: `reaper`,
 - Qualquer `decision_mismatch`, `unclassified` ou `node_not_acting`: baixar o artifact, rodar com `-with-ids`, explicar o caso em `DIVERGENCIAS.md`. Uma divergência explicada e sem defeito da KAS vira nova regra de classe; um defeito real reinicia a contagem dos 5 dias depois da correção.
 - Execução vermelha por erro de conexão isolado não reinicia nada; conta em C4.
 
-**Dia 5 (veredito)**
-- Run manual do `sombra-reaper-resumo` com `days` = 6 e `min_days` = 5. Verde em C1–C7 = sombra aprovada. Isso **não** ativa escrita: a troca de responsabilidade (executor) é outra etapa, com OK separado.
+**Janela oficial registrada (Kadu, 19/11/2026 19:35 BRT)**
+- Aquecimento: da ativação da agenda (19/11, 21:05 BRT) até 23/11 00h. Roda igual, aparece nos resumos diários, **não entra no veredito**.
+- Janela oficial: **23/11/2026 00h → 28/11/2026 00h, horário de Brasília** (segunda a sexta, 5 dias completos; fim exclusivo).
+- Veredito: **30/11/2026, 10h BRT**.
+
+**Veredito**
+- O `sombra-reaper-resumo` já usa a janela oficial sozinho (`deploy/sombra/janela-resumo.sh`; variáveis opcionais `SOMBRA_JANELA_INICIO`/`SOMBRA_JANELA_FIM`, com estes valores como padrão): antes de 23/11 mostra o aquecimento sem janela; de 23/11 a 28/11 mostra o parcial da janela até a hora do resumo; a partir de 28/11 00h roda o veredito com a janela inteira e `min_days` = 5. Equivale ao run manual com `min_days` = 5, `since` = `2026-11-23T00:00:00-03:00` e `until` = `2026-11-28T00:00:00-03:00`. Só os ciclos que começaram dentro da janela contam; período e cobertura (C7) são medidos contra a janela inteira, então um dia faltando reprova.
+- Verde em C1–C7 com comparação **conclusiva** = sombra aprovada.
+- **Zero candidatos (ou zero conferências) = comparação INCONCLUSIVA**, mesmo com todos os ciclos saudáveis: C2 e C3 aparecem como `INCONCLUSIVO` e o resumo sai com código 4. Ciclos saudáveis provam que a sombra roda, não que decide como o Node. Inconclusivo não aprova a sombra.
+- Aprovação **não** ativa escrita: a troca de responsabilidade (executor) é outra etapa, com OK separado.
 
 **Parar a qualquer momento**: apagar a variável (ou trocar para `false`)
 ```

@@ -5,8 +5,17 @@
 // (counts only, never event identifiers, safe for a public CI summary) and can
 // write the full result as JSON.
 //
+// -since/-until restrict the evaluation to an official window (cycles whose
+// start falls in [since, until)); period and coverage are then measured
+// against the whole window, so a missing day counts as missing.
+//
+// Zero candidates (or zero checks) in the period means the comparison with
+// the Node reaper is INCONCLUSIVE: healthy cycles prove the shadow runs, not
+// that it decides like the Node.
+//
 // Exit codes: 0 all criteria pass; 1 at least one criterion fails;
-// 3 nothing failed but the period is shorter than -min-days; 2 usage error.
+// 3 nothing failed but the period is shorter than -min-days; 4 nothing failed
+// but the comparison is inconclusive (no candidate or no check); 2 usage error.
 package main
 
 import (
@@ -86,10 +95,12 @@ const (
 var reaperTargets = map[string]bool{"pending": true, "failed": true, "dead_letter": true}
 
 type criterion struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Pass   bool   `json:"pass"`
-	Detail string `json:"detail"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Pass bool   `json:"pass"`
+	// Inconclusive: nothing failed, but there was nothing to compare.
+	Inconclusive bool   `json:"inconclusive,omitempty"`
+	Detail       string `json:"detail"`
 }
 
 type result struct {
@@ -97,6 +108,8 @@ type result struct {
 	FromS          string    `json:"from"`
 	ToS            string    `json:"to"`
 	Days           float64   `json:"days"`
+	WindowFrom     string    `json:"window_from,omitempty"`
+	WindowTo       string    `json:"window_to,omitempty"`
 	Runs           int       `json:"runs"`
 	RunsReadOnly   int       `json:"runs_read_only_proven"`
 	RunsNotShadow  int       `json:"runs_not_shadow"`
@@ -104,14 +117,17 @@ type result struct {
 	ExpectedCycles int       `json:"expected_cycles"`
 	// CoveredSlots: 5-minute slots with at least one cycle that finished without error or skip.
 	// Duplicated cycles (overlapping runs) count once; error and skipped cycles do not count.
-	CoveredSlots   int                 `json:"covered_slots"`
-	DuplicateSlots int                 `json:"duplicate_slots"`
-	Coverage       float64             `json:"coverage"`
-	LongestGap     string              `json:"longest_gap"`
-	ErrorCycles    int                 `json:"error_cycles"`
-	MaxErrorStreak int                 `json:"max_consecutive_error_cycles"`
-	Skipped        map[string]int      `json:"skipped"`
-	Candidates     int                 `json:"candidates_total"`
+	CoveredSlots   int            `json:"covered_slots"`
+	DuplicateSlots int            `json:"duplicate_slots"`
+	Coverage       float64        `json:"coverage"`
+	LongestGap     string         `json:"longest_gap"`
+	ErrorCycles    int            `json:"error_cycles"`
+	MaxErrorStreak int            `json:"max_consecutive_error_cycles"`
+	Skipped        map[string]int `json:"skipped"`
+	Candidates     int            `json:"candidates_total"`
+	Checks         int            `json:"checks_total"`
+	// Comparison: "conclusiva" or "inconclusiva" (zero candidates or zero checks).
+	Comparison     string              `json:"comparison"`
 	MaxCandidates  int                 `json:"max_candidates_per_cycle"`
 	WriteOutcomes  int                 `json:"write_outcomes"`
 	DurP50, DurP95 float64             `json:"-"`
@@ -129,13 +145,14 @@ type result struct {
 type thresholds struct {
 	minDays, minCoverage, maxErrorRate, maxP95Ms, maxRSSMB, minHealthOK float64
 	maxErrorStreak, stillChecks                                         int
+	since, until                                                        time.Time
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("kas-shadow-summary", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var th thresholds
-	var healthPaths, jsonOut string
+	var healthPaths, jsonOut, since, until string
 	var withIDs bool
 	fs.Float64Var(&th.minDays, "min-days", 5, "minimum observed period in days (0 for a daily partial summary)")
 	fs.Float64Var(&th.minCoverage, "min-coverage", 0.90, "cycles observed / cycles expected for the period")
@@ -147,9 +164,30 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.IntVar(&th.stillChecks, "still-checks", 4, "consecutive still_processing checks that make an event node_not_acting")
 	fs.StringVar(&healthPaths, "health", "", "comma-separated CRM health probe files (JSON Lines: at, status, ms)")
 	fs.StringVar(&jsonOut, "json-out", "", "write the full result as JSON to this file")
+	fs.StringVar(&since, "since", "", "official window start, RFC3339 (e.g. 2026-11-24T00:00:00-03:00); cycles before it are warm-up and ignored")
+	fs.StringVar(&until, "until", "", "official window end (exclusive), RFC3339; requires -since")
 	fs.BoolVar(&withIDs, "with-ids", false, "include up to 5 event ids per divergence class in the JSON (never in the Markdown)")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if since != "" || until != "" {
+		var err error
+		if since == "" || until == "" {
+			fmt.Fprintln(stderr, "-since and -until go together")
+			return 2
+		}
+		if th.since, err = time.Parse(time.RFC3339, since); err != nil {
+			fmt.Fprintln(stderr, "-since:", err)
+			return 2
+		}
+		if th.until, err = time.Parse(time.RFC3339, until); err != nil {
+			fmt.Fprintln(stderr, "-until:", err)
+			return 2
+		}
+		if !th.until.After(th.since) {
+			fmt.Fprintln(stderr, "-until must be after -since")
+			return 2
+		}
 	}
 	if fs.NArg() == 0 {
 		fmt.Fprintln(stderr, "usage: kas-shadow-summary [flags] report.jsonl [more.jsonl...]")
@@ -184,8 +222,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	failed, short := false, false
+	failed, short, inconclusive := false, false, false
 	for _, c := range res.Criteria {
+		if c.Inconclusive {
+			inconclusive = true
+		}
 		if !c.Pass {
 			if c.ID == "C7" && res.Coverage >= th.minCoverage {
 				short = true
@@ -199,6 +240,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	case short:
 		return 3
+	case inconclusive:
+		return 4
 	}
 	return 0
 }
@@ -293,33 +336,48 @@ func evaluate(lines []line, hs []health, th thresholds, withIDs bool) result {
 			res.Examples[cls] = append(res.Examples[cls], id)
 		}
 	}
-	for _, l := range lines {
-		switch l.Kind {
-		case "start":
+	windowed := !th.since.IsZero()
+	inWindow := func(t time.Time) bool { return !windowed || (!t.Before(th.since) && t.Before(th.until)) }
+	// A run counts when it has at least one cycle in the window (warm-up runs
+	// before the window do not count, a run that crosses the start does).
+	var cur *line
+	curIn := false
+	closeRun := func() {
+		if cur != nil && curIn {
 			res.Runs++
-			if l.Mode != "shadow" {
+			if cur.Mode != "shadow" {
 				res.RunsNotShadow++
 			}
-			if l.ReadOnly != nil && len(l.ReadOnly.Users) > 0 {
+			if cur.ReadOnly != nil && len(cur.ReadOnly.Users) > 0 {
 				res.RunsReadOnly++
-			}
-			if d, err := time.ParseDuration(l.Interval); err == nil && d > 0 {
-				interval = d
 			}
 			if lastCPU > 0 {
 				cpuPerRun = append(cpuPerRun, lastCPU)
 			}
-			lastCPU = 0
+		}
+		lastCPU = 0
+	}
+	for i := range lines {
+		l := lines[i]
+		switch l.Kind {
+		case "start":
+			closeRun()
+			cur, curIn = &lines[i], false
+			if d, err := time.ParseDuration(l.Interval); err == nil && d > 0 {
+				interval = d
+			}
 		case "cycle":
+			if !inWindow(l.StartedAt) {
+				continue
+			}
+			curIn = true
 			cycles = append(cycles, l)
 			if t := l.Proc.CPUUser + l.Proc.CPUSys; t > lastCPU {
 				lastCPU = t // cumulative per process: keep the last (largest) value of each run
 			}
 		}
 	}
-	if lastCPU > 0 {
-		cpuPerRun = append(cpuPerRun, lastCPU)
-	}
+	closeRun()
 	sort.SliceStable(cycles, func(i, j int) bool { return cycles[i].StartedAt.Before(cycles[j].StartedAt) })
 	streak := 0
 	covered := map[time.Time]int{}
@@ -366,6 +424,7 @@ func evaluate(lines []line, hs []health, th thresholds, withIDs bool) result {
 			res.MaxRSSMB = mb
 		}
 		for _, k := range c.Checks {
+			res.Checks++
 			res.Verdicts[k.Verdict]++
 			switch k.Verdict {
 			case "still_processing":
@@ -391,11 +450,21 @@ func evaluate(lines []line, hs []health, th thresholds, withIDs bool) result {
 	for _, c := range cpuPerRun {
 		res.CPUSeconds += float64(c) / 1000
 	}
+	if windowed {
+		res.WindowFrom, res.WindowTo = th.since.Format(time.RFC3339), th.until.Format(time.RFC3339)
+	}
 	if res.Cycles > 0 {
 		span := res.To.Sub(res.From)
 		res.Days = span.Hours() / 24
 		first, last := res.From.UTC().Truncate(interval), res.To.UTC().Truncate(interval)
 		res.ExpectedCycles = int(last.Sub(first)/interval) + 1
+		if windowed {
+			// Measured against the whole official window: missing days count as missing.
+			// Coverage below (every slot of the window) is what catches a missing day.
+			res.Days = th.until.Sub(th.since).Hours() / 24
+			first = th.since.UTC().Truncate(interval)
+			res.ExpectedCycles = int(th.until.Sub(first) / interval)
+		}
 		res.CoveredSlots = len(covered)
 		for _, n := range covered {
 			if n > 1 {
@@ -416,6 +485,9 @@ func evaluate(lines []line, hs []health, th thresholds, withIDs bool) result {
 	var hok, hn float64
 	var hms []float64
 	for _, h := range hs {
+		if !inWindow(h.At) {
+			continue
+		}
 		hn++
 		if h.Status == 200 {
 			hok++
@@ -433,15 +505,24 @@ func evaluate(lines []line, hs []health, th thresholds, withIDs bool) result {
 	add := func(id, name string, pass bool, detail string) {
 		res.Criteria = append(res.Criteria, criterion{ID: id, Name: name, Pass: pass, Detail: detail})
 	}
+	// Nothing to compare: C2 and C3 pass vacuously, which proves nothing.
+	res.Comparison = "conclusiva"
+	if res.Candidates == 0 || res.Checks == 0 {
+		res.Comparison = "inconclusiva"
+	}
+	inconclusive := res.Comparison == "inconclusiva"
+	vacuous := fmt.Sprintf(" — INCONCLUSIVO: %d candidatos e %d conferências no período, nada para comparar com o Node", res.Candidates, res.Checks)
 	add("C1", "Nenhuma escrita pela sombra",
 		res.Runs > 0 && res.RunsNotShadow == 0 && res.RunsReadOnly == res.Runs && res.WriteOutcomes == 0,
 		fmt.Sprintf("%d execuções; %d com usuário só leitura comprovado pelo servidor; %d fora do modo sombra; %d resultados de escrita", res.Runs, res.RunsReadOnly, res.RunsNotShadow, res.WriteOutcomes))
 	add("C2", "Nenhuma decisão diferente do Node e nada sem classe",
 		res.Classes[clsDecisionMismatch] == 0 && res.Classes[clsUnclassified] == 0,
-		fmt.Sprintf("decision_mismatch=%d, unclassified=%d", res.Classes[clsDecisionMismatch], res.Classes[clsUnclassified]))
+		fmt.Sprintf("decision_mismatch=%d, unclassified=%d", res.Classes[clsDecisionMismatch], res.Classes[clsUnclassified])+map[bool]string{true: vacuous}[inconclusive])
+	res.Criteria[len(res.Criteria)-1].Inconclusive = inconclusive && res.Criteria[len(res.Criteria)-1].Pass
 	add("C3", "Nenhum evento parado sem explicação",
 		res.Classes[clsNodeNotActing] == 0,
-		fmt.Sprintf("node_not_acting=%d (evento em processing por %d conferências seguidas)", res.Classes[clsNodeNotActing], th.stillChecks))
+		fmt.Sprintf("node_not_acting=%d (evento em processing por %d conferências seguidas)", res.Classes[clsNodeNotActing], th.stillChecks)+map[bool]string{true: vacuous}[inconclusive])
+	res.Criteria[len(res.Criteria)-1].Inconclusive = inconclusive && res.Criteria[len(res.Criteria)-1].Pass
 	add("C4", "Erros da sombra registrados e dentro do limite",
 		res.Cycles > 0 && errRate <= th.maxErrorRate && res.MaxErrorStreak <= th.maxErrorStreak,
 		fmt.Sprintf("%d de %d ciclos com erro (%.2f%%; limite %.2f%%); maior sequência %d (limite %d)", res.ErrorCycles, res.Cycles, errRate*100, th.maxErrorRate*100, res.MaxErrorStreak, th.maxErrorStreak))
@@ -470,6 +551,9 @@ func round4(f float64) float64 { return math.Round(f*10000) / 10000 }
 
 func writeMarkdown(w io.Writer, r result) {
 	fmt.Fprintf(w, "## Sombra do reaper KAS: resumo\n\n")
+	if r.WindowFrom != "" {
+		fmt.Fprintf(w, "Janela oficial: %s → %s (ciclos fora dela são aquecimento e não contam).\n\n", r.WindowFrom, r.WindowTo)
+	}
 	if r.Cycles == 0 {
 		fmt.Fprintf(w, "Nenhum ciclo no relatório.\n\n")
 	} else {
@@ -478,10 +562,16 @@ func writeMarkdown(w io.Writer, r result) {
 	fmt.Fprintf(w, "| Critério | Resultado | Detalhe |\n|---|---|---|\n")
 	for _, c := range r.Criteria {
 		st := "PASSA"
-		if !c.Pass {
+		switch {
+		case !c.Pass:
 			st = "FALHA"
+		case c.Inconclusive:
+			st = "INCONCLUSIVO"
 		}
 		fmt.Fprintf(w, "| %s %s | %s | %s |\n", c.ID, c.Name, st, c.Detail)
+	}
+	if r.Comparison == "inconclusiva" {
+		fmt.Fprintf(w, "\n**Comparação com o Node: INCONCLUSIVA.** Nenhum candidato ou nenhuma conferência no período: os ciclos saudáveis provam que a sombra roda, não que decide como o Node.\n")
 	}
 	fmt.Fprintf(w, "\n**Conferências:** ")
 	writeCounts(w, r.Verdicts)

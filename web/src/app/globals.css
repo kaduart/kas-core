@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 @theme inline {
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
   --color-brand: var(--brand);
   --color-brand-dark: var(--brand-dark);
   --color-brand-deep: var(--brand-deep);

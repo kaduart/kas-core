@@ -1,10 +1,8 @@
 import type { Metadata, Viewport } from "next";
-import { Inter } from "next/font/google";
+import "@fontsource-variable/inter";
 import { getSession } from "@/lib/session";
 import { Providers } from "./providers";
 import "./globals.css";
-
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
 
 export const metadata: Metadata = {
   title: "KAS Core",
@@ -16,7 +14,7 @@ export const viewport: Viewport = { width: "device-width", initialScale: 1, them
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const session = await getSession();
   return (
-    <html lang="pt-BR" className={inter.variable}>
+    <html lang="pt-BR">
       <body>
         <Providers session={session}>{children}</Providers>
       </body>

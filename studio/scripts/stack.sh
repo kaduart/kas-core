@@ -8,6 +8,12 @@
 #   source studio/.stack/env        # tokens só para o servidor do Studio (nunca vão ao navegador)
 #   (cd studio && npm run dev)      # http://127.0.0.1:5174
 #   studio/scripts/stack.sh stop
+#
+# Também sobe a clínica fictícia demo-clinica com o piloto de renovação de
+# pacote (studio/samples/renovacao-pacote.json). O CRM simulado dela perde a
+# primeira confirmação dos pacotes listados em DROP_FIRST_RESULT_REFS (padrão:
+# todo business_ref que começa com pacote-demo-perde-), para a KAS ter de
+# consultar o mesmo pedido.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 STUDIO=$(cd "$HERE/.." && pwd)
@@ -52,11 +58,12 @@ SQL
   psql "$migrate" -q -v ON_ERROR_STOP=1 -v schema=public -v runtime_role=$RT_ROLE -f "$ROOT/deploy/grants.sql"
   psql "$migrate" -q -v ON_ERROR_STOP=1 -v schema=public -v runtime_role=$RT_ROLE -f "$ROOT/deploy/grants-process.sql"
 
-  local ta tb; ta=$(openssl rand -hex 32); tb=$(openssl rand -hex 32)
+  local ta tb tc; ta=$(openssl rand -hex 32); tb=$(openssl rand -hex 32); tc=$(openssl rand -hex 32)
   cat > "$STACK/env" <<ENV
 export KAS_URL=$KAS
 export DEMO_CRM_A_TOKEN=$ta
 export DEMO_CRM_B_TOKEN=$tb
+export DEMO_CRM_CLINICA_TOKEN=$tc
 ENV
   chmod 600 "$STACK/env"
   # shellcheck disable=SC1091
@@ -65,15 +72,17 @@ ENV
   local caps='"events:consume","process:define","process:run","process:task","process:command","process:event"'
   cat > "$STACK/config.json" <<JSON
 {"contract_version":"v1","config_version":"studio-demo",
- "tenant_registry":[{"id":"demo-empresa-a","status":"active"},{"id":"demo-empresa-b","status":"active"}],
+ "tenant_registry":[{"id":"demo-empresa-a","status":"active"},{"id":"demo-empresa-b","status":"active"},{"id":"demo-clinica","status":"active"}],
  "key_schema":{"logging.max_meta_keys":{"type":"integer","min":1,"max":10}},"tenants":{},
  "event_types":[$types],
  "event_consumers":{
   "crm-simulado-a":{"service":"demo-crm-a","event_types":[$types],"tenants":["demo-empresa-a"]},
-  "crm-simulado-b":{"service":"demo-crm-b","event_types":[$types],"tenants":["demo-empresa-b"]}},
+  "crm-simulado-b":{"service":"demo-crm-b","event_types":[$types],"tenants":["demo-empresa-b"]},
+  "crm-simulado-clinica":{"service":"demo-crm-clinica","event_types":[$types],"tenants":["demo-clinica"]}},
  "callers":{
   "demo-crm-a":{"token_env":"DEMO_CRM_A_TOKEN","tenants":["demo-empresa-a"],"capabilities":[$caps]},
-  "demo-crm-b":{"token_env":"DEMO_CRM_B_TOKEN","tenants":["demo-empresa-b"],"capabilities":[$caps]}}}
+  "demo-crm-b":{"token_env":"DEMO_CRM_B_TOKEN","tenants":["demo-empresa-b"],"capabilities":[$caps]},
+  "demo-crm-clinica":{"token_env":"DEMO_CRM_CLINICA_TOKEN","tenants":["demo-clinica"],"capabilities":[$caps]}}}
 JSON
   KAS_EVENTS_DATABASE_URL="$runtime" KAS_AUDIT_DATABASE_URL="$runtime" nohup "$STACK/kas-core" -config "$STACK/config.json" \
     -audit-store postgres -audit-auto-migrate=false -events-store postgres -events-auto-migrate=false \
@@ -87,6 +96,10 @@ JSON
       -state "$STACK/sim-$l.json" -interval 300ms -lease-seconds 5 > "$STACK/sim-$l.log" 2>&1 &
     echo $! >> "$STACK/pids"
   done
+  nohup "$STACK/kas-crm-sim" -kas "$KAS" -service demo-crm-clinica -token-env DEMO_CRM_CLINICA_TOKEN -consumer crm-simulado-clinica \
+    -state "$STACK/sim-clinica.json" -interval 300ms -lease-seconds 5 \
+    -drop-first-result-refs "${DROP_FIRST_RESULT_REFS:-pacote-demo-perde-*}" > "$STACK/sim-clinica.log" 2>&1 &
+  echo $! >> "$STACK/pids"
   node "$HERE/seed.mjs"
   echo "Stack pronta: KAS em $KAS. Rode: source $STACK/env"
 }

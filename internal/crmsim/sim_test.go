@@ -51,6 +51,7 @@ func definition(businessDays int) string {
 type stack struct {
 	t   *testing.T
 	srv *httptest.Server
+	eng *process.Engine
 }
 
 func newStack(t *testing.T) *stack {
@@ -85,7 +86,7 @@ func newStack(t *testing.T) *stack {
 	h.EnableProcess(eng)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return &stack{t: t, srv: srv}
+	return &stack{t: t, srv: srv, eng: eng}
 }
 
 func (s *stack) api(method, path, service, token string, body any) map[string]any {

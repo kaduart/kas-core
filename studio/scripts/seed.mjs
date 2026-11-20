@@ -1,5 +1,9 @@
 // Publishes version 1 of the demo processes and the demo roles for both
-// fictitious companies. Uses the service tokens from the environment.
+// fictitious companies, plus the package-renewal pilot for the fictitious
+// clinic (studio/samples/renovacao-pacote.json). Uses the service tokens from
+// the environment.
+import { readFileSync } from 'node:fs'
+
 const KAS = process.env.KAS_URL ?? 'http://127.0.0.1:18288'
 const companies = [
   { tenant: 'demo-empresa-a', service: 'demo-crm-a', token: process.env.DEMO_CRM_A_TOKEN, days: 2 },
@@ -42,4 +46,13 @@ for (const c of companies) {
   await call(c, 'PUT', 'roles/comercial/members', { change_id: 'seed-comercial', members: ['ator-comercial-1'], valid_from: from })
   await call(c, 'PUT', 'roles/supervisor/members', { change_id: 'seed-supervisor', members: ['ator-supervisor-1'], valid_from: from })
   console.log(`${c.tenant}: retencao-cancelamento v${r.version} (${c.days} dias úteis)`)
+}
+
+const clinica = { tenant: 'demo-clinica', service: 'demo-crm-clinica', token: process.env.DEMO_CRM_CLINICA_TOKEN }
+if (clinica.token) {
+  const renovacao = JSON.parse(readFileSync(new URL('../samples/renovacao-pacote.json', import.meta.url), 'utf8'))
+  const r = await call(clinica, 'POST', 'definitions', { publish_id: 'seed-renovacao-v1', definition: renovacao })
+  await call(clinica, 'PUT', 'roles/secretaria/members', { change_id: 'seed-secretaria', members: ['ator-secretaria-1'], valid_from: from })
+  await call(clinica, 'PUT', 'roles/supervisao/members', { change_id: 'seed-supervisao', members: ['ator-supervisao-1'], valid_from: from })
+  console.log(`${clinica.tenant}: renovacao-pacote v${r.version} (2 dias úteis, supervisão revisa)`)
 }

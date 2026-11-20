@@ -99,6 +99,10 @@ go run ./cmd/kas-core -config ./config.example.json -events-store postgres -proc
 - Editor visual (piloto) em [`studio/`](studio/README.md). Para abrir no seu PC, veja [Rodar localmente](studio/README.md#rodar-localmente).
 - Teste integrado com o executável real e o CRM simulado: `deploy/process-e2e/run.sh` (só termina com `TUDO OK`). O CRM simulado é `cmd/kas-crm-sim` e só aceita KAS em loopback.
 
+### Piloto renovação de pacote
+
+Fluxo `renovacao-pacote` para a clínica fictícia `demo-clinica`: só termina como `renovado` quando o CRM confirma o id do **pacote novo** criado para aquele pedido (`result_ref` no resultado do comando, migração `0002`). Com o CRM simulado perdendo a primeira confirmação, a KAS consulta a mesma `command_key` e o CRM responde com o mesmo pacote: exatamente um pacote e histórico que explica a conclusão. Definição em [`studio/samples/renovacao-pacote.json`](studio/samples/renovacao-pacote.json); roteiro de demonstração e decisões pendentes em [docs/piloto-renovacao-pacote.md](docs/piloto-renovacao-pacote.md).
+
 ## Módulo de configuração
 
 Contrato `v1`: `POST /internal/v1/config/evaluate`, descrito em [contract/v1/config-evaluate.md](contract/v1/config-evaluate.md) e em [openapi.yaml](openapi.yaml). O esquema JSON declara chaves, tipo (`integer`, `boolean`, `string`) e faixa opcional de inteiros. O serviço autenticado precisa estar autorizado para o tenant solicitado e possuir a capacidade `config:read`. A configuração é somente leitura durante a vida do processo.

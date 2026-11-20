@@ -84,6 +84,7 @@ type processCommandResultRequest struct {
 	TenantID        string    `json:"tenant_id"`
 	Status          string    `json:"status"`
 	ReasonCode      string    `json:"reason_code,omitempty"`
+	ResultRef       string    `json:"result_ref,omitempty"`
 	OccurredAt      time.Time `json:"occurred_at"`
 }
 
@@ -165,6 +166,8 @@ func (h *Handler) writeProcessError(w http.ResponseWriter, r *http.Request, err 
 		h.writeError(w, r, http.StatusConflict, "command_unknown", "a command result is still unknown; consult the external system first")
 	case errors.Is(err, process.ErrCommandNotPending):
 		h.writeError(w, r, http.StatusConflict, "command_not_pending", "command is not requested or unknown")
+	case errors.Is(err, process.ErrResultRefRequired):
+		h.writeError(w, r, http.StatusUnprocessableEntity, "result_ref_required", "this step needs result_ref with a confirmed result")
 	case errors.Is(err, process.ErrInstanceActive):
 		h.writeError(w, r, http.StatusConflict, "instance_active", "a running instance already exists for this business_ref")
 	case errors.Is(err, process.ErrWaitTypeMismatch):
@@ -331,14 +334,18 @@ func (h *Handler) processCommandResult(w http.ResponseWriter, r *http.Request) {
 	}
 	duplicate, err := h.process.RecordCommandResult(r.Context(), process.CommandResult{
 		TenantID: tenantID, ServiceID: serviceID, CommandKey: r.PathValue("key"), Status: req.Status,
-		ReasonCode: req.ReasonCode, OccurredAt: req.OccurredAt,
+		ReasonCode: req.ReasonCode, ResultRef: req.ResultRef, OccurredAt: req.OccurredAt,
 	})
 	if err != nil {
 		h.writeProcessError(w, r, err)
 		return
 	}
 	// 200 means durably recorded: only now may the CRM ack its delivery.
-	h.writeJSON(w, http.StatusOK, map[string]any{"contract_version": processContractVersion, "recorded": true, "duplicate": duplicate})
+	out := map[string]any{"contract_version": processContractVersion, "recorded": true, "duplicate": duplicate}
+	if req.ResultRef != "" {
+		out["result_ref"] = req.ResultRef
+	}
+	h.writeJSON(w, http.StatusOK, out)
 }
 
 func (h *Handler) processQueryCommand(w http.ResponseWriter, r *http.Request) {

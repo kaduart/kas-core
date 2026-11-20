@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,6 +30,11 @@ const (
 	eventCommandRequested   = "process.command.requested"
 	eventCommandStatusQuery = "process.command.status_query"
 	eventWaitOpened         = "process.wait.opened"
+
+	// CommandCreateRenewal is the renewal pilot's command: a confirmed one
+	// creates exactly one new package per command_key, and the result reports
+	// that package id as result_ref.
+	CommandCreateRenewal = "crm.package.create_renewal"
 )
 
 // ErrCrashAfterEffect is returned by Step when CrashAfterEffect is set and an
@@ -45,6 +51,13 @@ type Config struct {
 	StatePath  string // JSON file with receipts and effects; empty keeps them in memory
 	RejectRefs map[string]bool
 	MuteRefs   map[string]bool // effect applied but no result reported
+	// DropFirstResultRefs loses the FIRST result report of each command of
+	// these business_refs, after the effect and the receipt were saved (the
+	// delivery is acked as if the report had been sent). Deterministic fault
+	// injection: KAS gets no answer, its status query arrives with the same
+	// command_key, and the CRM then reports from the receipt (same package).
+	// An entry ending in "*" matches every business_ref with that prefix.
+	DropFirstResultRefs map[string]bool
 	// CrashAfterEffect makes Step stop right after saving the first effect.
 	CrashAfterEffect bool
 	LeaseSeconds     int
@@ -59,6 +72,28 @@ type State struct {
 	Receipts map[string]string `json:"receipts"`
 	Effects  map[string]int    `json:"effects"`
 	Waits    map[string]string `json:"waits"`
+	// Packages maps a command_key to the package it created (renewal pilot).
+	Packages map[string]string `json:"packages,omitempty"`
+	// Dropped marks the command keys whose first result report was lost.
+	Dropped map[string]bool `json:"dropped,omitempty"`
+}
+
+func (st *State) init() {
+	if st.Receipts == nil {
+		st.Receipts = map[string]string{}
+	}
+	if st.Effects == nil {
+		st.Effects = map[string]int{}
+	}
+	if st.Waits == nil {
+		st.Waits = map[string]string{}
+	}
+	if st.Packages == nil {
+		st.Packages = map[string]string{}
+	}
+	if st.Dropped == nil {
+		st.Dropped = map[string]bool{}
+	}
 }
 
 // Sim is a simulated CRM.
@@ -93,7 +128,8 @@ func New(cfg Config) (*Sim, error) {
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
-	s := &Sim{cfg: cfg, state: State{Receipts: map[string]string{}, Effects: map[string]int{}, Waits: map[string]string{}}}
+	s := &Sim{cfg: cfg}
+	s.state.init()
 	if cfg.StatePath != "" {
 		raw, err := os.ReadFile(cfg.StatePath)
 		switch {
@@ -101,15 +137,7 @@ func New(cfg Config) (*Sim, error) {
 			if err := json.Unmarshal(raw, &s.state); err != nil {
 				return nil, fmt.Errorf("crmsim: state file: %w", err)
 			}
-			if s.state.Receipts == nil {
-				s.state.Receipts = map[string]string{}
-			}
-			if s.state.Effects == nil {
-				s.state.Effects = map[string]int{}
-			}
-			if s.state.Waits == nil {
-				s.state.Waits = map[string]string{}
-			}
+			s.state.init()
 		case !errors.Is(err, os.ErrNotExist):
 			return nil, fmt.Errorf("crmsim: state file: %w", err)
 		}
@@ -121,7 +149,14 @@ func New(cfg Config) (*Sim, error) {
 func (s *Sim) Snapshot() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := State{Receipts: map[string]string{}, Effects: map[string]int{}, Waits: map[string]string{}}
+	var out State
+	out.init()
+	for k, v := range s.state.Packages {
+		out.Packages[k] = v
+	}
+	for k, v := range s.state.Dropped {
+		out.Dropped[k] = v
+	}
 	for k, v := range s.state.Receipts {
 		out.Receipts[k] = v
 	}
@@ -280,6 +315,7 @@ func (s *Sim) handle(ctx context.Context, d claimed) error {
 	switch d.Event.EventType {
 	case eventCommandRequested, eventCommandStatusQuery:
 		key, _ := p["command_key"].(string)
+		commandType, _ := p["command_type"].(string)
 		if key == "" {
 			return fmt.Errorf("event %s has no command_key", d.Event.EventID)
 		}
@@ -291,23 +327,43 @@ func (s *Sim) handle(ctx context.Context, d claimed) error {
 			if s.cfg.RejectRefs[ref] {
 				result = "rejected"
 			}
-			// Effect and receipt are one transaction: both or neither.
+			// Effect and receipt are one transaction: both or neither. The
+			// receipt is keyed by command_key, so a command creates at most
+			// one package, however often it is requested or queried.
 			s.state.Effects[key]++
 			s.state.Receipts[key] = result
+			if result == "confirmed" && commandType == CommandCreateRenewal {
+				s.state.Packages[key] = fmt.Sprintf("pacote-novo-%d", len(s.state.Packages)+1)
+			}
 			if err := s.saveLocked(); err != nil {
 				s.state.Effects[key]--
 				delete(s.state.Receipts, key)
+				delete(s.state.Packages, key)
 				s.mu.Unlock()
 				return fmt.Errorf("save state: %w", err)
 			}
 			done, applied = true, true
 		}
+		pkg := s.state.Packages[key]
+		drop := done && !s.cfg.MuteRefs[ref] && matchRef(s.cfg.DropFirstResultRefs, ref) && !s.state.Dropped[key]
+		if drop {
+			s.state.Dropped[key] = true
+			if err := s.saveLocked(); err != nil {
+				delete(s.state.Dropped, key)
+				s.mu.Unlock()
+				return fmt.Errorf("save state: %w", err)
+			}
+		}
 		s.mu.Unlock()
 		if applied {
-			s.cfg.Logger.Info("effect_applied", "tenant_id", d.Event.TenantID, "command_key", key, "result", result)
+			s.cfg.Logger.Info("effect_applied", "tenant_id", d.Event.TenantID, "command_key", key, "result", result, "package_id", pkg)
 			if s.cfg.CrashAfterEffect {
 				return ErrCrashAfterEffect
 			}
+		}
+		if drop {
+			s.cfg.Logger.Warn("result_dropped", "tenant_id", d.Event.TenantID, "command_key", key, "result", result, "package_id", pkg)
+			return nil // the confirmation is lost on the way: ack only
 		}
 		if !done || s.cfg.MuteRefs[ref] {
 			return nil // nothing to report (never applied, or muted): ack only
@@ -317,10 +373,14 @@ func (s *Sim) handle(ctx context.Context, d claimed) error {
 		if result == "rejected" {
 			body["reason_code"] = "demo_rejected"
 		}
+		if pkg != "" {
+			body["result_ref"] = pkg
+		}
 		if err := s.call(ctx, "/internal/v1/process/commands/"+url.PathEscape(key)+"/result", body, nil); err != nil {
 			return fmt.Errorf("report %s: %w", key, err)
 		}
-		s.cfg.Logger.Info("result_reported", "tenant_id", d.Event.TenantID, "command_key", key, "result", result)
+		s.cfg.Logger.Info("result_reported", "tenant_id", d.Event.TenantID, "command_key", key, "result", result, "package_id", pkg,
+			"event_type", d.Event.EventType)
 	case eventWaitOpened:
 		wk, _ := p["wait_key"].(string)
 		s.mu.Lock()
@@ -332,6 +392,20 @@ func (s *Sim) handle(ctx context.Context, d claimed) error {
 		}
 	}
 	return nil
+}
+
+// matchRef reports whether ref is in set, either exactly or by an entry that
+// ends in "*" and is a prefix of ref.
+func matchRef(set map[string]bool, ref string) bool {
+	if set[ref] {
+		return true
+	}
+	for k := range set {
+		if strings.HasSuffix(k, "*") && strings.HasPrefix(ref, strings.TrimSuffix(k, "*")) {
+			return true
+		}
+	}
+	return false
 }
 
 // Keys lists the command keys with a receipt, sorted.

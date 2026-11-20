@@ -54,6 +54,7 @@ var (
 	ErrCommandUnknown    = errors.New("command_unknown")
 	ErrWaitTypeMismatch  = errors.New("wait_type_mismatch")
 	ErrCommandNotPending = errors.New("command_not_pending")
+	ErrResultRefRequired = errors.New("result_ref_required")
 
 	identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 )
@@ -199,7 +200,7 @@ func uniqueViolation(err error, constraint string) bool {
 func known(err error) bool {
 	for _, k := range []error{ErrInvalidInput, ErrNotFound, ErrConflict, ErrInstanceActive, ErrRoleNotAllowed,
 		ErrActorNotInRole, ErrTaskClosed, ErrClockSkew, ErrCommandUnknown, ErrWaitTypeMismatch,
-		ErrCommandNotPending, ErrInvalidDefinition, ErrUnavailable} {
+		ErrCommandNotPending, ErrResultRefRequired, ErrInvalidDefinition, ErrUnavailable} {
 		if errors.Is(err, k) {
 			return true
 		}

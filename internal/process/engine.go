@@ -438,13 +438,14 @@ type command struct {
 	Status         string
 	RequestAttempt int
 	StatusQueries  int
+	ResultRef      string // business identifier reported with the result ("" when none)
 }
 
-const commandColumns = `id, instance_id, step, command_key, command_type, generation, status, request_attempt, status_queries`
+const commandColumns = `id, instance_id, step, command_key, command_type, generation, status, request_attempt, status_queries, COALESCE(result_ref, '')`
 
 func scanCommand(row pgx.Row) (*command, error) {
 	var c command
-	err := row.Scan(&c.ID, &c.InstanceID, &c.Step, &c.Key, &c.Type, &c.Generation, &c.Status, &c.RequestAttempt, &c.StatusQueries)
+	err := row.Scan(&c.ID, &c.InstanceID, &c.Step, &c.Key, &c.Type, &c.Generation, &c.Status, &c.RequestAttempt, &c.StatusQueries, &c.ResultRef)
 	return &c, err
 }
 

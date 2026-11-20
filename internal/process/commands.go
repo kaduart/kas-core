@@ -75,16 +75,24 @@ type CommandResult struct {
 	CommandKey string
 	Status     string // confirmed | rejected
 	ReasonCode string
+	// ResultRef is the optional business identifier of what the external
+	// system created for this command (e.g. the id of the new package). It is
+	// opaque, at most 128 characters of [A-Za-z0-9._:-], never personal data,
+	// and only accepted with "confirmed".
+	ResultRef  string
 	OccurredAt time.Time
 }
 
 // RecordCommandResult stores the result reported for a command key. Resending
-// the same result is harmless; a different definitive result is a conflict. The
-// instance moves on only if it is still waiting on that command; otherwise the
-// result is recorded for the review to see.
+// the same result (same status and same result_ref) is harmless; a different
+// definitive result or a different result_ref is a conflict. When the step
+// requires result_ref, a confirmation without it is refused and nothing
+// changes. The instance moves on only if it is still waiting on that command;
+// otherwise the result is recorded for the review to see.
 func (e *Engine) RecordCommandResult(ctx context.Context, r CommandResult) (bool, error) {
 	if !identifierPattern.MatchString(r.TenantID) || !identifierPattern.MatchString(r.CommandKey) ||
-		(r.Status != "confirmed" && r.Status != "rejected") || (r.ReasonCode != "" && !codePattern.MatchString(r.ReasonCode)) {
+		(r.Status != "confirmed" && r.Status != "rejected") || (r.ReasonCode != "" && !codePattern.MatchString(r.ReasonCode)) ||
+		(r.ResultRef != "" && (r.Status != "confirmed" || !identifierPattern.MatchString(r.ResultRef))) {
 		return false, ErrInvalidInput
 	}
 	r.OccurredAt = pgTime(r.OccurredAt)
@@ -111,27 +119,10 @@ func (e *Engine) RecordCommandResult(ctx context.Context, r CommandResult) (bool
 			return err
 		}
 		if cmd.Status == "confirmed" || cmd.Status == "rejected" {
-			if cmd.Status != r.Status {
+			if cmd.Status != r.Status || cmd.ResultRef != r.ResultRef {
 				return ErrConflict
 			}
 			duplicate = true
-			return nil
-		}
-		if _, err := tx.Exec(ctx, `UPDATE process_commands SET status = $2, result_reason = NULLIF($3,''), result_occurred_at = $4, updated_at = $5 WHERE id = $1`,
-			cmd.ID, r.Status, r.ReasonCode, r.OccurredAt.UTC(), now); err != nil {
-			return err
-		}
-		waiting := in.Status == "running" && in.CurrentStep == cmd.Step
-		kind := "command_result"
-		if !waiting {
-			kind = "late_command_result"
-		}
-		if err := e.history(ctx, tx, in, kind, cmd.Step, r.ServiceID, "", "", map[string]any{
-			"command_key": cmd.Key, "status": r.Status, "reason_code": r.ReasonCode, "occurred_at": r.OccurredAt.UTC(), "previous_status": cmd.Status,
-		}, now); err != nil {
-			return err
-		}
-		if !waiting {
 			return nil
 		}
 		d, err := e.definition(ctx, tx, in.TenantID, in.ProcessKey, in.Version)
@@ -139,6 +130,32 @@ func (e *Engine) RecordCommandResult(ctx context.Context, r CommandResult) (bool
 			return err
 		}
 		step := d.Steps[cmd.Step]
+		if step.RequireResultRef && r.Status == "confirmed" && r.ResultRef == "" {
+			e.cfg.Logger.Warn("process command confirmed without result_ref", "error_code", "result_ref_required", "tenant_id", in.TenantID, "instance_id", in.ID)
+			return ErrResultRefRequired
+		}
+		if _, err := tx.Exec(ctx, `UPDATE process_commands SET status = $2, result_reason = NULLIF($3,''), result_occurred_at = $4, result_ref = NULLIF($5,''), updated_at = $6 WHERE id = $1`,
+			cmd.ID, r.Status, r.ReasonCode, r.OccurredAt.UTC(), r.ResultRef, now); err != nil {
+			return err
+		}
+		waiting := in.Status == "running" && in.CurrentStep == cmd.Step
+		kind := "command_result"
+		if !waiting {
+			kind = "late_command_result"
+		}
+		detail := map[string]any{
+			"command_key": cmd.Key, "status": r.Status, "reason_code": r.ReasonCode, "occurred_at": r.OccurredAt.UTC(), "previous_status": cmd.Status,
+			"status_queries": cmd.StatusQueries,
+		}
+		if r.ResultRef != "" {
+			detail["result_ref"] = r.ResultRef
+		}
+		if err := e.history(ctx, tx, in, kind, cmd.Step, r.ServiceID, "", "", detail, now); err != nil {
+			return err
+		}
+		if !waiting {
+			return nil
+		}
 		next := step.OnConfirmed
 		if r.Status == "rejected" {
 			next = step.OnRejected

@@ -16,10 +16,12 @@ import (
 
 // Fictitious tenants, actors and contracts only.
 const (
-	tenantA  = "demo-empresa-a"
-	tenantB  = "demo-empresa-b"
-	crmA     = "demo-crm-a"
-	consumer = "crm-simulado"
+	tenantA = "demo-empresa-a"
+	tenantB = "demo-empresa-b"
+	crmA    = "demo-crm-a"
+	// tenantClinica is the fictitious clinic of the package-renewal pilot.
+	tenantClinica = "demo-clinica"
+	consumer      = "crm-simulado"
 )
 
 var loc, _ = time.LoadLocation("America/Sao_Paulo")
@@ -61,7 +63,8 @@ func newEnv(t *testing.T) *env {
 	t.Cleanup(func() { _ = outbox.Close() })
 	e := &env{t: t, dsn: dsn, clock: &fakeClock{t: base}, outbox: outbox}
 	e.eng = e.open()
-	e.crm = &crmSim{env: e, receipts: map[string]string{}, effects: map[string]int{}, decide: map[string]string{}, waits: map[string]string{}, mute: map[string]bool{}}
+	e.crm = &crmSim{env: e, receipts: map[string]string{}, effects: map[string]int{}, decide: map[string]string{}, waits: map[string]string{}, mute: map[string]bool{},
+		packages: map[string]string{}, dropFirst: map[string]bool{}, dropped: map[string]bool{}}
 	return e
 }
 
@@ -246,7 +249,10 @@ func expectErr(t *testing.T, err, want error) {
 // effect and records a receipt per command_key atomically (a map guarded by a
 // mutex stands in for a Mongo transaction), reports the result and only then
 // acks. decide sets the answer per business_ref: "confirmed" (default) or
-// "rejected"; mute makes the CRM apply the effect but lose every answer.
+// "rejected"; mute makes the CRM apply the effect but lose every answer;
+// dropFirst loses only the first answer of each command of that business_ref
+// (the effect and the receipt stay). A confirmed crm.package.create_renewal
+// creates one new package per command_key and reports its id as result_ref.
 type crmSim struct {
 	env      *env
 	mu       sync.Mutex
@@ -256,7 +262,14 @@ type crmSim struct {
 	waits    map[string]string // business_ref -> last wait_key received
 	mute     map[string]bool   // business_ref -> answers are lost
 	now      time.Time         // CRM clock for leases; zero = KAS clock + 1s
+
+	packages  map[string]string // command_key -> id of the package it created
+	dropFirst map[string]bool   // business_ref -> lose the first answer of each command
+	dropped   map[string]bool   // command_key -> its first answer was already lost
 }
+
+// commandCreateRenewal is the pilot's command that creates the new package.
+const commandCreateRenewal = "crm.package.create_renewal"
 
 type pulled struct {
 	d     events.Delivery
@@ -273,7 +286,7 @@ func (c *crmSim) clock() time.Time {
 func (c *crmSim) claim() []pulled {
 	c.env.t.Helper()
 	token := fmt.Sprintf("%032x", time.Now().UnixNano())
-	ds, err := c.env.outbox.ClaimFor(context.Background(), token, consumer, []string{tenantA, tenantB},
+	ds, err := c.env.outbox.ClaimFor(context.Background(), token, consumer, []string{tenantA, tenantB, tenantClinica},
 		[]string{EventCommandRequested, EventCommandStatusQuery, EventWaitOpened}, c.clock(), 60*time.Second, 5, 50)
 	if err != nil {
 		c.env.t.Fatalf("claim: %v", err)
@@ -315,17 +328,26 @@ func (c *crmSim) handle(p pulled, at crash) {
 			if result == "" {
 				result = "confirmed"
 			}
-			c.effects[key]++ // effect and receipt in one "transaction"
+			// effect and receipt in one "transaction"
+			c.effects[key]++
+			if result == "confirmed" && payload["command_type"] == commandCreateRenewal {
+				c.packages[key] = fmt.Sprintf("pacote-novo-%d", len(c.packages)+1)
+			}
 			c.receipts[key] = result
 			done = true
 		}
+		if done && !muted && c.dropFirst[ref] && !c.dropped[key] {
+			c.dropped[key] = true // the answer is lost on the way; the CRM acks anyway
+			muted = true
+		}
+		resultRef := c.packages[key]
 		c.mu.Unlock()
 		if at == crashAfterEffect {
 			return
 		}
 		if done && !muted {
 			if _, err := c.env.eng.RecordCommandResult(context.Background(), CommandResult{TenantID: p.d.Event.TenantID, ServiceID: crmA,
-				CommandKey: key, Status: result, OccurredAt: c.env.clock.Now()}); err != nil {
+				CommandKey: key, Status: result, ResultRef: resultRef, OccurredAt: c.env.clock.Now()}); err != nil {
 				c.env.t.Fatalf("record result: %v", err)
 			}
 		}
@@ -351,6 +373,19 @@ func (c *crmSim) drain() {
 			c.handle(p, noCrash)
 		}
 	}
+}
+
+// packageCount is how many packages the simulated CRM created in total.
+func (c *crmSim) packageCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.packages)
+}
+
+func (c *crmSim) packageFor(key string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.packages[key]
 }
 
 func (c *crmSim) effectsFor(key string) int {

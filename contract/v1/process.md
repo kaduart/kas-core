@@ -34,6 +34,12 @@ A KAS não chama nada para fora. Ao entrar numa etapa `external_command`, a muda
 
 Sem resposta no prazo, a KAS publica `process.command.status_query` com a **mesma** chave. Uma revisão humana também reusa a chave enquanto o comando estiver `requested` ou `unknown`; geração nova só depois de `rejected`. Ids de evento: `cmd:<key>:r<tentativa>` (pedido) e `cmd:<key>:q<tentativa>.<n>` (consulta). Esperas: `process.wait.opened` com id `wait:<wait_key>`.
 
+### Identificador do resultado (`result_ref`)
+
+O corpo do resultado aceita `result_ref` opcional: o identificador de negócio do que o CRM criou para aquele comando (por exemplo, o id do pacote novo). É opaco, até 128 caracteres `[A-Za-z0-9._:-]`, **nunca dado pessoal**, e só vale com `confirmed` (com `rejected` é `400`). Fica gravado no comando (`commands[].result_ref` em `GET /instances/{id}`) e no histórico (`command_result.detail.result_ref`); a resposta `200` o devolve. Reenvio com o mesmo status e o mesmo `result_ref` = `200 duplicate`; outro `result_ref`, ou a falta dele, para uma chave já respondida = `409 idempotency_conflict`. Ao responder uma `process.command.status_query`, o CRM usa a mesma rota e o mesmo `result_ref` do recibo.
+
+Uma etapa `external_command` pode declarar `"require_result_ref": true`: aí uma confirmação sem `result_ref` é recusada (`422 result_ref_required`), nada muda e o comando continua `requested` (as consultas seguem). Piloto: [docs/piloto-renovacao-pacote.md](../../docs/piloto-renovacao-pacote.md).
+
 Os três tipos `process.command.requested`, `process.command.status_query` e `process.wait.opened` precisam estar em `event_types`, e o consumidor do CRM precisa estar em `event_consumers` vinculado ao serviço.
 
 ## Erros específicos
@@ -50,6 +56,7 @@ Os três tipos `process.command.requested`, `process.command.status_query` e `pr
 | 409 | `instance_active` | já existe instância em andamento para o `business_ref` |
 | 409 | `wait_type_mismatch` | evento com `wait_key` de outra espera |
 | 422 | `invalid_definition` | definição inválida (na publicação) |
+| 422 | `result_ref_required` | confirmação sem `result_ref` numa etapa com `require_result_ref` |
 | 503 | `process_unavailable` | motor desligado ou banco indisponível |
 
 ## Prazos

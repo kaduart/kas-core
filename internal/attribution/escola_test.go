@@ -41,3 +41,17 @@ func TestEscolaSample(t *testing.T) {
 		t.Fatalf("period: %d", early.NetTotal)
 	}
 }
+
+// The files written by the CRM exporter from the CRM's own fictional sample
+// reproduce the CRM's report exactly (conciliation across the two systems).
+func TestCRMExportMatchesCRM(t *testing.T) {
+	res, err := Compute(loadSample(t, "fono-demo", "exportado-crm"), Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NetTotal != 129000 || res.ByLevel[LevelProven] != 48000 || res.ByLevel[LevelProbable] != 57000 ||
+		res.ByLevel[LevelNone] != 24000 || !res.Invariant.Closes {
+		raw, _ := json.MarshalIndent(res, "", " ")
+		t.Fatalf("exported sample:\n%s", raw)
+	}
+}

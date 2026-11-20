@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/Designer.tsx","./src/Executions.tsx","./src/FlowCanvas.tsx","./src/StepPanel.tsx","./src/api.ts","./src/main.tsx","./src/model.test.ts","./src/model.ts","./src/types.ts","./server/kasProxy.test.ts","./server/kasProxy.ts","./vite.config.ts","./playwright.config.ts","./e2e/acceptance.spec.ts"],"version":"5.9.3"}

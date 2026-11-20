@@ -265,3 +265,61 @@ jobs:
         if: failure()
         run: |
           for f in "$RUNNER_TEMP"/process-e2e/*.log; do echo "=== $f"; tail -n 60 "$f"; done
+
+  studio:
+    name: Process Studio editor (studio/, unit + browser acceptance)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Dependencies
+        working-directory: studio
+        run: npm ci --no-audit --no-fund
+
+      - name: Unit tests and type check
+        working-directory: studio
+        run: |
+          npm test
+          npx tsc -b
+
+      - name: Browser for the acceptance test
+        working-directory: studio
+        run: npx playwright install --with-deps chromium
+
+      - name: Local stack (disposable Postgres, real KAS, simulated CRMs)
+        run: studio/scripts/stack.sh start
+
+      - name: Acceptance (open flow, change deadline, validate, publish, follow execution)
+        working-directory: studio
+        run: |
+          set -a; source .stack/env; set +a
+          npx playwright test --trace off
+
+      - name: Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-screenshots
+          path: studio/test-results/shots
+          if-no-files-found: ignore
+
+      - name: Logs (on failure)
+        if: failure()
+        run: for f in studio/.stack/*.log; do echo "=== $f"; tail -n 60 "$f"; done
+
+      - name: Tear down
+        if: always()
+        run: studio/scripts/stack.sh stop

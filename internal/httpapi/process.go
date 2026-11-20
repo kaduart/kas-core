@@ -31,6 +31,9 @@ func (h *Handler) EnableProcess(engine *process.Engine) { h.process = engine }
 func (h *Handler) registerProcessRoutes() {
 	h.mux.HandleFunc("POST /internal/v1/process/definitions:validate", h.processValidateDefinition)
 	h.mux.HandleFunc("POST /internal/v1/process/definitions", h.processPublishDefinition)
+	h.mux.HandleFunc("GET /internal/v1/process/definitions", h.processListDefinitions)
+	h.mux.HandleFunc("GET /internal/v1/process/definitions/{key}", h.processGetDefinition)
+	h.mux.HandleFunc("GET /internal/v1/process/instances", h.processListInstances)
 	h.mux.HandleFunc("PUT /internal/v1/process/roles/{role}/members", h.processSetRoleMembers)
 	h.mux.HandleFunc("POST /internal/v1/process/instances", h.processStartInstance)
 	h.mux.HandleFunc("GET /internal/v1/process/instances/{id}", h.processGetInstance)
@@ -384,4 +387,63 @@ func (h *Handler) processReady(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	return h.process.Ready(ctx)
+}
+
+func (h *Handler) processListDefinitions(w http.ResponseWriter, r *http.Request) {
+	if !h.processPrelude(w, r, 0, nil) {
+		return
+	}
+	_, tenantID, ok := h.processAuth(w, r, processContractVersion, r.URL.Query().Get("tenant_id"), configstore.CapabilityProcessDefine)
+	if !ok {
+		return
+	}
+	list, err := h.process.ListDefinitions(r.Context(), tenantID)
+	if err != nil {
+		h.writeProcessError(w, r, err)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, map[string]any{"contract_version": processContractVersion, "tenant_id": tenantID, "definitions": list})
+}
+
+func (h *Handler) processGetDefinition(w http.ResponseWriter, r *http.Request) {
+	if !h.processPrelude(w, r, 0, nil) {
+		return
+	}
+	q := r.URL.Query()
+	_, tenantID, ok := h.processAuth(w, r, processContractVersion, q.Get("tenant_id"), configstore.CapabilityProcessDefine)
+	if !ok {
+		return
+	}
+	version := 0
+	if raw := q.Get("version"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			h.writeError(w, r, http.StatusBadRequest, "invalid_request", "version is invalid")
+			return
+		}
+		version = n
+	}
+	def, err := h.process.GetDefinition(r.Context(), tenantID, r.PathValue("key"), version)
+	if err != nil {
+		h.writeProcessError(w, r, err)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, map[string]any{"contract_version": processContractVersion, "tenant_id": tenantID, "definition": def})
+}
+
+func (h *Handler) processListInstances(w http.ResponseWriter, r *http.Request) {
+	if !h.processPrelude(w, r, 0, nil) {
+		return
+	}
+	q := r.URL.Query()
+	_, tenantID, ok := h.processAuth(w, r, processContractVersion, q.Get("tenant_id"), configstore.CapabilityProcessRun)
+	if !ok {
+		return
+	}
+	list, err := h.process.ListInstances(r.Context(), tenantID, q.Get("process_key"), q.Get("status"))
+	if err != nil {
+		h.writeProcessError(w, r, err)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, map[string]any{"contract_version": processContractVersion, "tenant_id": tenantID, "instances": list})
 }

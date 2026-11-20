@@ -24,6 +24,7 @@ tags:
   - name: Configuration
   - name: Audit
   - name: Events
+  - name: Modules
 paths:
   /healthz:
     get:
@@ -443,6 +444,70 @@ paths:
           $ref: '#/components/responses/UnsupportedMediaType'
         '503':
           description: events_unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/v1/modules:
+    get:
+      tags: [Modules]
+      summary: Module catalog view of the authenticated tenant
+      description: >-
+        Lists every module of the fixed catalog with its contract state for the
+        tenant (`active`, `paused`, `absent` or `planned`), its dependencies, the
+        integration readiness when the module registered a check, and the
+        capabilities of that module the calling service holds. Any authenticated
+        service of an active tenant it is authorized for may read the view; the
+        tenant is resolved like the other routes. Module refusals on other routes
+        answer 403 `module_not_contracted` or `module_paused` and are recorded in
+        the tenant's audit trail (action `module.access_denied`).
+      operationId: getModules
+      security:
+        - ServiceIdentity: []
+          ServiceBearer: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+        - name: tenant_id
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/TenantID'
+          description: Required only for a service allowed for several tenants.
+      responses:
+        '200':
+          description: Module states of the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModulesResponse'
+        '400':
+          description: tenant_required, invalid_request or invalid_correlation_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Service authentication failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: tenant_inactive or tenant_forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: tenant_not_found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          description: module_readiness_unavailable or server unavailable.
           content:
             application/json:
               schema:
@@ -1219,6 +1284,49 @@ components:
         entity_id:
           type: string
           pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+    ModulesResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, tenant_id, config_version, modules]
+      properties:
+        contract_version:
+          const: v1
+        tenant_id:
+          $ref: '#/components/schemas/TenantID'
+        config_version:
+          type: string
+        modules:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [key, contract]
+            properties:
+              key:
+                type: string
+                enum: [attribution, reports, process, crm, omnichannel, ai]
+              contract:
+                type: string
+                enum: [active, paused, absent, planned]
+              depends_on:
+                type: array
+                items:
+                  type: string
+              integration:
+                type: object
+                additionalProperties: false
+                required: [ready, missing]
+                properties:
+                  ready:
+                    type: boolean
+                  missing:
+                    type: array
+                    items:
+                      type: string
+              caller_capabilities:
+                type: array
+                items:
+                  type: string
     ErrorResponse:
       type: object
       additionalProperties: false

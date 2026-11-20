@@ -103,6 +103,16 @@ go run ./cmd/kas-core -config ./config.example.json -events-store postgres -proc
 
 Fluxo `renovacao-pacote` para a clínica fictícia `demo-clinica`: só termina como `renovado` quando o CRM confirma o id do **pacote novo** criado para aquele pedido (`result_ref` no resultado do comando, migração `0002`). Com o CRM simulado perdendo a primeira confirmação, a KAS consulta a mesma `command_key` e o CRM responde com o mesmo pacote: exatamente um pacote e histórico que explica a conclusão. Definição em [`studio/samples/renovacao-pacote.json`](studio/samples/renovacao-pacote.json); roteiro de demonstração e decisões pendentes em [docs/piloto-renovacao-pacote.md](docs/piloto-renovacao-pacote.md).
 
+## Catálogo de módulos (por empresa)
+
+A KAS é vendida por módulos. O catálogo é fixo no código: attribution, reports e process podem ser ativados; crm, omnichannel e ai aparecem como planejados. Cada empresa declara no bloco `modules` da configuração o que contratou (`active` ou `paused`), e só o administrador altera esse bloco.
+
+Toda rota confere, em ordem: empresa, sistema, capacidade e, por último, se o módulo da capacidade está ativo. Os erros novos são `403 module_not_contracted` e `403 module_paused`, e cada recusa vai para a auditoria da empresa. `GET /internal/v1/modules` mostra para a empresa autenticada o estado de cada módulo, o que falta na integração e as capacidades do sistema que chamou.
+
+A empresa sem bloco `modules` funciona como antes (o process continua aberto). Com `-modules-store postgres` (exige `-events-store postgres`), a KAS grava na partida cada mudança de estado e publica `module.activated`, `module.paused` ou `module.removed` no Outbox, na mesma transação.
+
+Contrato completo em [contract/v1/modules.md](contract/v1/modules.md).
+
 ## Módulo de configuração
 
 Contrato `v1`: `POST /internal/v1/config/evaluate`, descrito em [contract/v1/config-evaluate.md](contract/v1/config-evaluate.md) e em [openapi.yaml](openapi.yaml). O esquema JSON declara chaves, tipo (`integer`, `boolean`, `string`) e faixa opcional de inteiros. O serviço autenticado precisa estar autorizado para o tenant solicitado e possuir a capacidade `config:read`. A configuração é somente leitura durante a vida do processo.

@@ -264,3 +264,36 @@ func TestPilotConfigLoads(t *testing.T) {
 		t.Fatal("reports not active for escola-demo")
 	}
 }
+
+// The report closes per origin in the refund cases of the analyst's review
+// (estorno-v3-saldo-por-recebimento): sample exported by the CRM, imported
+// through the API, report CSV for November. Same numbers as the CRM.
+func TestReportsRefundBalancePerOrigin(t *testing.T) {
+	p := pilot{t: t, dsn: pgtest.SchemaDSN(t)}
+	h := p.start(pilotConfig("v1-sem-escola", ""))
+	importAll(t, h, "fono-crm", handlerTokenA, "fono-demo", "estornos-saldo", "estornos")
+	rec := callAs(h, http.MethodGet, "/internal/v1/reports/revenue?format=csv&from=2026-11-01&to=2026-11-30", "fono-crm", handlerTokenA, "")
+	rows, err := csv.NewReader(rec.Body).ReadAll()
+	if rec.Code != http.StatusOK || err != nil {
+		t.Fatalf("csv: %d %v", rec.Code, err)
+	}
+	got := map[string]string{}
+	for _, r := range rows[1:] {
+		got[r[0]+"|"+r[2]] = r[4] + "/" + r[5] + "/" + r[6] // recebido/estornos/líquido
+	}
+	want := map[string]string{
+		"comprovada|gg-caso-1": "30000/20000/10000",
+		"comprovada|gg-caso-2": "50000/0/50000",
+		"comprovada|gg-caso-3": "0/10000/-10000",
+		"sem_vinculo|":         "10000/15000/-5000",
+		"total|":               "//45000",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("rows: %v", rows)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("%s: want %s, got %s (%v)", k, v, got[k], rows)
+		}
+	}
+}

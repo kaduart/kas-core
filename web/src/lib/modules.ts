@@ -1,4 +1,4 @@
-import { Bot, Boxes, ChartNoAxesColumnIncreasing, FileText, House, MessageSquareText, Settings, UsersRound, Workflow, type LucideIcon } from "lucide-react";
+import { Bot, Boxes, CalendarDays, ClipboardList, Package, Wallet, ChartNoAxesColumnIncreasing, FileText, House, MessageSquareText, Settings, UsersRound, Workflow, type LucideIcon } from "lucide-react";
 import type { ModuleKey } from "./tenant/types";
 
 export interface NavItem {
@@ -34,4 +34,12 @@ export const NAV_TOP: NavItem[] = [
 export const NAV_BOTTOM: NavItem[] = [
   { href: "/modulos", label: "Módulos", icon: Boxes },
   { href: "/configuracoes", label: "Configurações", icon: Settings },
+];
+
+/** Módulos do ERP de clínicas ainda em construção: aparecem no catálogo como "Em breve". */
+export const PLANNED: { label: string; description: string; icon: LucideIcon }[] = [
+  { label: "Agenda clínica", description: "Agenda por profissional, confirmação e lista de espera", icon: CalendarDays },
+  { label: "Financeiro", description: "Recebimentos, pacotes, cobranças e despesas", icon: Wallet },
+  { label: "Prontuário", description: "Evolução, anexos e histórico do paciente", icon: ClipboardList },
+  { label: "Estoque", description: "Materiais e insumos com alerta de reposição", icon: Package },
 ];

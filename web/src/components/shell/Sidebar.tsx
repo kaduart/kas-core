@@ -24,7 +24,7 @@ function NavLink({ item, active, onNavigate }: { item: NavItem; active: boolean;
       <Icon className="size-[22px] shrink-0" strokeWidth={1.8} aria-hidden />
       {item.label}
       {item.badge ? (
-        <span className="ml-auto grid h-7 min-w-7 place-items-center rounded-full bg-brand px-2 text-[13px] font-bold text-white ring-2 ring-white/15">
+        <span className="relative z-[1] ml-auto mr-1.5 grid h-7 min-w-7 place-items-center rounded-full bg-brand px-2 text-[13px] font-bold text-white ring-2 ring-white/15">
           {item.badge}
         </span>
       ) : null}

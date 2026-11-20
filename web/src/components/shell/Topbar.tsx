@@ -2,6 +2,8 @@
 
 import { Bell, ChevronDown, CircleHelp, Puzzle, Search } from "lucide-react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { cn } from "@/lib/cn";
 import { useTenant } from "@/lib/tenant/TenantProvider";
 import { TenantMenu } from "./TenantMenu";
 
@@ -15,11 +17,12 @@ const round =
 
 export function Topbar({ userName = "Ricardo Maia", role = "Administrador" }: { userName?: string; role?: string }) {
   const { tenant } = useTenant();
+  const isDash = usePathname() === "/dashboard";
   const first = userName.split(" ")[0];
   const initials = userName.split(" ").map((p) => p[0]).slice(0, 2).join("");
   return (
-    <header className="mb-[18px] flex flex-wrap items-center gap-3 md:gap-4">
-      <div className="min-w-0">
+    <header className={cn("mb-[18px] flex-wrap items-center gap-3 md:flex md:gap-4", isDash ? "flex" : "hidden")}>
+      <div className={cn("min-w-0", !isDash && "hidden")}>
         <h1 className="text-2xl font-extrabold tracking-tight md:text-[28px]" suppressHydrationWarning>
           {greeting()}, {first}
         </h1>

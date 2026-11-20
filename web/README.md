@@ -36,13 +36,34 @@ na integração, troca-se `fetchDashboard` pela chamada ao KAS Core, sem mexer n
 
 ## Stack
 
-Next.js 16 · React 19 · Tailwind v4 · Radix (menus) · Motion (gaveta do celular) · Recharts · TanStack Query ·
-React Hook Form + Zod · lucide-react. shadcn/ui entra quando as telas de módulo precisarem de mais componentes;
-nesta entrega os poucos componentes foram feitos direto sobre Radix. React Flow continua no `studio/`.
+Next.js 16 · React 19 · Tailwind v4 · shadcn/ui (Radix + cva) · Motion (gaveta do celular) · Recharts · TanStack Query ·
+React Hook Form + Zod · sonner (avisos) · lucide-react. React Flow continua no `studio/`.
+
+## Telas
+
+| Rota | Tela | O que dá para fazer na demonstração |
+|---|---|---|
+| `/dashboard` | Painel | período, canais do donut, abas de receita |
+| `/attribution` | Attribution | período, tabela de campanhas com retorno |
+| `/crm` | CRM | busca, avançar lead de etapa (colunas viram carrossel no celular) |
+| `/omnichannel` | Omnichannel | abrir conversa, responder (some do "sem resposta") |
+| `/process-studio` | Process Studio | pausar/ativar fluxo; editor visual segue no `studio/` |
+| `/amanda-ia` | Amanda IA | classificações e o que a IA fez |
+| `/relatorios` | Relatórios | baixar CSV/PDF (simulado) |
+| `/modulos` | Catálogo | ligar/desligar módulo da empresa; menu e telas acompanham. Módulos do ERP de clínicas aparecem como "Em breve" |
+| `/configuracoes` | Marca | nome, cores e ícone |
+
+Telas de módulo ficam atrás de `ModuleGate`: se a empresa não tem o módulo, aparece o convite para ativar.
+
+## Componentes de interface
+
+`src/components/ui/` segue o padrão shadcn/ui (cva + Radix + `cn` com tailwind-merge), adaptado aos tokens da marca.
+O `components.json` já está pronto; nesta máquina o registro do shadcn estava bloqueado pela rede, então os
+componentes foram escritos no mesmo formato. Para novos: `npx shadcn@latest add <componente>`.
 
 ## Próximos passos
 
-1. Telas dos módulos (hoje mostram um aviso).
+1. Módulos do ERP de clínicas: Agenda, Financeiro, Prontuário e Estoque.
 2. Login e sessão vindos do KAS Core; troca de empresa só entre as permitidas.
 3. Upload de logo próprio da empresa.
 4. Ligar `fetchDashboard` ao endpoint de relatórios do KAS Core.

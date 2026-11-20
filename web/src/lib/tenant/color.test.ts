@@ -51,3 +51,15 @@ describe("cookie da marca", () => {
     expect(parseBrandCookie("%%%")).toBeNull();
   });
 });
+
+import { MODULES, NAV_TOP } from "@/lib/modules";
+
+describe("módulos por empresa", () => {
+  it("todo módulo tem rota no menu", () => {
+    for (const m of MODULES) expect(NAV_TOP.some((n) => n.href === `/${m.slug}`)).toBe(true);
+  });
+  it("empresas de demonstração só usam módulos conhecidos", () => {
+    const keys = MODULES.map((m) => m.key);
+    for (const t of TENANTS) for (const k of t.modules) expect(keys).toContain(k);
+  });
+});

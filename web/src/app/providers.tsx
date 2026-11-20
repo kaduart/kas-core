@@ -2,6 +2,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
+import { Toaster } from "sonner";
 import { TenantProvider } from "@/lib/tenant/TenantProvider";
 import type { TenantBrand } from "@/lib/tenant/types";
 
@@ -9,7 +10,10 @@ export function Providers({ initialTenantId, initialBrands, children }: { initia
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { refetchOnWindowFocus: false } } }));
   return (
     <QueryClientProvider client={client}>
-      <TenantProvider initialTenantId={initialTenantId} initialBrands={initialBrands}>{children}</TenantProvider>
+      <TenantProvider initialTenantId={initialTenantId} initialBrands={initialBrands}>
+        {children}
+        <Toaster position="bottom-center" toastOptions={{ style: { background: "var(--brand-deep)", color: "#fff", border: "0", borderRadius: 14 } }} />
+      </TenantProvider>
     </QueryClientProvider>
   );
 }

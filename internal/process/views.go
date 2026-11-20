@@ -137,3 +137,126 @@ func (e *Engine) tasks(ctx context.Context, where string, args ...any) ([]TaskVi
 	}
 	return out, rows.Err()
 }
+
+// DefinitionSummary is the latest published version of one process.
+type DefinitionSummary struct {
+	ProcessKey    string    `json:"process_key"`
+	LatestVersion int       `json:"latest_version"`
+	PublishedAt   time.Time `json:"published_at"`
+}
+
+// DefinitionView is one published version, as stored (canonical JSON).
+type DefinitionView struct {
+	ProcessKey  string          `json:"process_key"`
+	Version     int             `json:"version"`
+	Checksum    string          `json:"checksum"`
+	PublishedBy string          `json:"published_by"`
+	PublishedAt time.Time       `json:"published_at"`
+	Versions    []int           `json:"versions"`
+	Definition  json.RawMessage `json:"definition"`
+}
+
+// InstanceSummary is an instance without tasks, commands or history.
+type InstanceSummary struct {
+	ID          int64     `json:"id"`
+	ProcessKey  string    `json:"process_key"`
+	Version     int       `json:"version"`
+	BusinessRef string    `json:"business_ref"`
+	Status      string    `json:"status"`
+	CurrentStep string    `json:"current_step"`
+	Result      *string   `json:"result,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ListDefinitions lists the processes of the tenant with their latest version.
+func (e *Engine) ListDefinitions(ctx context.Context, tenant string) ([]DefinitionSummary, error) {
+	ctx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+	rows, err := e.pool.Query(ctx, `SELECT DISTINCT ON (process_key) process_key, version, published_at
+		FROM process_definitions WHERE tenant_id = $1 ORDER BY process_key, version DESC`, tenant)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	defer rows.Close()
+	out := []DefinitionSummary{}
+	for rows.Next() {
+		var d DefinitionSummary
+		if err := rows.Scan(&d.ProcessKey, &d.LatestVersion, &d.PublishedAt); err != nil {
+			return nil, ErrUnavailable
+		}
+		out = append(out, d)
+	}
+	if rows.Err() != nil {
+		return nil, ErrUnavailable
+	}
+	return out, nil
+}
+
+// GetDefinition reads one version of a process of the tenant (0 = latest),
+// with the list of all its versions.
+func (e *Engine) GetDefinition(ctx context.Context, tenant, processKey string, version int) (DefinitionView, error) {
+	if !keyPattern.MatchString(processKey) || version < 0 {
+		return DefinitionView{}, ErrInvalidInput
+	}
+	ctx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+	var v DefinitionView
+	var raw []byte
+	err := e.pool.QueryRow(ctx, `SELECT process_key, version, checksum, published_by, published_at, definition::text
+		FROM process_definitions WHERE tenant_id = $1 AND process_key = $2 AND ($3 = 0 OR version = $3)
+		ORDER BY version DESC LIMIT 1`, tenant, processKey, version).
+		Scan(&v.ProcessKey, &v.Version, &v.Checksum, &v.PublishedBy, &v.PublishedAt, &raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DefinitionView{}, ErrNotFound
+	}
+	if err != nil {
+		return DefinitionView{}, ErrUnavailable
+	}
+	v.Definition = raw
+	rows, err := e.pool.Query(ctx, `SELECT version FROM process_definitions WHERE tenant_id = $1 AND process_key = $2 ORDER BY version`, tenant, processKey)
+	if err != nil {
+		return DefinitionView{}, ErrUnavailable
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			return DefinitionView{}, ErrUnavailable
+		}
+		v.Versions = append(v.Versions, n)
+	}
+	if rows.Err() != nil {
+		return DefinitionView{}, ErrUnavailable
+	}
+	return v, nil
+}
+
+// ListInstances lists the newest instances of the tenant (at most 200),
+// optionally by process and status.
+func (e *Engine) ListInstances(ctx context.Context, tenant, processKey, status string) ([]InstanceSummary, error) {
+	if (processKey != "" && !keyPattern.MatchString(processKey)) || (status != "" && status != "running" && status != "completed") {
+		return nil, ErrInvalidInput
+	}
+	ctx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+	rows, err := e.pool.Query(ctx, `SELECT id, process_key, version, business_ref, status, current_step, result, started_at, updated_at
+		FROM process_instances WHERE tenant_id = $1 AND ($2 = '' OR process_key = $2) AND ($3 = '' OR status = $3)
+		ORDER BY id DESC LIMIT 200`, tenant, processKey, status)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	defer rows.Close()
+	out := []InstanceSummary{}
+	for rows.Next() {
+		var s InstanceSummary
+		if err := rows.Scan(&s.ID, &s.ProcessKey, &s.Version, &s.BusinessRef, &s.Status, &s.CurrentStep, &s.Result, &s.StartedAt, &s.UpdatedAt); err != nil {
+			return nil, ErrUnavailable
+		}
+		out = append(out, s)
+	}
+	if rows.Err() != nil {
+		return nil, ErrUnavailable
+	}
+	return out, nil
+}

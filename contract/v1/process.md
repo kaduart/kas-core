@@ -14,8 +14,8 @@ Iguais às demais rotas internas: `X-KAS-Service` + `Authorization: Bearer <toke
 
 | Capacidade | Rotas |
 |---|---|
-| `process:define` | `POST /internal/v1/process/definitions:validate`, `POST /internal/v1/process/definitions`, `PUT /internal/v1/process/roles/{role}/members` |
-| `process:run` | `POST /internal/v1/process/instances`, `GET /internal/v1/process/instances/{id}` |
+| `process:define` | `GET /internal/v1/process/definitions`, `GET /internal/v1/process/definitions/{key}?version=`, `POST /internal/v1/process/definitions:validate`, `POST /internal/v1/process/definitions`, `PUT /internal/v1/process/roles/{role}/members` |
+| `process:run` | `GET /internal/v1/process/instances?process_key=&status=`, `POST /internal/v1/process/instances`, `GET /internal/v1/process/instances/{id}` |
 | `process:task` | `GET /internal/v1/process/tasks?role=&status=`, `POST /internal/v1/process/tasks/{id}/resolve` |
 | `process:command` | `POST /internal/v1/process/commands/{key}/result`, `POST /internal/v1/process/commands/{key}/query` |
 | `process:event` | `POST /internal/v1/process/events` |

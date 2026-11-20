@@ -189,6 +189,30 @@ func TestProcessHTTPFlowAndTenantIsolation(t *testing.T) {
 		t.Fatalf("instance: %d %v", code, body)
 	}
 
+	// Read routes: definitions and instances of the caller's tenant only.
+	code, body = p.do(http.MethodGet, "/internal/v1/process/definitions", "demo-crm-a", handlerTokenA, "")
+	if defs, _ := body["definitions"].([]any); code != http.StatusOK || len(defs) != 1 {
+		t.Fatalf("list definitions: %d %v", code, body)
+	}
+	code, body = p.do(http.MethodGet, "/internal/v1/process/definitions/retencao-cancelamento", "demo-crm-a", handlerTokenA, "")
+	if def, _ := body["definition"].(map[string]any); code != http.StatusOK || def["version"] != float64(1) || def["definition"] == nil {
+		t.Fatalf("get definition: %d %v", code, body)
+	}
+	if code, body = p.do(http.MethodGet, "/internal/v1/process/definitions/retencao-cancelamento", "demo-crm-b", handlerTokenB, ""); code != http.StatusNotFound {
+		t.Fatalf("cross-tenant definition: %d %v", code, body)
+	}
+	if code, body = p.do(http.MethodGet, "/internal/v1/process/definitions/retencao-cancelamento?version=2", "demo-crm-a", handlerTokenA, ""); code != http.StatusNotFound {
+		t.Fatalf("missing version: %d %v", code, body)
+	}
+	code, body = p.do(http.MethodGet, "/internal/v1/process/instances?process_key=retencao-cancelamento", "demo-crm-a", handlerTokenA, "")
+	if list, _ := body["instances"].([]any); code != http.StatusOK || len(list) != 1 {
+		t.Fatalf("list instances: %d %v", code, body)
+	}
+	code, body = p.do(http.MethodGet, "/internal/v1/process/instances", "demo-crm-b", handlerTokenB, "")
+	if list, _ := body["instances"].([]any); code != http.StatusOK || len(list) != 0 {
+		t.Fatalf("cross-tenant instances: %d %v", code, body)
+	}
+
 	// Skewed occurred_at is refused.
 	skewed := strings.Replace(start, now, time.Now().Add(10*time.Minute).UTC().Format(time.RFC3339Nano), 1)
 	skewed = strings.Replace(strings.Replace(skewed, "start-1", "start-3", 1), "contrato-demo-1", "contrato-demo-2", 1)

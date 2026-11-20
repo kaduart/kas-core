@@ -95,7 +95,7 @@ go run ./cmd/kas-core -config ./config.example.json -events-store postgres -proc
 
 - Módulo `internal/process`; calendário de dias úteis em `internal/calendar`.
 - Testes de aceite T1–T23 em `internal/process/acceptance_test.go`, com um CRM simulado que usa o pull real. Os tenants dos testes são fictícios (`demo-empresa-a`, 2 dias úteis; `demo-empresa-b`, 5 dias úteis).
-- Papel de runtime: veja a seção Process Studio de `deploy/grants.sql` (histórico, definições e eventos recebidos são só `INSERT`/`SELECT`).
+- Papel de runtime: rode `deploy/grants-process.sql` depois de `deploy/grants.sql` (histórico, definições e eventos recebidos são só `INSERT`/`SELECT`).
 - Editor visual fica para depois, em `studio/`.
 
 ## Módulo de configuração

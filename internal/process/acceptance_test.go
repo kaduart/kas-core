@@ -532,7 +532,7 @@ func TestT23RuntimeRoleCannotRewriteHistoryOrDefinitions(t *testing.T) {
 		t.Skipf("cannot create roles here: %v", err)
 	}
 	defer func() { _, _ = e.eng.pool.Exec(ctx, `DROP OWNED BY `+role+`; DROP ROLE `+role) }()
-	grants, err := os.ReadFile("../../deploy/grants.sql")
+	grants, err := os.ReadFile("../../deploy/grants-process.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -65,6 +65,7 @@ export KAS_EVENTS_MIGRATION_DATABASE_URL="$KAS_AUDIT_MIGRATION_DATABASE_URL"
 ./kas-core -audit-store postgres -audit-migrate-only -events-store postgres -events-migrate-only
 # Process Studio (só se for ligar o motor; roda depois das migrações de eventos, mesmo papel e banco)
 ./kas-core -events-store postgres -process-store postgres -process-migrate-only
+psql "$KAS_EVENTS_MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -v schema=public -v runtime_role=kas_runtime -f deploy/grants-process.sql
 psql "$KAS_AUDIT_MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -v schema=public -v runtime_role=kas_runtime -f deploy/grants.sql
 ```
 

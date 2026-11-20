@@ -5,7 +5,9 @@ import { describeDeadline, fmtDateTime } from './model'
 import type { Definition, InstanceSummary, InstanceView } from './types'
 
 // Fictitious actors of the pilot, one per role.
-const DEMO_ACTOR: Record<string, string> = { comercial: 'ator-comercial-1', supervisor: 'ator-supervisor-1' }
+const DEMO_ACTOR: Record<string, string> = {
+  comercial: 'ator-comercial-1', supervisor: 'ator-supervisor-1', secretaria: 'ator-secretaria-1', supervisao: 'ator-supervisao-1',
+}
 
 const HISTORY_LABEL: Record<string, string> = {
   started: 'Execução iniciada',
@@ -170,6 +172,7 @@ export function Executions({ tenant, refreshToken }: { tenant: string; refreshTo
                     <div className="command" key={c.command_key} data-testid={`command-${c.step}`}>
                       <code>{c.command_type}</code> <span className={`pill cmd-${c.status}`}>{c.status}</span>
                       <small>geração {c.generation} · tentativa {c.attempt} · consultas {c.status_queries}</small>
+                      {c.result_ref ? <small data-testid={`result-ref-${c.step}`}> · identificador no CRM: <code>{c.result_ref}</code></small> : null}
                     </div>
                   ))}
                   <h4>Histórico</h4>
@@ -177,7 +180,7 @@ export function Executions({ tenant, refreshToken }: { tenant: string; refreshTo
                     {(inst.history ?? []).map((h) => (
                       <li key={h.id}>
                         <span className="when">{fmtDateTime(h.recorded_at)}</span>
-                        <span>{HISTORY_LABEL[h.kind] ?? h.kind}{h.step ? `: ${h.step}` : ''}{h.actor_id ? ` (${h.actor_id})` : ''}</span>
+                        <span>{HISTORY_LABEL[h.kind] ?? h.kind}{h.step ? `: ${h.step}` : ''}{h.actor_id ? ` (${h.actor_id})` : ''}{typeof h.detail?.result_ref === 'string' ? ` · ${h.detail.result_ref}` : ''}</span>
                       </li>
                     ))}
                   </ol>

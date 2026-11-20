@@ -13,7 +13,8 @@ export interface TenantBinding {
   tokenEnv: string
 }
 
-const DEFAULT_TENANTS = 'demo-empresa-a=demo-crm-a:DEMO_CRM_A_TOKEN;demo-empresa-b=demo-crm-b:DEMO_CRM_B_TOKEN'
+const DEFAULT_TENANTS =
+  'demo-empresa-a=demo-crm-a:DEMO_CRM_A_TOKEN;demo-empresa-b=demo-crm-b:DEMO_CRM_B_TOKEN;demo-clinica=demo-crm-clinica:DEMO_CRM_CLINICA_TOKEN'
 const MAX_BODY = 80 * 1024
 
 export function parseTenants(spec: string): TenantBinding[] {

@@ -135,6 +135,11 @@ export function StepPanel({ definition, name, readOnly, onChange }: Props) {
               <StepSelect value={step[k]} steps={steps} testId={`field-${k}`} disabled={readOnly} allowEmpty={k === 'on_no_reply'} onChange={(v) => set({ [k]: v })} />
             </label>
           ))}
+          <label className="field">
+            <span>Confirmar só com o identificador do CRM (result_ref)</span>
+            <input type="checkbox" checked={!!step.require_result_ref} disabled={readOnly} data-testid="field-require-result-ref"
+              onChange={(e) => set({ require_result_ref: e.target.checked || undefined })} />
+          </label>
         </>
       ) : null}
 

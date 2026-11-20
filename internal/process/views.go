@@ -43,6 +43,7 @@ type CommandView struct {
 	Status        string `json:"status"`
 	Attempt       int    `json:"attempt"`
 	StatusQueries int    `json:"status_queries"`
+	ResultRef     string `json:"result_ref,omitempty"`
 }
 
 // InstanceView is an instance with its tasks, commands and history.
@@ -76,14 +77,14 @@ func (e *Engine) GetInstance(ctx context.Context, tenant string, id int64) (Inst
 	if v.Tasks, err = e.tasks(ctx, `tenant_id = $1 AND instance_id = $2`, tenant, id); err != nil {
 		return InstanceView{}, ErrUnavailable
 	}
-	rows, err := e.pool.Query(ctx, `SELECT command_key, step, command_type, generation, status, request_attempt, status_queries
+	rows, err := e.pool.Query(ctx, `SELECT command_key, step, command_type, generation, status, request_attempt, status_queries, COALESCE(result_ref, '')
 		FROM process_commands WHERE tenant_id = $1 AND instance_id = $2 ORDER BY id`, tenant, id)
 	if err != nil {
 		return InstanceView{}, ErrUnavailable
 	}
 	for rows.Next() {
 		var c CommandView
-		if err := rows.Scan(&c.CommandKey, &c.Step, &c.CommandType, &c.Generation, &c.Status, &c.Attempt, &c.StatusQueries); err != nil {
+		if err := rows.Scan(&c.CommandKey, &c.Step, &c.CommandType, &c.Generation, &c.Status, &c.Attempt, &c.StatusQueries, &c.ResultRef); err != nil {
 			rows.Close()
 			return InstanceView{}, ErrUnavailable
 		}

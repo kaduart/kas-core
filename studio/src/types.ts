@@ -24,6 +24,7 @@ export interface Step {
   on_confirmed?: string
   on_rejected?: string
   on_no_reply?: string
+  require_result_ref?: boolean
   on_events?: Record<string, string>
   result?: string
   business_status?: string
@@ -75,6 +76,7 @@ export interface CommandView {
   status: string
   attempt: number
   status_queries: number
+  result_ref?: string
 }
 
 export interface HistoryEntry {

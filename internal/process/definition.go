@@ -82,6 +82,11 @@ type Step struct {
 	OnConfirmed      string `json:"on_confirmed,omitempty"`
 	OnRejected       string `json:"on_rejected,omitempty"`
 	OnNoReply        string `json:"on_no_reply,omitempty"`
+	// RequireResultRef makes a "confirmed" result count only when it carries
+	// result_ref, the identifier of what the external system created (e.g. the
+	// new package). A confirmation without it is refused and the command stays
+	// requested, so the status queries go on.
+	RequireResultRef bool `json:"require_result_ref,omitempty"`
 
 	// wait_event: event type -> step (deadline/grace/on_deadline shared with human_task)
 	OnEvents map[string]string `json:"on_events,omitempty"`
@@ -194,6 +199,9 @@ func (d *Definition) Validate() []string {
 		}
 		if s.BusinessStatus != "" && !codePattern.MatchString(s.BusinessStatus) {
 			add("step %s: business_status must match %s", name, codePattern)
+		}
+		if s.RequireResultRef && s.Type != StepExternalCommand {
+			add("step %s: require_result_ref applies only to external_command", name)
 		}
 		switch s.Type {
 		case StepHumanTask:

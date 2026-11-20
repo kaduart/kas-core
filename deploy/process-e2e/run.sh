@@ -15,7 +15,10 @@
 # kill -9 e volta; o CRM reinicia, recebe de novo, não repete o efeito e a
 # instância termina. (2) Isolamento entre as duas empresas. (3) Nova versão
 # publicada: instância antiga mantém o prazo original. (4) Timer de prazo
-# dispara no executável. (5) Recusa do CRM leva à revisão.
+# dispara no executável. (5) Recusa do CRM leva à revisão. (6) Piloto de
+# renovação de pacote (demo-clinica): o CRM cria o pacote novo, a confirmação
+# se perde, a KAS consulta a MESMA command_key e o CRM responde com o MESMO
+# pacote; exatamente um pacote e histórico que explica a conclusão.
 # Só termina com "TUDO OK" se todos passarem.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -76,21 +79,23 @@ psql "$MIGRATE_URL" -q -v ON_ERROR_STOP=1 -v schema=public -v runtime_role=$RT_R
 psql "$MIGRATE_URL" -q -v ON_ERROR_STOP=1 -v schema=public -v runtime_role=$RT_ROLE -f "$ROOT/deploy/grants-process.sql"
 ok "migrações e grants aplicados"
 
-TOKEN_A=$(openssl rand -hex 32); TOKEN_B=$(openssl rand -hex 32)
-export DEMO_CRM_A_TOKEN=$TOKEN_A DEMO_CRM_B_TOKEN=$TOKEN_B
+TOKEN_A=$(openssl rand -hex 32); TOKEN_B=$(openssl rand -hex 32); TOKEN_C=$(openssl rand -hex 32)
+export DEMO_CRM_A_TOKEN=$TOKEN_A DEMO_CRM_B_TOKEN=$TOKEN_B DEMO_CRM_CLINICA_TOKEN=$TOKEN_C
 TYPES='"process.command.requested","process.command.status_query","process.wait.opened"'
 CAPS='"events:consume","process:define","process:run","process:task","process:command","process:event"'
 cat > "$WORK/config.json" <<JSON
 {"contract_version":"v1","config_version":"process-e2e",
- "tenant_registry":[{"id":"demo-empresa-a","status":"active"},{"id":"demo-empresa-b","status":"active"}],
+ "tenant_registry":[{"id":"demo-empresa-a","status":"active"},{"id":"demo-empresa-b","status":"active"},{"id":"demo-clinica","status":"active"}],
  "key_schema":{"logging.max_meta_keys":{"type":"integer","min":1,"max":10}},"tenants":{},
  "event_types":[$TYPES],
  "event_consumers":{
   "crm-simulado-a":{"service":"demo-crm-a","event_types":[$TYPES],"tenants":["demo-empresa-a"]},
-  "crm-simulado-b":{"service":"demo-crm-b","event_types":[$TYPES],"tenants":["demo-empresa-b"]}},
+  "crm-simulado-b":{"service":"demo-crm-b","event_types":[$TYPES],"tenants":["demo-empresa-b"]},
+  "crm-simulado-clinica":{"service":"demo-crm-clinica","event_types":[$TYPES],"tenants":["demo-clinica"]}},
  "callers":{
   "demo-crm-a":{"token_env":"DEMO_CRM_A_TOKEN","tenants":["demo-empresa-a"],"capabilities":[$CAPS]},
-  "demo-crm-b":{"token_env":"DEMO_CRM_B_TOKEN","tenants":["demo-empresa-b"],"capabilities":[$CAPS]}}}
+  "demo-crm-b":{"token_env":"DEMO_CRM_B_TOKEN","tenants":["demo-empresa-b"],"capabilities":[$CAPS]},
+  "demo-crm-clinica":{"token_env":"DEMO_CRM_CLINICA_TOKEN","tenants":["demo-clinica"],"capabilities":[$CAPS]}}}
 JSON
 
 start_kas() {
@@ -210,6 +215,54 @@ sim b -once -reject-refs contrato-b-1
 inst demo-crm-b "$TOKEN_B" "$ID5"
 [ "$(field .instance.current_step)" = revisar ] && ok "recusa levou à revisão do supervisor" || bad "B depois da recusa: $(field .instance.current_step)"
 [ ! -s "$WORK/sim-b.json" ] || [ "$(jq '.receipts | length' "$WORK/sim-b.json")" = 1 ] && ok "CRM B só recebeu o comando da própria empresa" || bad "CRM B recebeu comandos de outra empresa"
+
+say "6. Renovação de pacote (demo-clinica): pacote criado, confirmação perdida, KAS consulta o mesmo pedido"
+# Mesma definição que o Studio abre (studio/samples), só com reply_timeout de 3 s
+# para a consulta de status acontecer durante o teste (no piloto: PT1H).
+RENOV=$(jq -c '.steps.criar_pacote_novo.reply_timeout = "PT3S"' "$ROOT/studio/samples/renovacao-pacote.json")
+publish demo-crm-clinica "$TOKEN_C" pub-clinica-renov "$RENOV"
+FROM=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
+must PUT /internal/v1/process/roles/secretaria/members demo-crm-clinica "$TOKEN_C" "{\"contract_version\":\"v1\",\"change_id\":\"chg-sec\",\"members\":[\"ator-secretaria-1\"],\"valid_from\":\"$FROM\"}"
+must PUT /internal/v1/process/roles/supervisao/members demo-crm-clinica "$TOKEN_C" "{\"contract_version\":\"v1\",\"change_id\":\"chg-sup\",\"members\":[\"ator-supervisao-1\"],\"valid_from\":\"$FROM\"}"
+simc() { "$WORK/kas-crm-sim" -kas "$KAS" -service demo-crm-clinica -token-env DEMO_CRM_CLINICA_TOKEN -consumer crm-simulado-clinica \
+  -state "$WORK/sim-clinica.json" -lease-seconds 5 -drop-first-result-refs pacote-encerrando-demo-1 "$@" >> "$WORK/sim-clinica.log" 2>&1; }
+startc() { # business_ref (= id do pacote que está acabando) -> instance id
+  must POST /internal/v1/process/instances demo-crm-clinica "$TOKEN_C" "{\"contract_version\":\"v1\",\"process_key\":\"renovacao-pacote\",\"business_ref\":\"$1\",\"start_key\":\"renovacao-$1\",\"actor_id\":\"crm-rotina-pacotes\",\"occurred_at\":\"$(now)\"}"
+  field .instance_id
+}
+ID6=$(startc pacote-encerrando-demo-1)
+resolve demo-crm-clinica "$TOKEN_C" "$(open_task demo-crm-clinica "$TOKEN_C" "$ID6")" renovou secretaria ator-secretaria-1 sub-renov-1
+inst demo-crm-clinica "$TOKEN_C" "$ID6"
+[ "$(field .instance.status)" = running ] && [ "$(field .instance.current_step)" = criar_pacote_novo ] \
+  && ok "\"renovou\" da secretaria não fecha: espera o CRM confirmar o pacote novo" || bad "renovação andou sem o CRM: $(field .instance.status) $(field .instance.current_step)"
+simc -once
+PKGS=$(jq '.packages | length' "$WORK/sim-clinica.json"); DROPPED=$(jq '.dropped | length' "$WORK/sim-clinica.json")
+[ "$PKGS" = 1 ] && [ "$DROPPED" = 1 ] && ok "CRM criou o pacote e a confirmação se perdeu" || bad "pacotes $PKGS, confirmações perdidas $DROPPED"
+inst demo-crm-clinica "$TOKEN_C" "$ID6"
+[ "$(field .instance.status)" = running ] && [ "$(field '.instance.commands[0].status')" = requested ] \
+  && ok "sem confirmação, a instância segue esperando (comando requested)" || bad "sem confirmação: $(field .instance.status) $(field '.instance.commands[0].status')"
+for i in $(seq 1 30); do sleep 1; simc -once; inst demo-crm-clinica "$TOKEN_C" "$ID6"; [ "$(field .instance.status)" = completed ] && break; done
+KEY6=$(field '.instance.commands[0].command_key'); REF6=$(field '.instance.commands[0].result_ref')
+PKG6=$(jq -r --arg k "$KEY6" '.packages[$k] // empty' "$WORK/sim-clinica.json")
+[ "$(field .instance.result)" = renovado ] && ok "instância terminou: renovado" || bad "renovação: $(field .instance.status) $(field .instance.result)"
+[ -n "$PKG6" ] && [ "$REF6" = "$PKG6" ] && ok "result_ref = pacote novo criado para este pedido ($PKG6)" || bad "result_ref '$REF6' != pacote do CRM '$PKG6'"
+[ "$(jq '.packages | length' "$WORK/sim-clinica.json")" = 1 ] && [ "$(jq --arg k "$KEY6" '.effects[$k]' "$WORK/sim-clinica.json")" = 1 ] \
+  && ok "exatamente UM pacote criado (efeito aplicado uma vez)" || bad "pacotes: $(jq -c .packages "$WORK/sim-clinica.json") efeitos: $(jq -c .effects "$WORK/sim-clinica.json")"
+[ "$(field '.instance.commands | length')" = 1 ] && [ "$(field '.instance.commands[0].status_queries')" -ge 1 ] \
+  && ok "mesma command_key, consultada $(field '.instance.commands[0].status_queries') vez(es)" || bad "comandos: $(jq -c .instance.commands "$WORK/out.json")"
+KINDS=$(field '[.instance.history[].kind] | join(" ")')
+[[ "$KINDS" == *"command_requested"*"command_status_query"*"command_result"*"completed"* ]] \
+  && ok "histórico: pedido → sem resposta → consulta → confirmado com o pacote → renovado" || bad "histórico: $KINDS"
+echo "Histórico da instância $ID6:"
+field '.instance.history[] | "  \(.recorded_at) \(.kind) \(.step // "") \(.detail | del(.occurred_at, .due_at, .cutoff_at, .fire_at, .executed_at) | tostring)"'
+code=$(api POST "/internal/v1/process/commands/$KEY6/result" demo-crm-clinica "$TOKEN_C" "{\"contract_version\":\"v1\",\"status\":\"confirmed\",\"result_ref\":\"$PKG6\",\"occurred_at\":\"$(now)\"}")
+[ "$code" = 200 ] && [ "$(field .duplicate)" = true ] && ok "reenvio idêntico: 200 duplicate" || bad "reenvio idêntico: $code"
+code=$(api POST "/internal/v1/process/commands/$KEY6/result" demo-crm-clinica "$TOKEN_C" "{\"contract_version\":\"v1\",\"status\":\"confirmed\",\"result_ref\":\"pacote-novo-999\",\"occurred_at\":\"$(now)\"}")
+[ "$code" = 409 ] && ok "outro result_ref para a mesma chave: 409" || bad "outro result_ref: $code"
+ID7=$(startc pacote-encerrando-demo-2)
+resolve demo-crm-clinica "$TOKEN_C" "$(open_task demo-crm-clinica "$TOKEN_C" "$ID7")" vai_sair secretaria ator-secretaria-1 sub-renov-2
+inst demo-crm-clinica "$TOKEN_C" "$ID7"
+[ "$(field .instance.result)" = nao_renovou ] && [ "$(field '.instance.commands | length')" = 0 ] && ok "\"vai_sair\": nao_renovou sem comando ao CRM" || bad "vai_sair: $(field .instance.result)"
 
 say "Resultado"
 if [ "$FAILS" -eq 0 ]; then echo "TUDO OK"; else echo "$FAILS falha(s)"; exit 1; fi

@@ -8,8 +8,8 @@
 // The token is read from an environment variable, never from a flag. Plain
 // http is accepted only for a loopback address.
 //
-//	KAS_ATTR_TOKEN=... kas-attribution-import -kas https://kas.example -service escola-sis \
-//	    -token-env KAS_ATTR_TOKEN -tenant escola-demo -kind receipts -file recebimentos.csv \
+//	KAS_ATTR_TOKEN=... kas-attribution-import -kas https://kas.example -service sis-demo \
+//	    -token-env KAS_ATTR_TOKEN -tenant tenant-demo -kind receipts -file recebimentos.csv \
 //	    -batch-id rec-2026-11 -actor user.fin-07
 package main
 

@@ -12,7 +12,7 @@ import (
 const (
 	Model             = "primeiro-contato-por-recebimento-v1"
 	TouchRuleVersion  = "touch-v2-precedencia"
-	RefundRuleVersion = "estorno-v2-rateio-por-recebimento"
+	RefundRuleVersion = "estorno-v3-saldo-por-recebimento"
 )
 
 var ErrModelUnsupported = errors.New("model_unsupported")
@@ -277,57 +277,94 @@ func Compute(d Dataset, q Query) (Result, error) {
 		o        origin
 		cents    int64
 	}
-	// A refund goes to the receipt it names; with only a payment, it is split
-	// among that payment's receipts up to the refund date, by amount, in cents,
-	// the remainder on the oldest (estorno-v2-rateio-por-recebimento).
+	// Refunds consume the balance of the receipts they undo (estorno-v3-saldo-
+	// por-recebimento). Every refund of the history is applied in date order,
+	// including those before the period or outside the unit, because an earlier
+	// refund lowers what is still refundable on a receipt:
+	//   - with receipt_ref: up to that receipt's balance;
+	//   - with only payment_ref: split among that payment's receipts received up
+	//     to the refund date that still have balance, by balance, in cents, the
+	//     remainder on the oldest receipt with room;
+	//   - what exceeds the balance, or a refund with no receipt up to its date,
+	//     is kept in the total as "sem vínculo" with the reason.
+	balance := map[string]int64{}
+	for _, r := range d.Receipts {
+		balance[r.ExternalID] = r.AmountCents
+	}
+	none := func(customer, reason string, cents int64) part {
+		return part{customer: customer, o: origin{level: LevelNone, reason: reason}, cents: cents}
+	}
 	refundParts := func(f Record) []part {
-		signed := -f.AmountCents
-		var origs []Record
+		amount := f.AmountCents
+		var eligible []Record
+		explicit := false
 		if f.ReceiptRef != "" {
 			if r, ok := receiptByID[f.ReceiptRef]; ok {
-				origs = []Record{r}
+				eligible, explicit = []Record{r}, true
 			}
 		}
-		if len(origs) == 0 && f.PaymentRef != "" {
+		if !explicit && f.PaymentRef != "" {
 			all := byPayment[f.PaymentRef]
 			for _, r := range all {
 				if !r.At.After(f.At) {
-					origs = append(origs, r)
+					eligible = append(eligible, r)
 				}
 			}
-			if len(origs) == 0 && len(all) > 0 {
-				origs = all[:1]
+			if len(eligible) == 0 {
+				if len(all) > 0 {
+					return []part{none(f.CustomerRef, "estorno_antes_do_recebimento", -amount)}
+				}
+				return []part{none(f.CustomerRef, "estorno_sem_recebimento_original", -amount)}
 			}
 		}
-		if len(origs) == 0 {
-			return []part{{customer: f.CustomerRef, o: origin{level: LevelNone, reason: "estorno_sem_recebimento_original"}, cents: signed}}
+		if len(eligible) == 0 {
+			return []part{none(f.CustomerRef, "estorno_sem_recebimento_original", -amount)}
 		}
-		parts := make([]part, len(origs))
-		same := true
-		for i, r := range origs {
-			parts[i] = part{customer: r.CustomerRef, o: resolve(r.CustomerRef, r.At)}
-			if parts[i].o.key() != parts[0].o.key() {
-				same = false
+		var room int64
+		weights := make([]int64, len(eligible))
+		for i, r := range eligible {
+			if b := balance[r.ExternalID]; b > 0 {
+				weights[i] = b
+				room += b
 			}
 		}
-		if same {
-			return []part{{customer: parts[0].customer, o: parts[0].o, cents: signed}}
+		take := amount
+		if take > room {
+			take = room
 		}
-		var total int64
-		for _, r := range origs {
-			total += r.AmountCents
-		}
+		alloc := make([]int64, len(eligible))
 		var assigned int64
-		for i, r := range origs {
-			parts[i].cents = signed * r.AmountCents / total
-			assigned += parts[i].cents
-		}
-		parts[0].cents += signed - assigned
-		out := parts[:0]
-		for _, p := range parts {
-			if p.cents != 0 {
-				out = append(out, p)
+		if take > 0 {
+			for i := range eligible {
+				alloc[i] = take * weights[i] / room
+				assigned += alloc[i]
 			}
+			for rest := take - assigned; rest > 0; {
+				for i := range eligible {
+					if rest > 0 && alloc[i] < weights[i] {
+						alloc[i]++
+						rest--
+					}
+				}
+			}
+		}
+		var out []part
+		idx := map[string]int{}
+		for i, r := range eligible {
+			if alloc[i] == 0 {
+				continue
+			}
+			balance[r.ExternalID] -= alloc[i]
+			o := resolve(r.CustomerRef, r.At)
+			if j, ok := idx[o.key()]; ok {
+				out[j].cents -= alloc[i]
+				continue
+			}
+			idx[o.key()] = len(out)
+			out = append(out, part{customer: r.CustomerRef, o: o, cents: -alloc[i]})
+		}
+		if over := amount - take; over > 0 {
+			out = append(out, none(f.CustomerRef, "estorno_acima_do_saldo", -over))
 		}
 		return out
 	}
@@ -384,7 +421,14 @@ func Compute(d Dataset, q Query) (Result, error) {
 		res.NetTotal += r.AmountCents
 		add(part{customer: r.CustomerRef, o: resolve(r.CustomerRef, r.At), cents: r.AmountCents})
 	}
-	for _, f := range d.Refunds {
+	refunds := append([]Record(nil), d.Refunds...)
+	sort.SliceStable(refunds, func(i, j int) bool {
+		if !refunds[i].At.Equal(refunds[j].At) {
+			return refunds[i].At.Before(refunds[j].At)
+		}
+		return refunds[i].ExternalID < refunds[j].ExternalID
+	})
+	for _, f := range refunds {
 		if f.Unit == "" && f.ReceiptRef != "" {
 			// A refund without its own unit belongs to the unit of its receipt.
 			f.Unit = receiptByID[f.ReceiptRef].Unit
@@ -392,11 +436,12 @@ func Compute(d Dataset, q Query) (Result, error) {
 		if f.Unit == "" && f.PaymentRef != "" && len(byPayment[f.PaymentRef]) > 0 {
 			f.Unit = byPayment[f.PaymentRef][0].Unit
 		}
+		parts := refundParts(f) // always: it consumes balance even outside the period
 		if !inPeriod(f) {
 			continue
 		}
 		res.NetTotal -= f.AmountCents
-		for _, p := range refundParts(f) {
+		for _, p := range parts {
 			add(p)
 		}
 	}

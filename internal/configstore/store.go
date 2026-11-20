@@ -28,6 +28,13 @@ const (
 	// CapabilityEventsConsume lets a service claim, ack and nack deliveries of
 	// the consumers bound to it.
 	CapabilityEventsConsume = "events:consume"
+	// Process Studio capabilities. Each one guards a family of routes under
+	// /internal/v1/process; none of them carries any business rule.
+	CapabilityProcessDefine  = "process:define"
+	CapabilityProcessRun     = "process:run"
+	CapabilityProcessTask    = "process:task"
+	CapabilityProcessCommand = "process:command"
+	CapabilityProcessEvent   = "process:event"
 )
 
 var (
@@ -262,7 +269,8 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 		capabilities := make(map[string]struct{}, len(rawCaller.Capabilities))
 		for _, capability := range rawCaller.Capabilities {
 			switch capability {
-			case CapabilityConfigRead, CapabilityAuditWrite, CapabilityAuditRead, CapabilityEventsPublish, CapabilityEventsConsume:
+			case CapabilityConfigRead, CapabilityAuditWrite, CapabilityAuditRead, CapabilityEventsPublish, CapabilityEventsConsume,
+				CapabilityProcessDefine, CapabilityProcessRun, CapabilityProcessTask, CapabilityProcessCommand, CapabilityProcessEvent:
 			default:
 				return nil, fmt.Errorf("service caller %q declares an unknown capability", serviceID)
 			}

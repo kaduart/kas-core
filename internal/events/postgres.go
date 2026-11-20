@@ -121,8 +121,25 @@ func (s *PostgresStore) Publish(ctx context.Context, event Event, consumers []st
 		return ErrStoreUnavailable
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
+	inserted, err := insertEventTx(ctx, tx, event, occurred, received, consumers)
+	if err != nil {
+		return ErrStoreUnavailable
+	}
+	if inserted {
+		if err := tx.Commit(ctx); err != nil {
+			return ErrStoreUnavailable
+		}
+		return nil
+	}
+	_ = tx.Rollback(ctx)
+	return s.compareWithStored(ctx, pool, event)
+}
+
+// insertEventTx inserts the event and one pending delivery per consumer inside
+// tx. It reports false, writing nothing, when the identity already exists.
+func insertEventTx(ctx context.Context, tx pgx.Tx, event Event, occurred, received time.Time, consumers []string) (bool, error) {
 	var pk int64
-	err = tx.QueryRow(ctx, `INSERT INTO outbox_events
+	err := tx.QueryRow(ctx, `INSERT INTO outbox_events
 		(contract_version, event_id, tenant_id, service_id, event_type, correlation_id,
 		 occurred_at_raw, received_at_raw, occurred_at, received_at, payload)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
@@ -131,25 +148,75 @@ func (s *PostgresStore) Publish(ctx context.Context, event Event, consumers []st
 		event.ContractVersion, event.EventID, event.TenantID, event.ServiceID, event.EventType,
 		event.CorrelationID, event.OccurredAt, event.ReceivedAt, occurred.UTC(), received.UTC(),
 		string(event.Payload)).Scan(&pk)
-	switch {
-	case err == nil:
-		for _, consumer := range consumers {
-			if _, err := tx.Exec(ctx, `INSERT INTO outbox_deliveries
-				(event_pk, consumer_id, status, attempts, next_attempt_at, created_at)
-				VALUES ($1, $2, 'pending', 0, $3, $3)`, pk, consumer, received.UTC()); err != nil {
-				return ErrStoreUnavailable
-			}
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return ErrStoreUnavailable
-		}
-		return nil
-	case errors.Is(err, pgx.ErrNoRows):
-		_ = tx.Rollback(ctx)
-		return s.compareWithStored(ctx, pool, event)
-	default:
-		return ErrStoreUnavailable
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
 	}
+	if err != nil {
+		return false, err
+	}
+	for _, consumer := range consumers {
+		if _, err := tx.Exec(ctx, `INSERT INTO outbox_deliveries
+			(event_pk, consumer_id, status, attempts, next_attempt_at, created_at)
+			VALUES ($1, $2, 'pending', 0, $3, $3)`, pk, consumer, received.UTC()); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// PublishTx stores an event and its deliveries inside a transaction owned by
+// another module of the same database, so a state change and the event that
+// announces it commit or roll back together. The event must already be valid
+// (see ValidateSubmission) with ServiceID and ReceivedAt set by the caller. An
+// identical event already stored is not an error; the same identity with other
+// content returns ErrEventConflict. Any other failure leaves the caller's
+// transaction unusable, so the caller must roll back.
+func PublishTx(ctx context.Context, tx pgx.Tx, event Event, consumers []string) (bool, error) {
+	if _, err := ValidateSubmission(Submission{ContractVersion: event.ContractVersion, EventID: event.EventID,
+		TenantID: event.TenantID, ServiceID: event.ServiceID, EventType: event.EventType,
+		CorrelationID: event.CorrelationID, OccurredAt: event.OccurredAt, Payload: event.Payload}); err != nil {
+		return false, err
+	}
+	payload, err := CanonicalPayload(event.Payload)
+	if err != nil {
+		return false, err
+	}
+	event.Payload = payload
+	occurred, err := time.Parse(time.RFC3339Nano, event.OccurredAt)
+	if err != nil {
+		return false, ErrInvalidEvent
+	}
+	received, err := time.Parse(time.RFC3339Nano, event.ReceivedAt)
+	if err != nil {
+		return false, ErrInvalidEvent
+	}
+	inserted, err := insertEventTx(ctx, tx, event, occurred, received, consumers)
+	if err != nil {
+		return false, ErrStoreUnavailable
+	}
+	if inserted {
+		return true, nil
+	}
+	var stored Event
+	var storedPayload []byte
+	if err := tx.QueryRow(ctx, `SELECT contract_version, event_id, tenant_id, service_id, event_type,
+		correlation_id, occurred_at_raw, payload
+		FROM outbox_events WHERE tenant_id = $1 AND service_id = $2 AND event_id = $3`,
+		event.TenantID, event.ServiceID, event.EventID).Scan(&stored.ContractVersion, &stored.EventID,
+		&stored.TenantID, &stored.ServiceID, &stored.EventType, &stored.CorrelationID, &stored.OccurredAt,
+		&storedPayload); err != nil {
+		return false, ErrStoreUnavailable
+	}
+	canonicalStored, err := CanonicalPayload(storedPayload)
+	if err != nil {
+		return false, ErrStoreUnavailable
+	}
+	if stored.ContractVersion != event.ContractVersion || stored.EventType != event.EventType ||
+		stored.CorrelationID != event.CorrelationID || stored.OccurredAt != event.OccurredAt ||
+		string(canonicalStored) != string(event.Payload) {
+		return false, ErrEventConflict
+	}
+	return false, nil
 }
 
 func (s *PostgresStore) compareWithStored(ctx context.Context, pool *pgxpool.Pool, event Event) error {

@@ -31,10 +31,10 @@ Workflows (só rodam depois do merge na `main`, porque agenda do Actions usa a b
 
 - `.github/workflows/sombra-reaper.yml`, com dois gatilhos **separados**:
   - **Manual** (Run workflow, branch `main`): uma execução com `minutes` (padrão 15, máximo 345). Não depende de variável e não liga a agenda.
-  - **Agenda**: 00:05, 06:05, 12:05 e 18:05 UTC (21:05, 03:05, 09:05 e 15:05 em Brasília), **só** com `SOMBRA_AGENDA_ATIVA=true`. Cada execução termina 8 min antes do próximo horário (`deploy/sombra/janela.sh`): até ~5h45 se começar na hora, menos se o GitHub atrasar. O fim é ancorado no próximo horário, então as execuções não se sobrepõem e não dependem de fila; uma execução atrasada demais (< 10 min úteis) não roda.
+  - **Agenda**: 00:23, 06:23, 12:23 e 18:23 UTC (21:23, 03:23, 09:23 e 15:23 em Brasília; fora do início da hora porque o GitHub descartou as rodadas de 06:05 e 12:05 de 20/11), **só** com `SOMBRA_AGENDA_ATIVA=true`. Cada execução termina 8 min antes do próximo horário (`deploy/sombra/janela.sh`): até ~5h45 se começar na hora, menos se o GitHub atrasar. O fim é ancorado no próximo horário, então as execuções não se sobrepõem e não dependem de fila; uma execução atrasada demais (< 10 min úteis) não roda.
   - Cada execução: compila da `main`, roda `kas-event-reaper -mode shadow -protocol v2 -require-read-only on -warmup 30s -interval 5m` (cadência fixa, como o `setInterval` do Node), sonda o `/health` do CRM a cada 60 s, publica o resumo (só contagens) e guarda o relatório completo **criptografado (AES256)** como artifact por 14 dias.
   - É amostragem por ciclos, não acompanhamento contínuo: há ~10 min sem ciclo a cada 6 h (8 min de margem + preparo), mais qualquer atraso do GitHub. A cobertura (C7) conta só intervalos de 5 min com ciclo **concluído sem erro**, um por intervalo; ciclo com erro, pulado ou duplicado não conta.
-- `.github/workflows/sombra-reaper-resumo.yml`: manual a qualquer hora; diário às 09:00 (BRT) só com `SOMBRA_AGENDA_ATIVA=true`. Junta as execuções dos últimos dias e avalia os critérios.
+- `.github/workflows/sombra-reaper-resumo.yml`: manual a qualquer hora; diário às 09:47 (BRT) só com `SOMBRA_AGENDA_ATIVA=true`. Junta as execuções dos últimos dias e avalia os critérios.
 
 Segredos: ficam no **ambiente `sombra`**, não nos segredos do repositório. Settings → Environments → New environment `sombra` → Deployment branches and tags → Selected branches → regra `main`. Só jobs da `main` recebem esses segredos; um disparo manual a partir de outra branch, PRs e forks não recebem. Os workflows não têm gatilho `pull_request`.
 
@@ -135,12 +135,20 @@ A classe vem de quem escreveu a mensagem observada (`observed_reason`: `reaper`,
 4. Avaliar o resultado. Só depois, e com OK separado, criar `SOMBRA_AGENDA_ATIVA=true` para começar os 5 dias.
 
 **Dias 1 a 5**
-- 09:00: o resumo diário roda sozinho. Olhar só C1–C6 e as classes; C7 fica "período curto" até o dia 5.
+- 09:47: o resumo diário roda sozinho. Olhar só C1–C6 e as classes; C7 fica "período curto" até o dia 5.
 - Qualquer `decision_mismatch`, `unclassified` ou `node_not_acting`: baixar o artifact, rodar com `-with-ids`, explicar o caso em `DIVERGENCIAS.md`. Uma divergência explicada e sem defeito da KAS vira nova regra de classe; um defeito real reinicia a contagem dos 5 dias depois da correção.
 - Execução vermelha por erro de conexão isolado não reinicia nada; conta em C4.
 
-**Dia 5 (veredito)**
-- Run manual do `sombra-reaper-resumo` com `days` = 6 e `min_days` = 5. Verde em C1–C7 = sombra aprovada. Isso **não** ativa escrita: a troca de responsabilidade (executor) é outra etapa, com OK separado.
+**Janela oficial registrada (Kadu, 19/11/2026 19:35 BRT)**
+- Aquecimento: da ativação da agenda (19/11, 21:05 BRT) até 23/11 00h. Roda igual, aparece nos resumos diários, **não entra no veredito**.
+- Janela oficial: **23/11/2026 00h → 28/11/2026 00h, horário de Brasília** (segunda a sexta, 5 dias completos; fim exclusivo).
+- Veredito: **30/11/2026, 10h BRT**.
+
+**Veredito**
+- O `sombra-reaper-resumo` já usa a janela oficial sozinho (`deploy/sombra/janela-resumo.sh`; variáveis opcionais `SOMBRA_JANELA_INICIO`/`SOMBRA_JANELA_FIM`, com estes valores como padrão): antes de 23/11 mostra o aquecimento sem janela; de 23/11 a 28/11 mostra o parcial da janela até a hora do resumo; a partir de 28/11 00h roda o veredito com a janela inteira e `min_days` = 5. Equivale ao run manual com `min_days` = 5, `since` = `2026-11-23T00:00:00-03:00` e `until` = `2026-11-28T00:00:00-03:00`. Só os ciclos que começaram dentro da janela contam; período e cobertura (C7) são medidos contra a janela inteira, então um dia faltando reprova.
+- Verde em C1–C7 com comparação **conclusiva** = sombra aprovada.
+- **Zero candidatos (ou zero conferências) = comparação INCONCLUSIVA**, mesmo com todos os ciclos saudáveis: C2 e C3 aparecem como `INCONCLUSIVO` e o resumo sai com código 4. Ciclos saudáveis provam que a sombra roda, não que decide como o Node. Inconclusivo não aprova a sombra.
+- Aprovação **não** ativa escrita: a troca de responsabilidade (executor) é outra etapa, com OK separado.
 
 **Parar a qualquer momento**: apagar a variável (ou trocar para `false`)
 ```

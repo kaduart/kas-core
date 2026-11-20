@@ -3,7 +3,7 @@
 # Dois gatilhos SEPARADOS:
 #   - Manual (workflow_dispatch): uma execução com a duração pedida (padrão 15 min). Não liga a
 #     agenda nem dispara outras execuções.
-#   - Agenda: 00:05, 06:05, 12:05 e 18:05 UTC, SÓ com a variável SOMBRA_AGENDA_ATIVA=true.
+#   - Agenda: 00:23, 06:23, 12:23 e 18:23 UTC (fora do início da hora, onde o GitHub descarta agendamentos sob carga), SÓ com a variável SOMBRA_AGENDA_ATIVA=true.
 #     Sem essa variável (ou com qualquer outro valor) o agendamento não roda.
 # Cada execução agendada termina 8 min antes do próximo horário (deploy/sombra/janela.sh), então
 # as execuções não se sobrepõem e não dependem de fila. É amostragem por ciclos de 5 min; a
@@ -16,7 +16,7 @@ name: sombra-reaper
 
 on:
   schedule:
-    - cron: '5 0,6,12,18 * * *'
+    - cron: '23 0,6,12,18 * * *'
   workflow_dispatch:
     inputs:
       minutes:

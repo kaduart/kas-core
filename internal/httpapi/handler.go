@@ -17,6 +17,7 @@ import (
 	"kas-core-pilot/internal/audit"
 	"kas-core-pilot/internal/configstore"
 	"kas-core-pilot/internal/events"
+	"kas-core-pilot/internal/process"
 	"kas-core-pilot/internal/strictjson"
 )
 
@@ -36,6 +37,7 @@ type Handler struct {
 	audit    *audit.Service
 	events   *events.Service
 	puller   *events.Puller
+	process  *process.Engine
 	metrics  *metricsState
 	logger   *slog.Logger
 	mux      *http.ServeMux
@@ -92,6 +94,7 @@ func newHandler(store *configstore.Store, auditService *audit.Service, maxConcur
 	h.mux.HandleFunc("/internal/v1/events/deliveries/claim", h.claimDeliveries)
 	h.mux.HandleFunc("/internal/v1/events/deliveries/ack", h.ackDelivery)
 	h.mux.HandleFunc("/internal/v1/events/deliveries/nack", h.nackDelivery)
+	h.registerProcessRoutes()
 	return h
 }
 
@@ -250,6 +253,10 @@ func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, r, http.StatusServiceUnavailable, "events_unavailable", "event storage is not ready")
 			return
 		}
+	}
+	if r.Method == http.MethodGet && h.processReady(r.Context()) != nil {
+		h.writeError(w, r, http.StatusServiceUnavailable, "process_unavailable", "process storage is not ready")
+		return
 	}
 	h.health(w, r)
 }

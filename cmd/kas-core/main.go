@@ -16,6 +16,7 @@ import (
 	"kas-core-pilot/internal/events"
 	"kas-core-pilot/internal/httpapi"
 	"kas-core-pilot/internal/metrics"
+	"kas-core-pilot/internal/process"
 )
 
 func main() {
@@ -37,6 +38,10 @@ func run() int {
 	eventsMigrationURLEnv := flag.String("events-migration-database-url-env", "KAS_EVENTS_MIGRATION_DATABASE_URL", "environment variable holding the events migration-role connection string (used with -events-migrate-only)")
 	eventsPurge := flag.Bool("events-purge", false, "delete expired outbox rows (delivered after 30 days, dead after 90 days) with the migration role, then exit; never runs automatically")
 	eventsPurgeDryRun := flag.Bool("events-purge-dry-run", false, "with -events-purge: only count what would be deleted")
+	processBackend := flag.String("process-store", "none", "Process Studio engine: none (default, routes answer 503) or postgres; postgres requires -events-store postgres and uses the same database")
+	processAutoMigrate := flag.Bool("process-auto-migrate", true, "with -process-store postgres: apply pending process migrations at startup; set false when the runtime role has no DDL rights")
+	processMigrateOnly := flag.Bool("process-migrate-only", false, "apply process PostgreSQL migrations with the events migration role and exit (run after the events migrations)")
+	processTimerInterval := flag.Duration("process-timer-interval", time.Second, "with -process-store postgres: how often due timers are checked")
 	metricsTokenEnv := flag.String("metrics-token-env", "", "environment variable holding a bearer token that GET /metrics requires; without it /metrics is served only on a loopback listener")
 	addr := flag.String("addr", "127.0.0.1:8088", "listen address")
 	maxConcurrent := flag.Int("max-concurrent", 32, "maximum concurrent HTTP requests (1-128)")
@@ -45,7 +50,7 @@ func run() int {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if *auditMigrateOnly || *eventsMigrateOnly || *eventsPurge {
+	if *auditMigrateOnly || *eventsMigrateOnly || *eventsPurge || *processMigrateOnly {
 		if *auditMigrateOnly {
 			if *auditBackend != "postgres" {
 				logger.Error("-audit-migrate-only requires -audit-store postgres")
@@ -77,6 +82,22 @@ func run() int {
 				return 1
 			}
 			logger.Info("events migrations applied")
+		}
+		if *processMigrateOnly {
+			if *processBackend != "postgres" || *eventsBackend != "postgres" {
+				logger.Error("-process-migrate-only requires -process-store postgres and -events-store postgres")
+				return 2
+			}
+			dsn, found := os.LookupEnv(*eventsMigrationURLEnv)
+			if !found || dsn == "" {
+				logger.Error("events migration connection variable is not set; process migrations use the same role", "env", *eventsMigrationURLEnv)
+				return 2
+			}
+			if err := process.Migrate(context.Background(), dsn); err != nil {
+				logger.Error("process migration failed", "reason", err.Error())
+				return 1
+			}
+			logger.Info("process migrations applied")
 		}
 		if *eventsPurge {
 			if *eventsBackend != "postgres" {
@@ -185,6 +206,37 @@ func run() int {
 		api.EnablePull(events.NewPuller(eventStore, events.PullConfig{}))
 	default:
 		logger.Error("invalid events store; use none or postgres")
+		return 2
+	}
+
+	switch *processBackend {
+	case "none":
+	case "postgres":
+		if eventStore == nil {
+			logger.Error("-process-store postgres requires -events-store postgres (same database)")
+			return 2
+		}
+		dsn, _ := os.LookupEnv(*eventsDatabaseURLEnv)
+		engine, err := process.Open(context.Background(), dsn, *processAutoMigrate, process.Config{Registry: store, Logger: logger})
+		if err != nil {
+			logger.Error("process store unavailable", "reason", err.Error())
+			return 2
+		}
+		defer engine.Close()
+		timerCtx, stopTimers := context.WithCancel(context.Background())
+		timersDone := make(chan struct{})
+		go func() {
+			defer close(timersDone)
+			engine.Run(timerCtx, *processTimerInterval)
+		}()
+		defer func() {
+			stopTimers()
+			<-timersDone
+		}()
+		api.EnableProcess(engine)
+		logger.Info("process studio engine enabled", "timer_interval", processTimerInterval.String())
+	default:
+		logger.Error("invalid process store; use none or postgres")
 		return 2
 	}
 

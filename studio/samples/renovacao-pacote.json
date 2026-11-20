@@ -1,0 +1,41 @@
+{
+  "schema": "kas.process/v1",
+  "process_key": "renovacao-pacote",
+  "start": "falar_com_familia",
+  "calendar": {"zone": "America/Sao_Paulo", "holidays": ["2026-11-20", "2026-12-25"]},
+  "steps": {
+    "falar_com_familia": {
+      "type": "human_task",
+      "roles": ["secretaria"],
+      "outcomes": ["renovou", "pausa_combinada", "vai_sair"],
+      "deadline": {"business_days": 2, "cutoff": "18:00"},
+      "grace": "PT5M",
+      "on_deadline": "revisar_supervisao",
+      "late_response": "record_only",
+      "next": "decidir"
+    },
+    "decidir": {
+      "type": "decision",
+      "routes": {"renovou": "criar_pacote_novo", "pausa_combinada": "fim_pausado", "vai_sair": "fim_nao_renovou"}
+    },
+    "criar_pacote_novo": {
+      "type": "external_command",
+      "command_type": "crm.package.create_renewal",
+      "reply_timeout": "PT1H",
+      "max_status_queries": 3,
+      "require_result_ref": true,
+      "on_confirmed": "fim_renovado",
+      "on_rejected": "revisar_supervisao",
+      "on_no_reply": "revisar_supervisao"
+    },
+    "revisar_supervisao": {
+      "type": "human_task",
+      "roles": ["supervisao"],
+      "outcomes": ["renovou", "pausa_combinada", "vai_sair"],
+      "next": "decidir"
+    },
+    "fim_renovado": {"type": "end", "result": "renovado"},
+    "fim_pausado": {"type": "end", "result": "pausado"},
+    "fim_nao_renovou": {"type": "end", "result": "nao_renovou"}
+  }
+}

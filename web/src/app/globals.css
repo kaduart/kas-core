@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --color-brand: var(--brand);
+  --color-brand-dark: var(--brand-dark);
+  --color-brand-deep: var(--brand-deep);
+  --color-brand-tint: var(--brand-tint);
+  --color-brand-ink: var(--brand-ink);
+  --color-accent: var(--accent);
+  --color-on-accent: var(--on-accent);
+  --color-ink: #0f1f17;
+  --color-muted: #5a6a62;
+  --color-canvas: #f4f6f5;
+  --color-line: #e6ebe8;
+}
+
+:root {
+  /* valores padrão KAS; o TenantProvider sobrescreve por empresa */
+  --brand: #0e8f4e;
+  --brand-dark: #0a6135;
+  --brand-deep: #064023;
+  --brand-tint: #dff0e7;
+  --brand-ink: #08562f;
+  --accent: #c6f03c;
+  --on-accent: #064023;
+}
+
+html,
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Item ativo do menu: pílula que "encaixa" no conteúdo com o recorte curvado (layout aprovado). */
+.nav-active {
+  position: relative;
+  background: var(--color-canvas);
+  color: var(--brand-dark);
+}
+.nav-active::before,
+.nav-active::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  width: 26px;
+  height: 26px;
+  pointer-events: none;
+}
+.nav-active::before {
+  top: -26px;
+  border-bottom-right-radius: 26px;
+  box-shadow: 10px 10px 0 10px var(--color-canvas);
+}
+.nav-active::after {
+  bottom: -26px;
+  border-top-right-radius: 26px;
+  box-shadow: 10px -10px 0 10px var(--color-canvas);
+}
+
+.funnel-bar {
+  clip-path: polygon(0 0, 100% 0, calc(100% - 10px) 100%, 10px 100%);
+}
+
+@keyframes kas-float {
+  0%,
+  100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+.kas-float {
+  animation: kas-float 3s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

@@ -112,7 +112,15 @@ export function FlowCanvas({ definition, current, selected, editable, onSelect, 
       data: { name, step, isStart: definition.start === name, current: current === name, selected: selected === name },
     }))
   const [nodes, setNodes] = useState<StepNode[]>(build)
-  useEffect(() => setNodes(build()), [definition, current, selected]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Rebuild from the definition (the source of truth) and keep only what React
+  // Flow measured, so a late dimension/select change can never bring back an
+  // older version of the step data.
+  useEffect(() => {
+    setNodes((ns) => build().map((n) => {
+      const old = ns.find((o) => o.id === n.id)
+      return old?.measured ? { ...n, measured: old.measured } : n
+    }))
+  }, [definition, current, selected]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const edges: Edge[] = useMemo(
     () =>
@@ -133,12 +141,10 @@ export function FlowCanvas({ definition, current, selected, editable, onSelect, 
     [definition],
   )
 
-  const onNodesChange = (changes: NodeChange<StepNode>[]) => {
-    const next = applyNodeChanges(changes, nodes)
-    setNodes(next)
-    if (editable && onMove && changes.some((c) => c.type === 'position' && c.dragging === false)) {
-      onMove(Object.fromEntries(next.map((n) => [n.id, n.position])))
-    }
+  const onNodesChange = (changes: NodeChange<StepNode>[]) => setNodes((ns) => applyNodeChanges(changes, ns))
+  const onNodeDragStop = (_: unknown, __: StepNode, dragged: StepNode[]) => {
+    if (!editable || !onMove) return
+    onMove({ ...positions, ...Object.fromEntries(dragged.map((n) => [n.id, n.position])) })
   }
 
   return (
@@ -148,6 +154,7 @@ export function FlowCanvas({ definition, current, selected, editable, onSelect, 
         edges={edges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
+        onNodeDragStop={onNodeDragStop}
         onNodeClick={(_, n) => onSelect?.(n.id)}
         onPaneClick={() => onSelect?.(undefined)}
         nodesConnectable={false}

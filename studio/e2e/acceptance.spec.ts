@@ -40,6 +40,14 @@ test('editar prazo, publicar e acompanhar execução sem mudar instância antiga
   await page.getByTestId('deadline-days').press('Enter')
   await expect(page.getByTestId('changes')).toContainText('negociar.deadline.business_days')
   await expect(page.getByTestId('deadline-negociar')).toContainText(`${newDays} dias úteis`)
+  // Arrastar uma etapa também conta como alteração do desenho.
+  const box = (await page.getByTestId('node-revisar').boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2 + 60, { steps: 8 })
+  await page.mouse.up()
+  await expect(page.getByTestId('changes')).toContainText('posições no desenho')
+  await expect(page.getByTestId('deadline-negociar')).toContainText(`${newDays} dias úteis`)
   await expect(page.getByTestId('publish')).toBeDisabled() // só depois de validar
   await page.getByTestId('validate').click()
   await expect(page.getByTestId('notice')).toContainText('Definição válida')

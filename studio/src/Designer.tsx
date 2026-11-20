@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, ApiError } from './api'
 import { FlowCanvas } from './FlowCanvas'
-import { diffDefinitions, fmtDateTime, newPublishId, withLayout } from './model'
+import { diffDefinitions, fmtDateTime, newPublishId, removeStep, withLayout } from './model'
+import { NewStepForm } from './NewStepForm'
 import { StepPanel } from './StepPanel'
 import type { Definition, DefinitionView } from './types'
 
@@ -17,6 +18,7 @@ export function Designer({ tenant, onPublished }: { tenant: string; onPublished:
   const [validated, setValidated] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [showJson, setShowJson] = useState(false)
+  const [adding, setAdding] = useState(false)
 
   const refreshList = useCallback(async () => {
     const defs = await api.definitions(tenant)
@@ -30,6 +32,7 @@ export function Designer({ tenant, onPublished }: { tenant: string; onPublished:
     setLoaded(view)
     setDraft(view.definition)
     setSelected(undefined)
+    setAdding(false)
     setValidated(undefined)
     setNotice(undefined)
   }, [tenant])
@@ -52,6 +55,24 @@ export function Designer({ tenant, onPublished }: { tenant: string; onPublished:
     setDraft(d)
     setValidated(undefined)
     setNotice(undefined)
+  }
+
+  const remove = (name: string) => {
+    if (!draft) return
+    try {
+      const r = removeStep(draft, name)
+      setSelected(undefined)
+      edit(r.definition)
+      setNotice({
+        kind: 'info',
+        text: r.cleared.length
+          ? `Etapa ${name} apagada. Estes caminhos apontavam para ela e ficaram vazios: escolha o novo destino e valide.`
+          : `Etapa ${name} apagada.`,
+        details: r.cleared,
+      })
+    } catch (e) {
+      setNotice({ kind: 'error', text: (e as Error).message })
+    }
   }
 
   const validate = async () => {
@@ -120,6 +141,7 @@ export function Designer({ tenant, onPublished }: { tenant: string; onPublished:
                 {viewingOld ? <span className="pill warn">versão antiga: publicar cria a versão {latest + 1}</span> : null}
               </div>
               <div className="toolbar-right">
+                <button className="ghost" disabled={busy} onClick={() => setAdding(true)} data-testid="add-step">Nova etapa</button>
                 <button className="ghost" onClick={() => setShowJson((v) => !v)}>{showJson ? 'Desenho' : 'JSON'}</button>
                 <button className="ghost" disabled={!changes.length || busy} onClick={() => edit(loaded.definition)} data-testid="discard">Descartar</button>
                 <button disabled={busy} onClick={validate} data-testid="validate">Validar</button>
@@ -141,15 +163,18 @@ export function Designer({ tenant, onPublished }: { tenant: string; onPublished:
               {showJson ? (
                 <pre className="json" data-testid="json">{JSON.stringify(draft, null, 2)}</pre>
               ) : (
-                <FlowCanvas definition={draft} selected={selected} editable onSelect={setSelected}
+                <FlowCanvas definition={draft} selected={selected} editable onSelect={(s) => { setSelected(s); if (s) setAdding(false) }}
                   onMove={(pos) => edit(withLayout(draft, pos))} />
               )}
               <aside className="panel">
-                {selected ? (
-                  <StepPanel definition={draft} name={selected} readOnly={false} onChange={edit} />
+                {adding ? (
+                  <NewStepForm definition={draft} near={selected} onCancel={() => setAdding(false)}
+                    onCreate={(d, name) => { edit(d); setAdding(false); setSelected(name) }} />
+                ) : selected ? (
+                  <StepPanel definition={draft} name={selected} readOnly={false} onChange={edit} onRemove={remove} />
                 ) : (
                   <div className="panel-body muted">
-                    <p>Clique numa etapa para editar papéis, prazo, tolerância e caminhos.</p>
+                    <p>Clique numa etapa para editar papéis, prazo, tolerância e caminhos, ou use Nova etapa.</p>
                     <p>Publicado por <code>{loaded.published_by}</code> em {fmtDateTime(loaded.published_at)}.</p>
                   </div>
                 )}

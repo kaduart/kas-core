@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { autoLayout, describeDeadline, describeDuration, diffDefinitions, edgesOf, positionsOf, setDeadline, updateStep, withLayout } from './model'
+import { addStep, autoLayout, describeDeadline, describeDuration, diffDefinitions, edgesOf, positionsOf, referencesTo, removeStep, setDeadline, stepNameProblem, stepTemplate, updateStep, withLayout } from './model'
 import type { Definition } from './types'
 
 const def: Definition = {
@@ -70,5 +70,58 @@ describe('describe', () => {
     expect(describeDuration('PT5M')).toBe('5 min')
     expect(describeDuration('P1DT2H')).toBe('1 dia 2 horas')
     expect(describeDeadline(undefined)).toBe('sem prazo')
+  })
+})
+
+describe('addStep', () => {
+  it('creates the minimum shape and places it next to the anchor', () => {
+    const d = addStep(def, 'ligar_cliente', 'human_task', 'negociar')
+    expect(d.steps.ligar_cliente).toEqual({ type: 'human_task', roles: ['responsavel'], outcomes: ['concluido'] })
+    const pos = positionsOf(d)
+    expect(pos.ligar_cliente.x).toBeGreaterThan(pos.negociar.x)
+    expect(def.steps.ligar_cliente).toBeUndefined()
+  })
+  it('gives every type a template the engine knows', () => {
+    for (const t of ['human_task', 'decision', 'external_command', 'wait_event', 'end'] as const) {
+      expect(stepTemplate(t).type).toBe(t)
+    }
+    expect(stepTemplate('external_command').command_type).toMatch(/^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$/)
+  })
+  it('refuses invalid or repeated names', () => {
+    expect(stepNameProblem(def, 'Ligar')).not.toBe('')
+    expect(stepNameProblem(def, 'negociar')).toContain('Já existe')
+    expect(stepNameProblem(def, 'nova_etapa')).toBe('')
+    expect(() => addStep(def, 'revisar', 'end')).toThrow()
+  })
+})
+
+describe('removeStep', () => {
+  it('removes the step and clears every transition that pointed to it', () => {
+    const withLay = withLayout(def, positionsOf(def))
+    const r = removeStep(withLay, 'revisar')
+    expect(r.definition.steps.revisar).toBeUndefined()
+    expect(r.cleared).toEqual(['negociar.on_deadline', 'pedir_cancelamento.on_no_reply', 'pedir_cancelamento.on_rejected'])
+    expect(r.definition.steps.negociar.on_deadline).toBeUndefined()
+    expect(r.definition.steps.negociar.late_response).toBeUndefined()
+    expect(r.definition.layout?.nodes?.some((n) => n.id === 'revisar')).toBe(false)
+    expect(edgesOf(r.definition).some((e) => e.to === 'revisar')).toBe(false)
+  })
+  it('clears routes, events and interrupts by key', () => {
+    const d: Definition = {
+      ...def,
+      steps: { ...def.steps, esperar: { type: 'wait_event', on_events: { 'crm.pago': 'fim_retido', 'crm.estorno': 'revisar' } } },
+      interrupts: { 'crm.contrato.cancelado': 'fim_cancelado' },
+    }
+    const r = removeStep(d, 'fim_cancelado')
+    expect(r.cleared).toEqual(['interrupts.crm.contrato.cancelado', 'pedir_cancelamento.on_confirmed'])
+    expect(r.definition.interrupts).toBeUndefined()
+    const r2 = removeStep(d, 'fim_retido')
+    expect(r2.cleared).toEqual(['esperar.on_events.crm.pago', 'resultado.routes.cliente_permanece'])
+    expect(r2.definition.steps.resultado.routes).toEqual({ cliente_cancela: 'pedir_cancelamento' })
+  })
+  it('never removes the start step', () => {
+    expect(() => removeStep(def, 'negociar')).toThrow(/início/)
+    expect(referencesTo(def, 'negociar')).toEqual([])
+    expect(referencesTo(def, 'resultado')).toEqual(['negociar.next', 'revisar.next'])
   })
 })

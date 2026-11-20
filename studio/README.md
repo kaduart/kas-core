@@ -4,7 +4,7 @@ Editor visual dos fluxos do motor (`internal/process`), com visual inspirado em 
 
 ## O que faz
 
-- **Desenho:** abre o fluxo de cada empresa e mostra todas as versões. Na etapa, edita papéis, prazo (dias úteis com corte, ou duração), tolerância, caminhos e status de negócio. Também dá para arrastar as etapas. Antes de publicar, o editor lista as alterações. **Publicar só fica liberado depois de Validar.** Cada publicação gera uma versão nova, e execuções já iniciadas continuam na versão delas.
+- **Desenho:** abre o fluxo de cada empresa e mostra todas as versões. Na etapa, edita papéis, prazo (dias úteis com corte, ou duração), tolerância, caminhos e status de negócio. Também dá para arrastar as etapas, **criar etapa** (Nova etapa: nome e tipo; nasce com o formato mínimo do motor e os caminhos são ligados no painel) e **apagar etapa** (o editor mostra antes quem aponta para ela; esses caminhos ficam vazios e o Validar aponta o que falta). A etapa de início não pode ser apagada: use "Usar como início" em outra antes. Saídas da tarefa, rotas da decisão e eventos esperados também podem ser incluídos e retirados. Antes de publicar, o editor lista as alterações. **Publicar só fica liberado depois de Validar.** Cada publicação gera uma versão nova, e execuções já iniciadas continuam na versão delas.
 - **Execuções:** inicia uma execução e acompanha a etapa atual no desenho, as tarefas com prazo (horário de Brasília), os comandos ao CRM e o histórico. As tarefas abertas são resolvidas com um ator fictício.
 
 ## Segurança do piloto

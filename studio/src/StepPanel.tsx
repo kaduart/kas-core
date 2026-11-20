@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { describeDeadline, STEP_LABEL, updateStep } from './model'
+import { describeDeadline, referencesTo, STEP_LABEL, STEP_NAME, updateStep } from './model'
 import type { Deadline, Definition, Step } from './types'
 
 interface Props {
@@ -7,6 +7,49 @@ interface Props {
   name: string
   readOnly: boolean
   onChange: (def: Definition) => void
+  onRemove?: (name: string) => void
+}
+
+// KeyAdder adds a key (route outcome or event type) to a map of step targets.
+function KeyAdder({ label, pattern, existing, onAdd, testId, disabled, placeholder }: {
+  label: string; pattern: RegExp; existing: string[]; onAdd: (key: string) => void; testId: string; disabled: boolean; placeholder: string
+}) {
+  const [v, setV] = useState('')
+  const key = v.trim()
+  const bad = !!key && (!pattern.test(key) || existing.includes(key))
+  return (
+    <div className="row">
+      <input value={v} placeholder={placeholder} disabled={disabled} data-testid={testId} aria-label={label}
+        onChange={(e) => setV(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter' && key && !bad) { e.preventDefault(); onAdd(key); setV('') } }} />
+      <button type="button" className="ghost" disabled={disabled || !key || bad} data-testid={`${testId}-add`}
+        onClick={() => { onAdd(key); setV('') }}>{label}</button>
+    </div>
+  )
+}
+
+// Event types follow the engine's eventTypePattern (dotted lowercase names).
+const EVENT_TYPE = /^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)*$/
+
+function RemoveStep({ definition, name, onRemove }: { definition: Definition; name: string; onRemove: (name: string) => void }) {
+  const [confirming, setConfirming] = useState(false)
+  useEffect(() => setConfirming(false), [name])
+  if (definition.start === name) {
+    return <p className="hint" data-testid="remove-blocked">A etapa de início não pode ser apagada. Escolha outra etapa como início antes.</p>
+  }
+  const refs = referencesTo(definition, name)
+  return confirming ? (
+    <div className="notice error" data-testid="remove-confirm">
+      Apagar a etapa <code>{name}</code>?
+      {refs.length ? <> Estes caminhos apontam para ela e vão ficar vazios: <ul>{refs.map((r) => <li key={r}><code>{r}</code></li>)}</ul></> : ' Nenhuma etapa aponta para ela.'}
+      <div className="row">
+        <button type="button" className="danger" data-testid="remove-step-confirm" onClick={() => onRemove(name)}>Apagar</button>
+        <button type="button" className="ghost" onClick={() => setConfirming(false)}>Cancelar</button>
+      </div>
+    </div>
+  ) : (
+    <button type="button" className="ghost danger-text" data-testid="remove-step" onClick={() => setConfirming(true)}>Apagar etapa</button>
+  )
 }
 
 function StepSelect({ value, steps, onChange, testId, disabled, allowEmpty }: {
@@ -75,7 +118,7 @@ function DeadlineEditor({ deadline, onChange, disabled }: { deadline?: Deadline;
   )
 }
 
-export function StepPanel({ definition, name, readOnly, onChange }: Props) {
+export function StepPanel({ definition, name, readOnly, onChange, onRemove }: Props) {
   const step = definition.steps[name]
   if (!step) return null
   const steps = Object.keys(definition.steps).sort()
@@ -87,14 +130,21 @@ export function StepPanel({ definition, name, readOnly, onChange }: Props) {
       <div className="panel-title">
         <span className="kind">{STEP_LABEL[step.type]}</span>
         <h3>{name}</h3>
-        {definition.start === name ? <span className="pill">início</span> : null}
+        {definition.start === name ? <span className="pill">início</span> : !readOnly && step.type !== 'end' ? (
+          <button type="button" className="ghost small" data-testid="make-start" onClick={() => onChange({ ...definition, start: name })}>Usar como início</button>
+        ) : null}
       </div>
 
       {step.type === 'human_task' ? (
         <>
           <TextField label="Papéis (separados por vírgula)" value={(step.roles ?? []).join(', ')} testId="field-roles" disabled={readOnly}
             onCommit={(v) => set({ roles: list(v) })} />
-          <div className="field"><span>Saídas</span><div className="chips">{(step.outcomes ?? []).map((o) => <code key={o}>{o}</code>)}</div></div>
+          {readOnly ? (
+            <div className="field"><span>Saídas</span><div className="chips">{(step.outcomes ?? []).map((o) => <code key={o}>{o}</code>)}</div></div>
+          ) : (
+            <TextField label="Saídas (separadas por vírgula)" value={(step.outcomes ?? []).join(', ')} testId="field-outcomes" disabled={readOnly}
+              onCommit={(v) => set({ outcomes: list(v) })} />
+          )}
           <label className="field"><span>Depois de resolvida, vai para</span>
             <StepSelect value={step.next} steps={steps} testId="field-next" disabled={readOnly} onChange={(v) => set({ next: v })} /></label>
           <DeadlineEditor deadline={step.deadline} disabled={readOnly} onChange={(d) => set({ deadline: d, ...(d ? {} : { grace: undefined, on_deadline: undefined, late_response: undefined }) })} />
@@ -118,8 +168,13 @@ export function StepPanel({ definition, name, readOnly, onChange }: Props) {
               <code>{outcome}</code><span>→</span>
               <StepSelect value={to} steps={steps} testId={`route-${outcome}`} disabled={readOnly}
                 onChange={(v) => set({ routes: { ...step.routes, [outcome]: v } })} />
+              {!readOnly ? <button type="button" className="ghost small" data-testid={`route-${outcome}-remove`} aria-label={`Tirar rota ${outcome}`}
+                onClick={() => { const r = { ...step.routes }; delete r[outcome]; set({ routes: r }) }}>✕</button> : null}
             </div>
           ))}
+          {!readOnly ? <KeyAdder label="Adicionar rota" pattern={STEP_NAME} existing={Object.keys(step.routes ?? {})} testId="route-new" disabled={readOnly}
+            placeholder="saída, ex.: aprovado" onAdd={(k) => set({ routes: { ...step.routes, [k]: '' } })} /> : null}
+          <p className="hint">Cada saída da tarefa anterior precisa de uma rota aqui.</p>
         </div>
       ) : null}
 
@@ -150,8 +205,12 @@ export function StepPanel({ definition, name, readOnly, onChange }: Props) {
               <div className="route" key={ev}><code>{ev}</code><span>→</span>
                 <StepSelect value={to} steps={steps} testId={`event-${ev}`} disabled={readOnly}
                   onChange={(v) => set({ on_events: { ...step.on_events, [ev]: v } })} />
+                {!readOnly ? <button type="button" className="ghost small" data-testid={`event-${ev}-remove`} aria-label={`Tirar evento ${ev}`}
+                  onClick={() => { const m = { ...step.on_events }; delete m[ev]; set({ on_events: m }) }}>✕</button> : null}
               </div>
             ))}
+            {!readOnly ? <KeyAdder label="Adicionar evento" pattern={EVENT_TYPE} existing={Object.keys(step.on_events ?? {})} testId="event-new" disabled={readOnly}
+              placeholder="tipo, ex.: crm.pagamento.recebido" onAdd={(k) => set({ on_events: { ...step.on_events, [k]: '' } })} /> : null}
           </div>
           <DeadlineEditor deadline={step.deadline} disabled={readOnly} onChange={(d) => set({ deadline: d })} />
           {step.deadline ? (
@@ -169,6 +228,8 @@ export function StepPanel({ definition, name, readOnly, onChange }: Props) {
         <TextField label="Status de negócio (opaco, o CRM interpreta)" value={step.business_status} testId="field-business-status" disabled={readOnly}
           onCommit={(v) => set({ business_status: v })} />
       ) : null}
+
+      {!readOnly && onRemove ? <RemoveStep definition={definition} name={name} onRemove={onRemove} /> : null}
     </div>
   )
 }

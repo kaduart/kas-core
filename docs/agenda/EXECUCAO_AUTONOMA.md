@@ -97,3 +97,71 @@ histórico. 6 testes de integração + script ponta a ponta.
 
 Classificação: **Implementada e validada com fixtures**. Com dados reais:
 **Bloqueada** (depende da cópia autorizada).
+
+CI do marco 4: commit `cb7eab9`, run 44862655066 (verde).
+
+## Marco 5 — fase 4A: escrita na Agenda (tenant fictício)
+
+Detalhes em `docs/agenda/FASE4A_ESCRITA.md`. Rotas `POST /internal/v1/scheduling/bookings`,
+`/bookings/{id}/cancel` e `/bookings/{id}/reschedule`, com capability `scheduling:write`,
+papéis admin, gestor e atendimento, e ator `user:<id>` ou `service:<id>` na auditoria.
+Tenant espelhado de um sistema externo (ex.: Fono Inova) recusa escrita com
+`agenda_read_only`; fora do expediente, `outside_opening_hours`.
+
+Concorrência medida (24 pedidos paralelos por cenário, Postgres local):
+mesmo horário 1 criado + 23 `slot_taken`; mesmo `Idempotency-Key` 1 criado + 23
+replays com o mesmo id; remarcar da mesma versão 1 sucesso + 23 `version_conflict`;
+soma das versões = linhas de auditoria.
+
+Classificação: **Implementada e validada** (local, dados fictícios). CI: commit
+`616a01c`, run 44863428798 (verde).
+
+## Marco 6 — fase 4B: tela Agenda no painel
+
+Detalhes em `docs/agenda/FASE4B_PAINEL.md`. Catálogo (`GET /internal/v1/scheduling/catalog`),
+seed fictício (`cmd/kas-scheduling-seed`, só clinica-aurora, odonto-sorriso e
+escola-demo, só loopback), BFF Next.js com checagem de origem, tela dia e semana,
+painel lateral para criar, remarcar e cancelar, modo só leitura.
+
+Validado com a API real local (sem mocks): Playwright criou, validou erro, remarcou,
+cancelou, mostrou a semana, celular 390 px sem rolagem lateral, usuário de leitura
+sem botões e com POST recusado (403 `role_forbidden`). Seed: 30 agendamentos na 1ª
+vez, 0 na 2ª. tsc, eslint, vitest (45) e impeccable detect limpos.
+
+Classificação: tela e API **Implementada e validada** (local). O compose do
+`deploy/painel-local` com a Agenda: **Implementada, aguardando validação** (não
+subido com Docker Compose nesta noite; testado com os binários). CI: commit
+`c45c26e`, run 44864560962 (verde).
+
+## Marco 7 — fase 3B: importação real protegida (preparação)
+
+Detalhes em `docs/agenda/FASE3B_IMPORTACAO_REAL.md`. Novo `-mode plan` no
+`kas-scheduling-mirror`: pede ao MongoDB só o plano de cada consulta (explain
+queryPlanner), sem ler documentos, e acusa varredura de coleção ou de índice sem
+limites. `scripts/preflight-agenda-import.sh` confere URI local, chave e nome do
+banco antes do plano.
+
+Bug achado e corrigido: a leitura por janela ordenava por `_id` e o MongoDB
+percorria o índice `_id` inteiro em vez do índice de data; agora ordena em Go.
+Achado no CRM (só leitura do código): `Appointment` não tem índice
+`{updatedAt:1,_id:1}`, então a carga incremental varreria a coleção. Criar esse
+índice é mudança no CRM/Atlas: **Bloqueada**.
+
+Classificação: pré-voo **Implementada e validada** (Mongo local com e sem
+índices). Importação real: **Bloqueada** (Atlas, cópia de dados reais e chave
+HMAC exigem autorização). CI: commit `30cac52`, run 44865249059.
+
+## Frente paralela — Jornada do Terapeuta (auditoria)
+
+Relatório técnico em Claude Doc ("KAS Health — Jornada do Terapeuta"). Só leitura
+do código do CRM; nada implementado.
+
+## Matriz final por fase
+
+| Fase | Estado | Evidência | Próxima autorização |
+|---|---|---|---|
+| 2 Importador + equivalência + benchmark | Implementada e validada (fictício) | Marcos 1–3, CI verde | Cópia real para o espelho local |
+| 3A Comparação | Implementada e validada com fixtures | Marco 4, CI verde | Mesma cópia real |
+| 4A Escrita | Implementada e validada (local) | Marco 5, CI verde | Nenhuma para seguir local |
+| 4B Painel | Implementada e validada (local); compose aguardando validação | Marco 6, CI verde, Playwright | Kadu testar no KADU-PC |
+| 3B Importação real | Pré-voo validado; importação Bloqueada | Marco 7 | Atlas, índice no CRM, chave HMAC |

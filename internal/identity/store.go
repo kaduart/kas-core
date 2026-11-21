@@ -126,7 +126,7 @@ func Migrate(ctx context.Context, connString string) error {
 	return migrator.Apply(ctx, pool)
 }
 
-func (s *Store) Close()                         { s.pool.Close() }
+func (s *Store) Close()                          { s.pool.Close() }
 func (s *Store) Ready(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 // NormalizeEmail lower-cases and validates an e-mail address.

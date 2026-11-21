@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"kas-core-pilot/internal/attribution"
-	"kas-core-pilot/internal/identity"
 	"kas-core-pilot/internal/audit"
 	"kas-core-pilot/internal/configstore"
 	"kas-core-pilot/internal/events"
 	"kas-core-pilot/internal/httpapi"
+	"kas-core-pilot/internal/identity"
 	"kas-core-pilot/internal/metrics"
 	"kas-core-pilot/internal/modules"
 	"kas-core-pilot/internal/process"

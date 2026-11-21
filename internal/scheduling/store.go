@@ -260,12 +260,12 @@ func (s *Store) getService(ctx context.Context, tenantID, id string) (Service, e
 // --- reads and calculations ------------------------------------------------
 
 const bookingColumns = `id, resource_id, client_ref, COALESCE(service_id, ''), starts_at, ends_at, status,
-	COALESCE(series_id, ''), version, updated_at`
+	COALESCE(series_id, ''), buffer_min, blocked_until, version, updated_at`
 
 func scanBooking(row pgx.Row) (Booking, error) {
 	var b Booking
-	err := row.Scan(&b.ID, &b.ResourceID, &b.ClientRef, &b.ServiceID, &b.Start, &b.End, &b.Status, &b.SeriesID, &b.Version, &b.UpdatedAt)
-	b.Start, b.End, b.UpdatedAt = b.Start.UTC(), b.End.UTC(), b.UpdatedAt.UTC()
+	err := row.Scan(&b.ID, &b.ResourceID, &b.ClientRef, &b.ServiceID, &b.Start, &b.End, &b.Status, &b.SeriesID, &b.BufferMin, &b.BlockedUntil, &b.Version, &b.UpdatedAt)
+	b.Start, b.End, b.BlockedUntil, b.UpdatedAt = b.Start.UTC(), b.End.UTC(), b.BlockedUntil.UTC(), b.UpdatedAt.UTC()
 	return b, err
 }
 
@@ -379,7 +379,7 @@ func (s *Store) Availability(ctx context.Context, tenantID string, q Availabilit
 	}
 	if in.Bookings, err = collectBookings(s.pool.Query(ctx, `SELECT `+bookingColumns+` FROM sched_bookings
 		WHERE tenant_id = $1 AND resource_id = $2 AND status IN ('tentative', 'scheduled', 'confirmed')
-			AND starts_at < $4 AND ends_at > $3`, tenantID, q.ResourceID, lo, hi)); err != nil {
+			AND starts_at < $4 AND blocked_until > $3`, tenantID, q.ResourceID, lo, hi)); err != nil {
 		return nil, mapError(err)
 	}
 	return Availability(in)
@@ -430,8 +430,8 @@ func (s *Store) CheckConflicts(ctx context.Context, tenantID string, candidates 
 	rows.Close()
 	existing, err := collectBookings(s.pool.Query(ctx, `SELECT `+bookingColumns+` FROM sched_bookings
 		WHERE tenant_id = $1 AND (resource_id = ANY($2) OR client_ref = ANY($3))
-			AND status IN ('tentative', 'scheduled', 'confirmed') AND starts_at < $5 AND ends_at > $4`,
-		tenantID, resources, clients, lo, hi))
+			AND status IN ('tentative', 'scheduled', 'confirmed') AND starts_at < $5 AND blocked_until > $4`,
+		tenantID, resources, clients, lo, hi.Add(240*time.Minute)))
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -443,13 +443,16 @@ func (s *Store) CheckConflicts(ctx context.Context, tenantID string, candidates 
 // NewBooking is a booking request. The store fills Exclusive/ClientExclusive
 // from the resource and the settings.
 type NewBooking struct {
-	ID             string
-	ResourceID     string
-	ClientRef      string
-	ServiceID      string
-	Start, End     time.Time
-	Status         string // default scheduled
-	SeriesID       string
+	ID         string
+	ResourceID string
+	ClientRef  string
+	ServiceID  string
+	Start, End time.Time
+	Status     string // default scheduled
+	SeriesID   string
+	// BufferMin applies only without ServiceID; with a service, the service's
+	// buffer (read in the same transaction) is used.
+	BufferMin      int
 	IdempotencyKey string
 	Actor          string
 }
@@ -508,10 +511,12 @@ func lockResource(ctx context.Context, tx pgx.Tx, tenantID, resourceID string) e
 	return err
 }
 
+// groupFull counts the bookings whose blocked time (booking plus buffer)
+// overlaps iv, which must also include the new booking's buffer.
 func groupFull(ctx context.Context, tx pgx.Tx, tenantID string, r Resource, iv Interval, except string) (bool, error) {
 	var taken int
 	err := tx.QueryRow(ctx, `SELECT count(*) FROM sched_bookings WHERE tenant_id = $1 AND resource_id = $2 AND id <> $3
-		AND status IN ('tentative', 'scheduled', 'confirmed') AND starts_at < $5 AND ends_at > $4`,
+		AND status IN ('tentative', 'scheduled', 'confirmed') AND starts_at < $5 AND blocked_until > $4`,
 		tenantID, r.ID, except, iv.Start, iv.End).Scan(&taken)
 	return taken >= r.Capacity, err
 }
@@ -549,7 +554,8 @@ func (s *Store) CreateBooking(ctx context.Context, tenantID string, nb NewBookin
 	if !ValidRef(tenantID) || !ValidRef(nb.ID) || !ValidRef(nb.ResourceID) || !ValidRef(nb.ClientRef) ||
 		!ValidRef(nb.IdempotencyKey) || !ValidRef(nb.Actor) || !ActiveStatus(nb.Status) ||
 		(nb.ServiceID != "" && !ValidRef(nb.ServiceID)) || (nb.SeriesID != "" && !ValidRef(nb.SeriesID)) ||
-		!nb.End.After(nb.Start) || nb.End.Sub(nb.Start) > 12*time.Hour {
+		!nb.End.After(nb.Start) || nb.End.Sub(nb.Start) > 12*time.Hour || nb.BufferMin < 0 || nb.BufferMin > 240 ||
+		(nb.ServiceID != "" && nb.BufferMin != 0) {
 		return Booking{}, false, ErrInvalid
 	}
 	nb.Start, nb.End = nb.Start.UTC().Truncate(time.Second), nb.End.UTC().Truncate(time.Second)
@@ -569,12 +575,22 @@ func (s *Store) CreateBooking(ctx context.Context, tenantID string, nb NewBookin
 		if err != nil {
 			return err
 		}
+		buffer := nb.BufferMin
+		if nb.ServiceID != "" {
+			if err := tx.QueryRow(ctx, `SELECT buffer_min FROM sched_services WHERE tenant_id = $1 AND id = $2 FOR SHARE`,
+				tenantID, nb.ServiceID).Scan(&buffer); errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			} else if err != nil {
+				return err
+			}
+		}
+		blocked := nb.End.Add(time.Duration(buffer) * time.Minute)
 		exclusive := r.Capacity <= 1
 		if err := lockResource(ctx, tx, tenantID, r.ID); err != nil {
 			return err
 		}
 		if !exclusive {
-			full, err := groupFull(ctx, tx, tenantID, r, Interval{nb.Start, nb.End}, "")
+			full, err := groupFull(ctx, tx, tenantID, r, Interval{nb.Start, blocked}, "")
 			if err != nil {
 				return err
 			}
@@ -583,11 +599,12 @@ func (s *Store) CreateBooking(ctx context.Context, tenantID string, nb NewBookin
 			}
 		}
 		created, err = scanBooking(tx.QueryRow(ctx, `INSERT INTO sched_bookings
-			(tenant_id, id, resource_id, client_ref, service_id, starts_at, ends_at, status, series_id, idempotency_key, exclusive, client_exclusive)
-			VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, NULLIF($9, ''), $10, $11, $12)
+			(tenant_id, id, resource_id, client_ref, service_id, starts_at, ends_at, status, series_id, idempotency_key,
+			 exclusive, client_exclusive, buffer_min, blocked_until)
+			VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, NULLIF($9, ''), $10, $11, $12, $13, $14)
 			RETURNING `+bookingColumns,
 			tenantID, nb.ID, nb.ResourceID, nb.ClientRef, nb.ServiceID, nb.Start, nb.End, nb.Status, nb.SeriesID,
-			nb.IdempotencyKey, exclusive, st.ClientExclusive))
+			nb.IdempotencyKey, exclusive, st.ClientExclusive, buffer, blocked))
 		if err != nil {
 			return err
 		}
@@ -647,7 +664,7 @@ func (s *Store) Reschedule(ctx context.Context, tenantID, id string, expectedVer
 			return err
 		}
 		if r.Capacity > 1 {
-			full, err := groupFull(ctx, tx, tenantID, r, Interval{start, end}, id)
+			full, err := groupFull(ctx, tx, tenantID, r, Interval{start, end.Add(time.Duration(cur.BufferMin) * time.Minute)}, id)
 			if err != nil {
 				return err
 			}
@@ -655,7 +672,9 @@ func (s *Store) Reschedule(ctx context.Context, tenantID, id string, expectedVer
 				return ErrSlotTaken
 			}
 		}
-		moved, err = scanBooking(tx.QueryRow(ctx, `UPDATE sched_bookings SET starts_at = $3, ends_at = $4, version = version + 1, updated_at = now()
+		// The booking keeps its buffer when it moves.
+		moved, err = scanBooking(tx.QueryRow(ctx, `UPDATE sched_bookings SET starts_at = $3::timestamptz, ends_at = $4::timestamptz,
+			blocked_until = $4::timestamptz + make_interval(mins => buffer_min), version = version + 1, updated_at = now()
 			WHERE tenant_id = $1 AND id = $2 RETURNING `+bookingColumns, tenantID, id, start, end))
 		if err != nil {
 			return err

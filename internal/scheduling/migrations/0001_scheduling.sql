@@ -80,6 +80,12 @@ CREATE TABLE sched_bookings (
     series_id        TEXT,
     version          INTEGER     NOT NULL DEFAULT 1 CHECK (version >= 1),
     idempotency_key  TEXT        NOT NULL,
+    -- Minutes the resource stays blocked after the booking (cleaning, notes),
+    -- copied from the service when the booking is written. blocked_until is
+    -- what the resource constraint uses, so the interval between bookings is
+    -- enforced by the database, not only suggested by the availability API.
+    buffer_min       SMALLINT    NOT NULL DEFAULT 0 CHECK (buffer_min BETWEEN 0 AND 240),
+    blocked_until    TIMESTAMPTZ NOT NULL,
     -- Copied from the resource (capacity = 1) and the tenant setting when the
     -- booking is written, so the exclusion constraints can use them.
     exclusive        BOOLEAN     NOT NULL,
@@ -88,11 +94,14 @@ CREATE TABLE sched_bookings (
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, id),
     CHECK (ends_at > starts_at),
+    CHECK (blocked_until = ends_at + make_interval(mins => buffer_min)),
     CONSTRAINT sched_bookings_idempotency UNIQUE (tenant_id, idempotency_key),
     FOREIGN KEY (tenant_id, resource_id) REFERENCES sched_resources (tenant_id, id),
-    -- One active booking per resource and instant ('[)': 09:00-09:40 and 09:40-10:20 do not clash).
+    -- One active booking per resource and instant, buffer included ('[)': with
+    -- no buffer, 09:00-09:40 and 09:40-10:20 do not clash; with a 10-minute
+    -- buffer the first holds the room until 09:50).
     CONSTRAINT sched_bookings_no_double_booking EXCLUDE USING gist (
-        tenant_id public.gist_text_ops WITH =, resource_id public.gist_text_ops WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&)
+        tenant_id public.gist_text_ops WITH =, resource_id public.gist_text_ops WITH =, tstzrange(starts_at, blocked_until, '[)') WITH &&)
         WHERE (exclusive AND status IN ('tentative', 'scheduled', 'confirmed')),
     -- The same client cannot be in two places at once (tenant setting).
     CONSTRAINT sched_bookings_client_no_overlap EXCLUDE USING gist (

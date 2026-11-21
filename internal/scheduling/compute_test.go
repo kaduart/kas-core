@@ -94,8 +94,12 @@ func TestAvailabilityExceptionsHolidaysBookingsAndBuffer(t *testing.T) {
 	in.Exceptions = nil
 	in.BufferMin = 10
 	slots, _ = Availability(in)
-	// With 10 minutes kept free before and after, 09:40 ends too close to the
-	// 10:20 booking and 11:00 starts too close to its end.
+	// The new booking needs 40 + 10 minutes: 09:40 would block the room until
+	// 10:30, past the 10:20 booking. 11:00 is fine: that booking has no buffer.
+	equalStrings(t, starts(slots), []string{"12-07 09:00", "12-07 11:00"})
+	// With its own 10-minute buffer, the 10:20 booking holds the room until 11:10.
+	in.Bookings[0].BufferMin, in.Bookings[0].BlockedUntil = 10, at("2026-12-07 11:10")
+	slots, _ = Availability(in)
 	equalStrings(t, starts(slots), []string{"12-07 09:00"})
 }
 
@@ -202,6 +206,14 @@ func TestFindConflictsOverlapRules(t *testing.T) {
 		if want[c.Key] != c {
 			t.Fatalf("conflict %+v, want %+v", c, want[c.Key])
 		}
+	}
+	// Buffers: the 08:20 candidate with 10 minutes holds the room until 09:10.
+	got, _ = FindConflicts([]Candidate{
+		{Key: "antes", ResourceID: "r1", ClientRef: "y1", Start: at("2026-12-07 08:20"), End: at("2026-12-07 09:00"), BufferMin: 10},
+		{Key: "antes-ok", ResourceID: "r2", ClientRef: "y2", Start: at("2026-12-07 08:10"), End: at("2026-12-07 08:50"), BufferMin: 10},
+	}, existing, nil, true)
+	if len(got) != 1 || got[0].Key != "antes" {
+		t.Fatalf("buffer conflicts: %+v", got)
 	}
 	// Client exclusivity off: the same client may overlap.
 	got, _ = FindConflicts([]Candidate{cand("cliente", "r9", "c1", "09:30", "09:50")}, existing, nil, false)

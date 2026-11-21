@@ -134,8 +134,11 @@ type Booking struct {
 	End        time.Time `json:"ends_at"`
 	Status     string    `json:"status"`
 	SeriesID   string    `json:"series_id,omitempty"`
-	Version    int       `json:"version"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	// BufferMin keeps the resource blocked after End (BlockedUntil).
+	BufferMin    int       `json:"buffer_min"`
+	BlockedUntil time.Time `json:"blocked_until"`
+	Version      int       `json:"version"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // Interval is a half-open time interval [Start, End).
@@ -148,6 +151,14 @@ type Interval struct {
 func (a Interval) Overlaps(b Interval) bool { return a.Start.Before(b.End) && b.Start.Before(a.End) }
 
 func (b Booking) interval() Interval { return Interval{Start: b.Start, End: b.End} }
+
+// held is the time the booking blocks its resource: the booking plus its buffer.
+func (b Booking) held() Interval {
+	if b.BlockedUntil.After(b.End) {
+		return Interval{Start: b.Start, End: b.BlockedUntil}
+	}
+	return b.interval()
+}
 
 const dateLayout = "2006-01-02"
 

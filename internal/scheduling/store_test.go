@@ -271,3 +271,66 @@ func TestAvailabilityFromDatabase(t *testing.T) {
 		t.Fatalf("unknown resource: %v", err)
 	}
 }
+
+// The interval between bookings (service buffer) is enforced by the database,
+// so a write that skips the availability API still cannot break it.
+func TestBufferIsEnforcedByDatabase(t *testing.T) {
+	s, _ := openStore(t)
+	ctx := context.Background()
+	seed(t, s, tenantA)
+	if err := s.PutService(ctx, tenantA, Service{ID: "sessao-40-10", Label: "Sessão 40 + 10", DurationMin: 40, BufferMin: 10}); err != nil {
+		t.Fatal(err)
+	}
+	withService := func(client, key, from, to string) NewBooking {
+		nb := book("sala-1", client, key, from, to)
+		nb.ServiceID = "sessao-40-10"
+		return nb
+	}
+	first, _, err := s.CreateBooking(ctx, tenantA, withService("c1", "k1", "2027-01-04 09:00", "2027-01-04 09:40"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.BufferMin != 10 || !first.BlockedUntil.Equal(at("2027-01-04 09:50")) {
+		t.Fatalf("buffer not stored: %+v", first)
+	}
+	cases := []struct {
+		name     string
+		nb       NewBooking
+		accepted bool
+	}{
+		{"right after the end, inside the buffer", book("sala-1", "c2", "k2", "2027-01-04 09:40", "2027-01-04 10:20"), false},
+		{"after the buffer", book("sala-1", "c3", "k3", "2027-01-04 09:50", "2027-01-04 10:30"), true},
+		{"before, its own buffer reaches 09:05", withService("c4", "k4", "2027-01-04 08:15", "2027-01-04 08:55"), false},
+		{"before, its own buffer ends at 09:00", withService("c5", "k5", "2027-01-04 08:10", "2027-01-04 08:50"), true},
+	}
+	for _, c := range cases {
+		_, _, err := s.CreateBooking(ctx, tenantA, c.nb)
+		if c.accepted && err != nil || !c.accepted && !errors.Is(err, ErrSlotTaken) {
+			t.Errorf("%s: %v", c.name, err)
+		}
+	}
+	// A move keeps the buffer.
+	moved, err := s.Reschedule(ctx, tenantA, first.ID, 1, at("2027-01-04 14:00"), at("2027-01-04 14:40"), "teste")
+	if err != nil || !moved.BlockedUntil.Equal(at("2027-01-04 14:50")) {
+		t.Fatalf("move: %+v %v", moved, err)
+	}
+	// A direct write with an inconsistent blocked_until is refused by the table.
+	_, err = s.pool.Exec(ctx, `INSERT INTO sched_bookings (tenant_id, id, resource_id, client_ref, starts_at, ends_at, status,
+		idempotency_key, exclusive, client_exclusive, buffer_min, blocked_until)
+		VALUES ($1, 'direto', 'sala-1', 'c9', $2, $3, 'scheduled', 'kd', true, true, 10, $3)`,
+		tenantA, at("2027-01-05 09:00"), at("2027-01-05 09:40"))
+	if err == nil {
+		t.Fatal("database accepted a booking whose blocked time ignores its buffer")
+	}
+	// Explicit buffer without a service, and the service rule wins over it.
+	nb := book("sala-1", "c6", "k6", "2027-01-04 16:00", "2027-01-04 16:40")
+	nb.BufferMin = 15
+	if b, _, err := s.CreateBooking(ctx, tenantA, nb); err != nil || !b.BlockedUntil.Equal(at("2027-01-04 16:55")) {
+		t.Fatalf("explicit buffer: %+v %v", b, err)
+	}
+	nb = withService("c7", "k7", "2027-01-04 17:00", "2027-01-04 17:40")
+	nb.BufferMin = 5
+	if _, _, err := s.CreateBooking(ctx, tenantA, nb); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("service plus explicit buffer must be refused: %v", err)
+	}
+}

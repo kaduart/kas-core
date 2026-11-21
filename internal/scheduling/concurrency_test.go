@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -315,9 +316,10 @@ func TestC06CancelAndBookSameInstant(t *testing.T) {
 	t.Logf("C6 evidence: %v", results)
 }
 
-// C7: a forced error after the booking row is written and before its log:
-// nothing stays, the slot is free.
-func TestC07FailureInsideTransaction(t *testing.T) {
+// C7 (SIMULATED failure): a test hook returns an error after the booking row
+// is written and before its log, inside the real transaction. Nothing stays, the
+// slot is free. It is not a real crash of the database or of the process.
+func TestC07SimulatedFailureInsideTransaction(t *testing.T) {
 	s, _ := openStore(t)
 	seed(t, s, tenantA)
 	ctx := context.Background()
@@ -358,9 +360,11 @@ func TestC07FailureInsideTransaction(t *testing.T) {
 	}
 }
 
-// C8: the answer is lost after the commit (simulated connection drop) and the
-// client repeats with the same idempotency key: one booking, the same one.
-func TestC08LostAnswerAndRetryWithSameKey(t *testing.T) {
+// C8 (SIMULATED connection drop): the commit really happens, then a test hook
+// makes the call return an error as if the answer was lost on the network. No
+// real connection is cut. The client repeats with the same idempotency key: one
+// booking, the same one.
+func TestC08SimulatedLostAnswerAndRetryWithSameKey(t *testing.T) {
 	s, _ := openStore(t)
 	seed(t, s, tenantA)
 	ctx := context.Background()
@@ -401,8 +405,9 @@ func TestC08LostAnswerAndRetryWithSameKey(t *testing.T) {
 }
 
 // C9: serialization failures and deadlocks are retried up to 3 times with a
-// growing wait, then answer ErrUnavailable with nothing written. The error
-// classifier is checked against a real PostgreSQL deadlock.
+// growing wait, then answer ErrUnavailable with nothing written. The retries
+// use errors injected by a test hook (SIMULATED); a separate real PostgreSQL
+// deadlock checks that the classifier recognizes the real error.
 func TestC09SerializationAndDeadlockRetry(t *testing.T) {
 	s, dsn := openStore(t)
 	seed(t, s, tenantA)
@@ -530,5 +535,71 @@ func TestC11SameSlotDifferentTenants(t *testing.T) {
 		if n := activeIn(t, s, tn, "sala-1", at("2027-01-05 09:00"), at("2027-01-05 09:40")); n != 1 {
 			t.Fatalf("%s: %d bookings", tn, n)
 		}
+	}
+}
+
+// Latency of the queue: how long the last of 50 requests waits when all of them
+// want the same resource, against 50 requests on 50 different resources. It
+// only measures (numbers depend on the machine); it fails only if the last
+// request takes longer than the store's own timeout would allow.
+func TestLatencyOfFiftyRequestsOnOneResource(t *testing.T) {
+	s, dsn := openStore(t)
+	seed(t, s, tenantA)
+	for i := 0; i < 50; i++ {
+		if err := s.PutResource(context.Background(), tenantA, Resource{ID: fmt.Sprintf("sala-x%d", i), Kind: "room", Label: "Sala", Capacity: 1, Active: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	widePool(t, s, dsn, 52)
+	ctx := context.Background()
+	measure := func(round int, sameResource bool) []time.Duration {
+		day := time.Date(2027, 6, 1, 0, 0, 0, 0, sp).AddDate(0, 0, round)
+		from := day.Add(9 * time.Hour)
+		took := make([]time.Duration, 50)
+		var out outcome
+		race(50, func(i int) error {
+			resource := "sala-1"
+			if !sameResource {
+				resource = fmt.Sprintf("sala-x%d", i)
+			}
+			started := time.Now()
+			_, _, err := s.CreateBooking(ctx, tenantA, NewBooking{ResourceID: resource, ClientRef: fmt.Sprintf("lat-%d-%t-%d", round, sameResource, i),
+				IdempotencyKey: fmt.Sprintf("lat-%d-%t-%d", round, sameResource, i), Actor: "teste", Start: from, End: from.Add(40 * time.Minute)})
+			took[i] = time.Since(started)
+			return err
+		}, &out)
+		if out.other.Load() != 0 {
+			t.Fatalf("unexpected errors: %v", out.firstOther.Load())
+		}
+		sort.Slice(took, func(a, b int) bool { return took[a] < took[b] })
+		return took
+	}
+	pct := func(d []time.Duration, p float64) time.Duration {
+		return d[int(p*float64(len(d)-1))].Round(100 * time.Microsecond)
+	}
+	const rounds = 10
+	var same, spread [][]time.Duration
+	for r := 0; r < rounds; r++ {
+		same = append(same, measure(r, true))
+		spread = append(spread, measure(r+rounds, false))
+	}
+	report := func(name string, all [][]time.Duration) time.Duration {
+		flat := []time.Duration{}
+		worst := time.Duration(0)
+		for _, d := range all {
+			flat = append(flat, d...)
+			if d[len(d)-1] > worst {
+				worst = d[len(d)-1]
+			}
+		}
+		sort.Slice(flat, func(a, b int) bool { return flat[a] < flat[b] })
+		t.Logf("latency %s: %d requests, p50 %v, p95 %v, p99 %v, 50th request worst round %v",
+			name, len(flat), pct(flat, 0.50), pct(flat, 0.95), pct(flat, 0.99), worst.Round(100*time.Microsecond))
+		return worst
+	}
+	worst := report("same resource (1 wins, 49 refused)", same)
+	report("50 different resources (50 accepted)", spread)
+	if worst > dbTimeout/2 {
+		t.Fatalf("the last request waited %v", worst)
 	}
 }

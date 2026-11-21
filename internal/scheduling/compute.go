@@ -94,8 +94,9 @@ func ValidateRule(r WeeklyRule) error {
 
 // Availability lists the free slots of one resource. A slot is free when:
 // the day is not a tenant holiday; a weekly rule covers the whole slot; no
-// exception touches it; and, with the buffer added before and after, fewer
-// active bookings than the resource capacity overlap it.
+// exception touches it; and fewer active bookings than the resource capacity
+// overlap the time it would block (slot plus the service buffer), each booking
+// counted with its own buffer. That is the same rule the database enforces.
 func Availability(in AvailabilityInput) ([]Slot, error) {
 	loc, err := zoneOf(in.Settings)
 	if err != nil {
@@ -132,7 +133,7 @@ func Availability(in AvailabilityInput) ([]Slot, error) {
 	active := make([]Interval, 0, len(in.Bookings))
 	for _, b := range in.Bookings {
 		if ActiveStatus(b.Status) && b.ResourceID == in.Resource.ID {
-			active = append(active, b.interval())
+			active = append(active, b.held())
 		}
 	}
 	seen := map[int64]bool{}
@@ -154,7 +155,7 @@ func Availability(in AvailabilityInput) ([]Slot, error) {
 				if closedBy(slot, in.Exceptions) {
 					continue
 				}
-				guarded := Interval{Start: slot.Start.Add(-buffer), End: slot.End.Add(buffer)}
+				guarded := Interval{Start: slot.Start, End: slot.End.Add(buffer)}
 				taken := 0
 				for _, b := range active {
 					if guarded.Overlaps(b) {
@@ -189,6 +190,8 @@ type Candidate struct {
 	ClientRef  string    `json:"client_ref"`
 	Start      time.Time `json:"starts_at"`
 	End        time.Time `json:"ends_at"`
+	// BufferMin blocks the resource after End (0 to 240).
+	BufferMin int `json:"buffer_min,omitempty"`
 }
 
 // Conflict explains why a candidate cannot be booked.
@@ -210,24 +213,28 @@ func FindConflicts(candidates []Candidate, existing []Booking, capacity map[stri
 	if len(candidates) == 0 || len(candidates) > MaxCandidates {
 		return nil, ErrInvalid
 	}
+	// iv is the booking itself (used for the client rule); block adds the
+	// buffer (used for the resource rule), as the database constraints do.
 	type held struct {
 		id, resource, client string
-		iv                   Interval
+		iv, block            Interval
 	}
 	holds := make([]held, 0, len(existing)+len(candidates))
 	for _, b := range existing {
 		if ActiveStatus(b.Status) {
-			holds = append(holds, held{b.ID, b.ResourceID, b.ClientRef, b.interval()})
+			holds = append(holds, held{b.ID, b.ResourceID, b.ClientRef, b.interval(), b.held()})
 		}
 	}
 	keys := map[string]bool{}
 	conflicts := []Conflict{}
 	for _, c := range candidates {
-		if !ValidRef(c.Key) || keys[c.Key] || !ValidRef(c.ResourceID) || !ValidRef(c.ClientRef) || !c.End.After(c.Start) {
+		if !ValidRef(c.Key) || keys[c.Key] || !ValidRef(c.ResourceID) || !ValidRef(c.ClientRef) || !c.End.After(c.Start) ||
+			c.BufferMin < 0 || c.BufferMin > 240 {
 			return nil, ErrInvalid
 		}
 		keys[c.Key] = true
 		iv := Interval{Start: c.Start, End: c.End}
+		block := Interval{Start: c.Start, End: c.End.Add(time.Duration(c.BufferMin) * time.Minute)}
 		limit := capacity[c.ResourceID]
 		if limit < 1 {
 			limit = 1
@@ -235,14 +242,11 @@ func FindConflicts(candidates []Candidate, existing []Booking, capacity map[stri
 		var found *Conflict
 		taken := 0
 		for _, h := range holds {
-			if !iv.Overlaps(h.iv) {
-				continue
-			}
-			if clientExclusive && h.client == c.ClientRef {
+			if clientExclusive && h.client == c.ClientRef && iv.Overlaps(h.iv) {
 				found = &Conflict{Key: c.Key, Kind: "client", With: h.id}
 				break
 			}
-			if h.resource == c.ResourceID {
+			if h.resource == c.ResourceID && block.Overlaps(h.block) {
 				taken++
 				if taken >= limit {
 					kind := "resource"
@@ -258,7 +262,7 @@ func FindConflicts(candidates []Candidate, existing []Booking, capacity map[stri
 			conflicts = append(conflicts, *found)
 			continue
 		}
-		holds = append(holds, held{c.Key, c.ResourceID, c.ClientRef, iv})
+		holds = append(holds, held{c.Key, c.ResourceID, c.ClientRef, iv, block})
 	}
 	return conflicts, nil
 }

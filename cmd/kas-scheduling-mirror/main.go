@@ -65,14 +65,15 @@ func loopbackHost(h string) bool {
 
 func (c config) validate() error {
 	switch c.mode {
-	case "full", "incremental", "reconcile", "verify", "sync-availability", "compare", "history":
+	case "full", "incremental", "reconcile", "verify", "sync-availability", "compare", "history", "plan":
 	default:
-		return errors.New("-mode must be full, incremental, reconcile, verify, sync-availability, compare or history")
+		return errors.New("-mode must be full, incremental, reconcile, verify, sync-availability, compare, history or plan")
 	}
-	if !scheduling.ValidRef(c.tenant) {
+	// plan only asks MongoDB for query plans: no tenant, key or PostgreSQL needed.
+	if c.mode != "plan" && !scheduling.ValidRef(c.tenant) {
 		return errors.New("-tenant is required")
 	}
-	if len(c.key) < 32 {
+	if c.mode != "plan" && len(c.key) < 32 {
 		return errors.New("KAS_MIRROR_KEY must hold at least 32 bytes")
 	}
 	u, err := url.Parse(c.mongoURI)
@@ -90,6 +91,9 @@ func (c config) validate() error {
 	}
 	if !dbName.MatchString(c.mongoDB) || strings.Contains(strings.ToLower(c.mongoDB), "prod") {
 		return errors.New("-mongo-db must be a local copy's name, never a production database")
+	}
+	if c.mode == "plan" {
+		return nil
 	}
 	pu, err := url.Parse(c.pgURL)
 	if err != nil || (pu.Scheme != "postgres" && pu.Scheme != "postgresql") || !loopbackHost(pu.Hostname()) {
@@ -112,7 +116,7 @@ func (c config) validate() error {
 func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("kas-scheduling-mirror", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	mode := fs.String("mode", "", "full, incremental, reconcile or verify")
+	mode := fs.String("mode", "", "full, incremental, reconcile, verify, sync-availability, compare, history or plan (query plans only)")
 	tenant := fs.String("tenant", "", "KAS tenant that receives the mirror")
 	mongoDB := fs.String("mongo-db", "", "local MongoDB database holding the CRM copy")
 	zone := fs.String("zone", "America/Sao_Paulo", "clinic time zone")
@@ -176,6 +180,9 @@ func execute(ctx context.Context, cfg config, log *slog.Logger) (any, error) {
 		return nil, fmt.Errorf("connect source: %w", err)
 	}
 	defer client.Disconnect(context.Background())
+	if cfg.mode == "plan" {
+		return crmagenda.NewReader(client.Database(cfg.mongoDB)).Plans(ctx)
+	}
 	store, err := scheduling.Open(ctx, cfg.pgURL, cfg.migrate)
 	if err != nil {
 		return nil, fmt.Errorf("open mirror: %w", err)

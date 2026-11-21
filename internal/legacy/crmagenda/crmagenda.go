@@ -183,7 +183,11 @@ type Reader struct {
 func NewReader(db *mongo.Database) *Reader { return &Reader{coll: db.Collection(Collection)} }
 
 func (r *Reader) find(ctx context.Context, filter bson.D, sortBy bson.D, limit int64) ([]Doc, error) {
-	cur, err := r.coll.Find(ctx, filter, options.Find().SetProjection(Projection).SetSort(sortBy).SetLimit(limit))
+	opts := options.Find().SetProjection(Projection).SetLimit(limit)
+	if len(sortBy) > 0 {
+		opts.SetSort(sortBy)
+	}
+	cur, err := r.coll.Find(ctx, filter, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -218,11 +222,16 @@ func (r *Reader) PageByUpdate(ctx context.Context, after time.Time, afterID stri
 }
 
 // InWindow reads every appointment whose CRM day falls in [from, to), widened
-// by a day on each side (the CRM day is a UTC noon timestamp).
+// by a day on each side (the CRM day is a UTC noon timestamp). The query has
+// no sort so the planner can use a date index (a sort by _id made it walk the
+// whole _id index instead, found by the phase 3B plan check); the rows are
+// ordered by _id here.
 func (r *Reader) InWindow(ctx context.Context, from, to time.Time) ([]Doc, error) {
 	filter := bson.D{{Key: "date", Value: bson.D{
 		{Key: "$gte", Value: from.Add(-24 * time.Hour)}, {Key: "$lt", Value: to.Add(24 * time.Hour)}}}}
-	return r.find(ctx, filter, bson.D{{Key: "_id", Value: 1}}, 0)
+	docs, err := r.find(ctx, filter, nil, 0)
+	sort.Slice(docs, func(i, j int) bool { return docs[i].ID.Hex() < docs[j].ID.Hex() })
+	return docs, err
 }
 
 // SourceDayLoads computes, from the source rows, the same summary the mirror

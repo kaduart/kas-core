@@ -1,5 +1,7 @@
 # kas-outbox-recovery: recuperação de eventos `failed` do Outbox do CRM
 
+> Sombra em produção (só leitura, separada da sombra do reaper): ver [SOMBRA.md](SOMBRA.md).
+
 Peças 1 e 2 do roadmap ("Outbox em sombra" e "Recuperação de `failed` com escrita atrás de flag"). Tudo foi feito localmente, com dados fictícios. Nada aqui foi ligado em produção.
 
 ## 1. A responsabilidade e o que muda no Node
@@ -22,7 +24,7 @@ Peças 1 e 2 do roadmap ("Outbox em sombra" e "Recuperação de `failed` com esc
   - Não conhece MongoDB, BullMQ nem o CRM.
   - Pode servir a outro outbox, de outro cliente.
 - `internal/legacy/crmoutbox` é o único lugar que conhece os nomes de campo do `OutboxModel.js` (coleção `outboxes`).
-  - Lê só `_id`, `status`, `attempts`, `scheduledAt`, os 64 primeiros caracteres de `lastError` (cortados no servidor, só para classificar) e `kasRecovery`.
+  - Lê só `_id`, `status`, `attempts`, `scheduledAt`, `eventType` e `createdAt` (estes dois só para o relatório da sombra: tipo e idade, nunca para decidir), os 64 primeiros caracteres de `lastError` (cortados no servidor, só para classificar) e `kasRecovery`.
   - Um teste verifica que todo `find` enviado ao Mongo usa exatamente essa projeção.
 - `cmd/kas-outbox-recovery` é o binário.
   - Modo `shadow` é o padrão.

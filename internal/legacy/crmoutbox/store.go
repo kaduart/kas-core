@@ -3,9 +3,10 @@
 // collection "outboxes") to the outboxrecovery.Store interface.
 //
 // This is the only place that knows the legacy field names. It reads exactly
-// _id, status, attempts, scheduledAt, the first characters of lastError (to
+// _id, status, attempts, scheduledAt, eventType and createdAt (both only for
+// the shadow report: type and age), the first characters of lastError (to
 // classify it, never stored or reported) and its own sub-document kasRecovery.
-// It never reads payload, correlationId or aggregate fields.
+// It never reads payload, eventId, correlationId or aggregate fields.
 //
 // Writes:
 //   - recover: status failed -> pending, scheduledAt = now, and kasRecovery
@@ -44,6 +45,8 @@ const (
 	fAttempts    = "attempts"
 	fScheduledAt = "scheduledAt"
 	fLastError   = "lastError"
+	fEventType   = "eventType"
+	fCreatedAt   = "createdAt"
 	fKas         = "kasRecovery"
 	fKasCount    = "kasRecovery.count"
 	fKasExh      = "kasRecovery.exhaustedAt"
@@ -63,6 +66,8 @@ func ScanProjection() bson.D {
 		{Key: fStatus, Value: 1},
 		{Key: fAttempts, Value: 1},
 		{Key: fScheduledAt, Value: 1},
+		{Key: fEventType, Value: 1},
+		{Key: fCreatedAt, Value: 1},
 		{Key: fKasCount, Value: 1},
 		{Key: fKasExh, Value: 1},
 		{Key: errHeadField, Value: bson.D{{Key: "$cond", Value: bson.A{
@@ -137,6 +142,13 @@ func (s *Store) decode(raw bson.Raw) (outboxrecovery.Entry, error) {
 	ob := observed{id: oid}
 	e.ID = oid.Hex()
 	e.Status, _ = raw.Lookup(fStatus).StringValueOK()
+	e.Type, _ = raw.Lookup(fEventType).StringValueOK()
+	if dt, ok := raw.Lookup(fCreatedAt).DateTimeOK(); ok {
+		e.CreatedAt, e.CreatedAtValid = time.UnixMilli(dt).UTC(), true
+	} else {
+		// saveToOutbox always sets createdAt; fall back to the ObjectId instant.
+		e.CreatedAt, e.CreatedAtValid = oid.Timestamp().UTC(), true
+	}
 
 	if v, err := raw.LookupErr(fAttempts); err == nil {
 		ob.attempts = v

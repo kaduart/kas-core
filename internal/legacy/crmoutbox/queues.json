@@ -1,0 +1,329 @@
+{
+  "APPOINTMENT_BILLING_REQUESTED": [
+    "billing-orchestrator"
+  ],
+  "APPOINTMENT_CANCELLED": [
+    "sync-medical",
+    "patient-projection",
+    "clinical-orchestrator",
+    "package-projection"
+  ],
+  "APPOINTMENT_COMPLETED": [
+    "complete-orchestrator",
+    "sync-medical",
+    "patient-projection",
+    "integration-orchestrator",
+    "lead-orchestrator-v2"
+  ],
+  "APPOINTMENT_COMPLETE_REQUESTED": [
+    "complete-orchestrator"
+  ],
+  "APPOINTMENT_CREATED": [
+    "notification",
+    "patient-projection",
+    "clinical-orchestrator"
+  ],
+  "APPOINTMENT_CREATE_REQUESTED": [
+    "create-appointment-processing"
+  ],
+  "APPOINTMENT_DELETED": [
+    "sync-medical",
+    "patient-projection",
+    "package-projection"
+  ],
+  "APPOINTMENT_REJECTED": [
+    "notification"
+  ],
+  "APPOINTMENT_RESCHEDULED": [
+    "notification",
+    "patient-projection"
+  ],
+  "APPOINTMENT_SCHEDULED": [
+    "notification",
+    "patient-projection",
+    "clinical-orchestrator"
+  ],
+  "APPOINTMENT_UPDATED": [
+    "notification",
+    "patient-projection",
+    "appointment-integration"
+  ],
+  "BALANCE_CREDIT_REQUESTED": [
+    "balance-update"
+  ],
+  "BALANCE_DEBIT_REQUESTED": [
+    "balance-update"
+  ],
+  "BALANCE_UPDATE_REQUESTED": [
+    "balance-update"
+  ],
+  "COMMISSION_GENERATION_COMPLETED": [],
+  "COMMISSION_GENERATION_REQUESTED": [
+    "commission-generation"
+  ],
+  "CONTEXT_BUILD_REQUESTED": [
+    "context-builder"
+  ],
+  "CONVERSATION_STATE_UPDATE": [
+    "conversation-state"
+  ],
+  "DAILY_CLOSING_REQUESTED": [
+    "daily-closing"
+  ],
+  "EVOLUTION_CREATED": [
+    "evolution-processing"
+  ],
+  "EVOLUTION_CREATE_REQUESTED": [
+    "evolution-processing"
+  ],
+  "EVOLUTION_DELETED": [
+    "evolution-processing"
+  ],
+  "EVOLUTION_DELETE_REQUESTED": [
+    "evolution-processing"
+  ],
+  "EVOLUTION_UPDATED": [
+    "evolution-processing"
+  ],
+  "EVOLUTION_UPDATE_REQUESTED": [
+    "evolution-processing"
+  ],
+  "EXPENSE_CANCELED": [
+    "totals-calculation"
+  ],
+  "EXPENSE_CREATED": [
+    "totals-calculation"
+  ],
+  "EXPENSE_UPDATED": [
+    "totals-calculation"
+  ],
+  "FOLLOWUP_FAILED": [
+    "notification"
+  ],
+  "FOLLOWUP_REQUESTED": [
+    "followup-processing"
+  ],
+  "FOLLOWUP_RESPONSE_RECEIVED": [
+    "notification",
+    "whatsapp-intent-classifier"
+  ],
+  "FOLLOWUP_SCHEDULED": [
+    "followup-processing"
+  ],
+  "FOLLOWUP_SENT": [
+    "notification"
+  ],
+  "INSURANCE_BATCH_RECEIVED": [
+    "insurance-orchestrator"
+  ],
+  "INSURANCE_BATCH_SENT": [
+    "insurance-orchestrator"
+  ],
+  "INSURANCE_GLOSA": [
+    "sync-medical"
+  ],
+  "INSURANCE_GUIDE_CREATED": [
+    "patient-projection"
+  ],
+  "INSURANCE_PAYMENT_AUTO_SETTLED": [
+    "patient-projection",
+    "balance-update"
+  ],
+  "INTENT_CLASSIFIED": [
+    "whatsapp-fsm-router"
+  ],
+  "INVOICE_CANCELED": [
+    "notification"
+  ],
+  "INVOICE_CREATED": [
+    "notification"
+  ],
+  "INVOICE_OVERDUE": [
+    "notification"
+  ],
+  "INVOICE_PER_SESSION_CREATE": [
+    "invoice-processing"
+  ],
+  "LEAD_RECOVERY_CANCEL_REQUESTED": [
+    "lead-recovery"
+  ],
+  "LIMINAR_CONTRACT_CREATED": [
+    "patient-projection"
+  ],
+  "MESSAGE_PERSISTED": [
+    "whatsapp-lead-interaction",
+    "whatsapp-realtime",
+    "whatsapp-chat-projection"
+  ],
+  "MESSAGE_RESPONSE_DETECTED": [
+    "whatsapp-message-response"
+  ],
+  "NOTIFICATION_FAILED": [
+    "notification"
+  ],
+  "NOTIFICATION_REQUESTED": [
+    "notification"
+  ],
+  "NOTIFICATION_SENT": [
+    "notification"
+  ],
+  "PACKAGE_CANCELLED": [
+    "package-projection",
+    "package-validation",
+    "patient-projection"
+  ],
+  "PACKAGE_CREATED": [
+    "package-projection",
+    "package-validation",
+    "patient-projection"
+  ],
+  "PACKAGE_CREATE_FAILED": [
+    "notification"
+  ],
+  "PACKAGE_CREATE_REQUESTED": [
+    "package-processing"
+  ],
+  "PACKAGE_CREDIT_CONSUMED": [
+    "package-validation"
+  ],
+  "PACKAGE_CREDIT_RESTORED": [
+    "package-projection",
+    "package-validation",
+    "patient-projection"
+  ],
+  "PACKAGE_DELETED": [
+    "package-projection",
+    "patient-projection"
+  ],
+  "PACKAGE_UPDATED": [
+    "package-projection",
+    "package-validation",
+    "patient-projection"
+  ],
+  "PATIENT_CREATED": [
+    "patient-projection"
+  ],
+  "PATIENT_CREATE_REQUESTED": [
+    "patient-processing"
+  ],
+  "PATIENT_DATA_CONFIRMED": [
+    "patient-projection"
+  ],
+  "PATIENT_DELETED": [
+    "patient-projection"
+  ],
+  "PATIENT_DELETE_REQUESTED": [
+    "patient-processing"
+  ],
+  "PATIENT_PHONE_CHANGED": [
+    "patient-projection"
+  ],
+  "PATIENT_REGISTERED": [
+    "patient-projection"
+  ],
+  "PATIENT_UPDATED": [
+    "patient-projection"
+  ],
+  "PATIENT_UPDATE_REQUESTED": [
+    "patient-processing"
+  ],
+  "PATIENT_VIEW_REBUILD_REQUESTED": [
+    "patient-projection"
+  ],
+  "PAYMENT_CANCELLED": [
+    "patient-projection"
+  ],
+  "PAYMENT_COMPLETED": [
+    "notification",
+    "integration-orchestrator",
+    "lead-orchestrator-v2"
+  ],
+  "PAYMENT_CREATED": [
+    "patient-projection"
+  ],
+  "PAYMENT_DELETED": [
+    "balance-update",
+    "patient-projection"
+  ],
+  "PAYMENT_FAILED": [
+    "notification"
+  ],
+  "PAYMENT_PROCESS_REQUESTED": [
+    "payment-processing"
+  ],
+  "PAYMENT_RECEIVED": [
+    "balance-update",
+    "patient-projection"
+  ],
+  "PAYMENT_REFUNDED": [
+    "balance-update",
+    "patient-projection"
+  ],
+  "PAYMENT_REQUESTED": [
+    "payment-processing"
+  ],
+  "PAYMENT_STATUS_CHANGED": [
+    "patient-projection",
+    "package-projection"
+  ],
+  "PAYMENT_UPDATED": [
+    "balance-update",
+    "patient-projection"
+  ],
+  "SESSION_BILLING_REQUESTED": [
+    "billing-orchestrator"
+  ],
+  "SESSION_CANCELED": [
+    "package-projection",
+    "sync-medical",
+    "patient-projection",
+    "clinical-session"
+  ],
+  "SESSION_CANCELLED": [
+    "package-projection",
+    "sync-medical",
+    "patient-projection",
+    "clinical-session"
+  ],
+  "SESSION_COMPLETED": [
+    "package-projection",
+    "patient-projection",
+    "clinical-session",
+    "integration-orchestrator"
+  ],
+  "SESSION_NO_SHOW": [
+    "clinical-session",
+    "patient-projection"
+  ],
+  "SESSION_PAYMENT_RECEIVED": [
+    "sync-medical",
+    "patient-projection"
+  ],
+  "SESSION_SCHEDULED": [
+    "clinical-session",
+    "patient-projection"
+  ],
+  "TOTALS_RECALCULATED": [],
+  "TOTALS_RECALCULATE_REQUESTED": [
+    "totals-calculation"
+  ],
+  "WHATSAPP_AUTO_REPLY_REQUESTED": [
+    "whatsapp-auto-reply"
+  ],
+  "WHATSAPP_MESSAGE_FAILED": [
+    "notification"
+  ],
+  "WHATSAPP_MESSAGE_PREPROCESSED": [
+    "whatsapp-persistence"
+  ],
+  "WHATSAPP_MESSAGE_RECEIVED": [
+    "whatsapp-inbound"
+  ],
+  "WHATSAPP_MESSAGE_REQUESTED": [
+    "whatsapp-notification"
+  ],
+  "WHATSAPP_MESSAGE_SENT": [
+    "notification",
+    "whatsapp-chat-projection"
+  ]
+}

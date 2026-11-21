@@ -323,3 +323,57 @@ jobs:
       - name: Tear down
         if: always()
         run: studio/scripts/stack.sh stop
+
+  sombra-outbox:
+    name: Outbox shadow isolated validation (deploy/sombra-outbox/validate.sh)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Check out the CRM (public)
+        uses: actions/checkout@v7
+        with:
+          repository: kaduart/fono-inova-crm-back
+          ref: main
+          path: crm
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: CRM dependencies
+        working-directory: crm
+        run: npm ci --no-audit --no-fund
+
+      - name: Proposed destinations match the CRM event-to-queue map
+        run: |
+          CRM_DIR="$GITHUB_WORKSPACE/crm" node deploy/sombra-outbox/mapa-filas.mjs > "$RUNNER_TEMP/queues.json"
+          diff -u internal/legacy/crmoutbox/queues.json "$RUNNER_TEMP/queues.json" \
+            || { echo "::error::eventToQueueMap do CRM mudou: regenerar internal/legacy/crmoutbox/queues.json (deploy/sombra-outbox/mapa-filas.mjs)"; exit 1; }
+
+      - name: Schedule window and public diagnostics
+        run: |
+          deploy/sombra-outbox/janela_test.sh
+          deploy/sombra-outbox/diagnostico_test.sh
+
+      - name: Run T1-T6 (authenticated Mongo, same role as Atlas, real CRM dispatcher, fictitious data)
+        run: |
+          set -o pipefail
+          CRM_DIR="$GITHUB_WORKSPACE/crm" WORK="$RUNNER_TEMP/sombra-outbox" deploy/sombra-outbox/validate.sh 2>&1 | tee "$RUNNER_TEMP/sombra-outbox.log"
+          grep -q '^TUDO OK$' "$RUNNER_TEMP/sombra-outbox.log"
+
+      - name: Logs (on failure)
+        if: failure()
+        run: |
+          for f in "$RUNNER_TEMP"/sombra-outbox/*.log; do echo "=== $f"; tail -n 60 "$f"; done

@@ -18,9 +18,13 @@ func TestWritesAreRefusedWithoutConfirmationOrOnARemoteHost(t *testing.T) {
 		{"unmark without confirmation", "mongodb://127.0.0.1:1", []string{"-db", "crm", "-unmark", "all"}, "must repeat -db"},
 		{"executor on Atlas", "mongodb+srv://x.mongodb.net", []string{"-mode", "executor", "-db", "crm", "-executor-confirm-db", "crm"}, "not loopback"},
 		{"executor on a remote host", "mongodb://10.0.0.5:27017", []string{"-mode", "executor", "-db", "crm", "-executor-confirm-db", "crm"}, "not loopback"},
-		{"no URI", "", []string{"-db", "crm"}, "URI not set"},
+		{"no URI", "", []string{"-db", "crm"}, "URI variable is not set"},
 		{"bad mode", "mongodb://127.0.0.1:1", []string{"-db", "crm", "-mode", "write"}, "invalid mode"},
 		{"bad config", "mongodb://127.0.0.1:1", []string{"-db", "crm", "-max-attempts", "0"}, "invalid configuration"},
+		{"shadow without read-only proof on Atlas", "mongodb+srv://x.mongodb.net", []string{"-db", "crm", "-require-read-only", "off"}, "only accepted on a loopback host"},
+		{"read-only proof with executor", "mongodb://127.0.0.1:1", []string{"-mode", "executor", "-db", "crm", "-executor-confirm-db", "crm", "-require-read-only", "on"}, "shadow mode only"},
+		{"read-only proof with unmark", "mongodb://127.0.0.1:1", []string{"-db", "crm", "-executor-confirm-db", "crm", "-unmark", "all", "-require-read-only", "on"}, "shadow mode only"},
+		{"bad read-only value", "mongodb://127.0.0.1:1", []string{"-db", "crm", "-require-read-only", "talvez"}, "invalid -require-read-only"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("KAS_OUTBOX_MONGO_URI", tc.uri)

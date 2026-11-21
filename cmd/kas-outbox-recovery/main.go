@@ -27,6 +27,7 @@ import (
 	"kas-core-pilot/internal/alerts"
 	"kas-core-pilot/internal/legacy/crmalerts"
 	"kas-core-pilot/internal/legacy/crmoutbox"
+	"kas-core-pilot/internal/mongoro"
 	"kas-core-pilot/internal/outboxrecovery"
 )
 
@@ -34,6 +35,7 @@ func main() { os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stder
 
 type cli struct {
 	mode, uriEnv, db, collection, confirmDB, reportPath, permanent, unmark string
+	requireReadOnly                                                        string
 	interval, cycleTimeout, stalePending                                   time.Duration
 	maxAttempts, maxRecoveries, batch, maxPages                            int
 	once, allowRemote, ensureIndexes                                       bool
@@ -62,6 +64,7 @@ func parse(args []string, stderr io.Writer) (cli, error) {
 	fs.IntVar(&c.batch, "batch", def.BatchSize, "entries per page")
 	fs.IntVar(&c.maxPages, "max-pages", 10, "pages per cycle")
 	fs.BoolVar(&c.once, "once", false, "run a single cycle and exit")
+	fs.StringVar(&c.requireReadOnly, "require-read-only", "auto", "shadow mode: prove with connectionStatus that the database user can only read, and refuse to start otherwise. auto: on for any non-loopback host; on; off (accepted only on a loopback host)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
@@ -69,6 +72,31 @@ func parse(args []string, stderr io.Writer) (cli, error) {
 		return c, errors.New("-db is required")
 	}
 	return c, nil
+}
+
+// startLine and cycleLine are the shadow report (JSON Lines), read by
+// cmd/kas-outbox-shadow-summary. Identifiers and counts only, never payload.
+type startLine struct {
+	Kind             string         `json:"kind"`
+	At               time.Time      `json:"at"`
+	Mode             string         `json:"mode"`
+	Collection       string         `json:"collection"`
+	Interval         string         `json:"interval"`
+	Batch            int            `json:"batch"`
+	MaxAttempts      int            `json:"max_attempts"`
+	MaxRecoveries    int            `json:"max_recoveries"`
+	HostClass        string         `json:"host_class"`
+	ReadOnlyRequired bool           `json:"read_only_required"`
+	ReadOnly         *mongoro.Proof `json:"read_only,omitempty"`
+}
+
+type cycleLine struct {
+	Kind       string        `json:"kind"`
+	StartedAt  time.Time     `json:"started_at"`
+	DurationNs time.Duration `json:"duration_ns"`
+	Error      string        `json:"error,omitempty"`
+	Proc       procStats     `json:"proc"`
+	outboxrecovery.Cycle
 }
 
 func loopbackOnly(uri string) bool {
@@ -118,7 +146,28 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	uri := os.Getenv(c.uriEnv)
 	if uri == "" {
-		logger.Error("MongoDB URI not set", "env", c.uriEnv)
+		logger.Error("MongoDB URI variable is not set", "env", c.uriEnv)
+		return 2
+	}
+	// Read-only proof (shadow on a real database): the guarantee "the shadow
+	// never writes" must hold on the server, not only in this code.
+	var requireRO bool
+	switch c.requireReadOnly {
+	case "auto":
+		requireRO = mode == outboxrecovery.ModeShadow && !loopbackOnly(uri)
+	case "on":
+		requireRO = true
+	case "off":
+		if !loopbackOnly(uri) {
+			logger.Error("-require-read-only=off is only accepted on a loopback host: a shadow on a real database must prove it cannot write")
+			return 2
+		}
+	default:
+		logger.Error("invalid -require-read-only", "reason", "use auto, on or off")
+		return 2
+	}
+	if requireRO && (mode != outboxrecovery.ModeShadow || c.unmark != "" || c.ensureIndexes) {
+		logger.Error("-require-read-only is for shadow mode only (it forbids every write)")
 		return 2
 	}
 	writes := mode == outboxrecovery.ModeExecutor || c.unmark != "" || c.ensureIndexes
@@ -134,7 +183,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	client, err := mongo.Connect(options.Client().ApplyURI(uri).SetServerSelectionTimeout(10 * time.Second).SetAppName("kas-outbox-recovery"))
 	if err != nil {
-		logger.Error("connect", "reason", err.Error())
+		logger.Error("mongo connect failed", "reason", err.Error())
 		return 1
 	}
 	defer client.Disconnect(context.Background())
@@ -142,8 +191,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	err = client.Ping(pctx, readpref.Primary())
 	cancel()
 	if err != nil {
-		logger.Error("ping", "reason", err.Error())
+		logger.Error("mongo connect failed", "reason", err.Error())
 		return 1
+	}
+	var proof *mongoro.Proof
+	if requireRO {
+		pctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		p, err := mongoro.Prove(pctx, client)
+		cancel()
+		if err != nil {
+			logger.Error("shadow_refused_not_read_only", "reason", err.Error(), "roles", p.Roles, "actions", p.Actions)
+			return 2
+		}
+		logger.Info("read_only_confirmed", "users", p.Users, "roles", p.Roles, "actions", p.Actions)
+		proof = &p
 	}
 	store := crmoutbox.New(client, c.db, c.collection, cfg)
 
@@ -178,6 +239,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		defer f.Close()
 		report = json.NewEncoder(f)
+		hostClass := "remote"
+		if loopbackOnly(uri) {
+			hostClass = "loopback"
+		}
+		_ = report.Encode(startLine{Kind: "start", At: time.Now().UTC(), Mode: string(mode), Collection: c.collection,
+			Interval: c.interval.String(), Batch: cfg.BatchSize, MaxAttempts: cfg.MaxAttempts, MaxRecoveries: cfg.MaxRecoveries,
+			HostClass: hostClass, ReadOnlyRequired: requireRO, ReadOnly: proof})
 	}
 	// Alertas passam pela central (dedup, cooldown, escalonamento) e saem no
 	// log estruturado. Entrega num canal monitorado continua sendo um bloqueio
@@ -186,6 +254,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	hours := crmalerts.FonoInovaHours()
 	r := &outboxrecovery.Runner{
 		Config: cfg, Mode: mode, Store: store, Now: time.Now, MaxPages: c.maxPages, StalePendingAfter: c.stalePending,
+		Destinations: crmoutbox.Destinations,
 		Alert: func(ctx context.Context, a outboxrecovery.Alert) error {
 			_, err := center.Raise(ctx, crmalerts.OutboxExhausted(a))
 			if errors.Is(err, alerts.ErrInvalidAlert) {
@@ -198,11 +267,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	logger.Info("start", "mode", string(mode), "db", c.db, "collection", c.collection, "maxAttempts", cfg.MaxAttempts)
 	for {
+		started := time.Now()
 		cctx, cancel := context.WithTimeout(ctx, c.cycleTimeout)
 		cy, err := r.RunCycle(cctx)
 		cancel()
 		if report != nil {
-			_ = report.Encode(cy)
+			line := cycleLine{Kind: "cycle", StartedAt: started.UTC(), DurationNs: time.Since(started), Proc: readProcStats(), Cycle: cy}
+			if err != nil && ctx.Err() == nil { // a stop signal is not a failed cycle
+				line.Error = err.Error()
+			}
+			if err == nil || ctx.Err() == nil {
+				_ = report.Encode(line)
+			}
 		}
 		for _, a := range crmalerts.OutboxCycle(cy, hours) {
 			_, _ = center.Raise(ctx, a)

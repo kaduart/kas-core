@@ -75,6 +75,27 @@ type Cycle struct {
 	AlertErrs int                 `json:"alertErrors"`
 	Census    *Census             `json:"census,omitempty"`
 	WouldDo   map[string][]string `json:"wouldDo,omitempty"` // shadow: action -> IDs
+	// Items: shadow only, one per scanned entry with what the policy would do,
+	// the attempt counter, the age and the proposed destination. Identifiers
+	// and counts only, never payload.
+	Items []Item `json:"items,omitempty"`
+}
+
+// Item is the shadow's record of one scanned entry.
+type Item struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	Action     Action `json:"action"`
+	Reason     string `json:"reason"`
+	Attempts   int64  `json:"attempts"`
+	Recoveries int64  `json:"recoveries"`
+	// AgeSeconds: now - CreatedAt; -1 when the creation instant is unknown.
+	AgeSeconds int64 `json:"age_s"`
+	// Destinations: where the dispatcher would publish the entry if it were
+	// recovered. Known is false when the type has no route (the dispatcher
+	// would fail it again with UNKNOWN_EVENT_TYPE).
+	Destinations []string `json:"destinations"`
+	Known        bool     `json:"known"`
 }
 
 // Runner executes cycles.
@@ -88,6 +109,9 @@ type Runner struct {
 	StalePendingAfter time.Duration
 	// MaxPages bounds one cycle (pages of Config.BatchSize). Zero means 1.
 	MaxPages int
+	// Destinations maps an entry type to the queues the dispatcher would
+	// publish it to (shadow report only). Nil reports no destination.
+	Destinations func(entryType string) (queues []string, known bool)
 }
 
 // ErrInvalid is returned for a misconfigured runner.
@@ -129,6 +153,9 @@ func (r *Runner) RunCycle(ctx context.Context) (Cycle, error) {
 			c.Scanned++
 			d := Decide(r.Config, now, e)
 			c.Decisions[d.Reason]++
+			if r.Mode == ModeShadow {
+				c.Items = append(c.Items, r.item(e, d, now))
+			}
 			if d.Action == ActionNone {
 				continue
 			}
@@ -176,4 +203,19 @@ func (r *Runner) RunCycle(ctx context.Context) (Cycle, error) {
 		c.Census = &cen
 	}
 	return c, nil
+}
+
+func (r *Runner) item(e Entry, d Decision, now time.Time) Item {
+	it := Item{ID: e.ID, Type: e.Type, Action: d.Action, Reason: d.Reason, Attempts: e.Attempts, Recoveries: e.Recoveries, AgeSeconds: -1, Destinations: []string{}}
+	if e.CreatedAtValid {
+		it.AgeSeconds = int64(now.Sub(e.CreatedAt) / time.Second)
+	}
+	if r.Destinations != nil {
+		q, known := r.Destinations(e.Type)
+		it.Known = known
+		if q != nil {
+			it.Destinations = q
+		}
+	}
+	return it
 }

@@ -1,0 +1,10 @@
+{
+  "roleName": "kasOutboxShadowRead",
+  "actions": [
+    {
+      "action": "FIND",
+      "resources": [{ "db": "fono_inova_prod", "collection": "outboxes" }]
+    }
+  ],
+  "inheritedRoles": []
+}

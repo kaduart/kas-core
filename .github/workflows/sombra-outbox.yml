@@ -1,0 +1,137 @@
+# Sombra da recuperação do Outbox (entradas failed) contra o Mongo de produção, SÓ LEITURA
+# (docs/outbox-recovery/SOMBRA.md). SEPARADA da sombra do reaper: outro ambiente, outro usuário,
+# outro papel, outros segredos, outra variável de agenda e outros relatórios.
+#
+# Dois gatilhos SEPARADOS:
+#   - Manual (workflow_dispatch): uma execução com a duração pedida (padrão 15 min).
+#   - Agenda: 00:35, 06:35, 12:35 e 18:35 UTC, SÓ com a variável SOMBRA_OUTBOX_AGENDA_ATIVA=true.
+# Cada execução agendada termina 8 min antes do próximo horário (deploy/sombra-outbox/janela.sh).
+#
+# A sombra só observa: lê o outboxes e registra elegibilidade, tentativas, idade e destino proposto.
+# Não republica, não muda estado, não marca nada e não envia notificação.
+# Segredos: só no ambiente "sombra-outbox" (regra de branch = main). Custo: zero (repo público).
+# Público: só o resumo com contagens, tipos de evento e nomes de fila (sem id de entrada, sem
+# payload). O relatório completo e o log saem criptografados (AES256) como artifact por 14 dias.
+name: sombra-outbox
+
+on:
+  schedule:
+    - cron: '35 0,6,12,18 * * *'
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Duração desta execução manual em minutos (1 a 345)'
+        required: false
+        default: '15'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sombra-outbox
+  cancel-in-progress: false
+
+jobs:
+  sombra:
+    if: >-
+      github.repository == 'kaduart/kas-core' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'schedule' && vars.SOMBRA_OUTBOX_AGENDA_ATIVA == 'true'))
+    environment: sombra-outbox
+    runs-on: ubuntu-latest
+    timeout-minutes: 358
+    env:
+      DB: ${{ vars.SOMBRA_OUTBOX_DB || 'fono_inova_prod' }}
+      HEALTH_URL: ${{ vars.SOMBRA_CRM_HEALTH_URL || 'https://fono-inova-crm-back.onrender.com/health' }}
+      MINUTES: ${{ github.event.inputs.minutes }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build
+        run: |
+          go build -o bin/kas-outbox-recovery ./cmd/kas-outbox-recovery
+          go build -o bin/kas-outbox-shadow-summary ./cmd/kas-outbox-shadow-summary
+          echo "kas-core $(git rev-parse --short HEAD)"
+
+      - name: Conferir segredos (sem imprimir)
+        env:
+          URI: ${{ secrets.KAS_OUTBOX_SHADOW_MONGO_URI }}
+          PASS: ${{ secrets.SOMBRA_OUTBOX_REPORT_PASSPHRASE }}
+        run: |
+          [ -n "$URI" ] || { echo "::error::segredo KAS_OUTBOX_SHADOW_MONGO_URI ausente"; exit 1; }
+          [ -n "$PASS" ] || { echo "::error::segredo SOMBRA_OUTBOX_REPORT_PASSPHRASE ausente"; exit 1; }
+          deploy/sombra-outbox/forma-uri.sh
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            [[ "$MINUTES" =~ ^[0-9]+$ ]] && [ "$MINUTES" -ge 1 ] && [ "$MINUTES" -le 345 ] || { echo "::error::minutes fora de 1..345"; exit 1; }
+            SECS=$((MINUTES * 60))
+          else
+            SECS=$(deploy/sombra-outbox/janela.sh)
+          fi
+          echo "duração desta execução: ${SECS}s ($GITHUB_EVENT_NAME)"
+          echo "SECS=$SECS" >> "$GITHUB_ENV"
+
+      - name: Sombra do Outbox (só leitura) e sonda do /health
+        env:
+          KAS_OUTBOX_MONGO_URI: ${{ secrets.KAS_OUTBOX_SHADOW_MONGO_URI }}
+        run: |
+          [ "$SECS" -gt 0 ] || { echo "execução agendada atrasada demais: não roda para não encostar na próxima"; exit 0; }
+          mkdir -p run
+          ( while true; do
+              r=$(curl -s -o /dev/null -m 20 -w '%{http_code} %{time_total}' "$HEALTH_URL" || echo "000 0")
+              printf '{"at":"%s","status":%s,"ms":%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${r%% *}" "$(awk -v t="${r##* }" 'BEGIN{printf "%.0f", t*1000}')" >> run/health.jsonl
+              sleep 60
+            done ) & PROBE=$!
+          set +e
+          # stdout do binário vai para arquivo (pode citar id de entrada): nunca para o log público.
+          timeout --signal=TERM --kill-after=60s "${SECS}s" bin/kas-outbox-recovery -mode shadow -db "$DB" \
+            -require-read-only on -interval 5m -cycle-timeout 2m -max-pages 50 \
+            -report run/report.jsonl > run/outbox.log 2>&1
+          rc=$?
+          kill "$PROBE" 2>/dev/null
+          echo "saída da sombra: $rc (124 = fim do tempo, esperado; 2 = recusou iniciar)"
+          [ "$rc" = 0 ] || [ "$rc" = 124 ] || deploy/sombra/tipo-erro.sh run/outbox.log
+          grep -q '"msg":"read_only_confirmed"' run/outbox.log && echo "usuário só leitura comprovado pelo servidor" || { echo "::error::a sombra não comprovou só leitura"; exit 1; }
+          [ "$rc" = 0 ] || [ "$rc" = 124 ] || exit 1
+
+      - name: Resumo desta execução (só contagens)
+        if: always() && env.SECS != '0'
+        run: |
+          [ -f run/report.jsonl ] || { echo "sem relatório" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          set +e
+          H=(); [ -f run/health.jsonl ] && H=(-health run/health.jsonl)
+          bin/kas-outbox-shadow-summary -min-days 0 "${H[@]}" -json-out run/summary.json run/report.jsonl > run/summary.md
+          echo "SUMMARY_RC=$?" >> "$GITHUB_ENV"
+          cat run/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Criptografar o relatório completo
+        if: always()
+        env:
+          PASS: ${{ secrets.SOMBRA_OUTBOX_REPORT_PASSPHRASE }}
+        run: |
+          [ -d run ] || exit 0
+          tar czf sombra.tar.gz run
+          printf '%s' "$PASS" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 -o "sombra-outbox-${{ github.run_id }}.tar.gz.gpg" sombra.tar.gz
+          rm -rf run sombra.tar.gz
+
+      - name: Guardar (14 dias, criptografado)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sombra-outbox-${{ github.run_id }}
+          path: sombra-outbox-*.tar.gz.gpg
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Critério reprovado deixa a execução vermelha
+        if: always()
+        run: |
+          [ "${SUMMARY_RC:-0}" != 1 ] || { echo "::error::algum critério da sombra do Outbox falhou nesta execução (ver o resumo)"; exit 1; }

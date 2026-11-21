@@ -28,6 +28,9 @@ const (
 	// CapabilityEventsConsume lets a service claim, ack and nack deliveries of
 	// the consumers bound to it.
 	CapabilityEventsConsume = "events:consume"
+	// CapabilityIdentitySessions lets a panel sign people in and read their
+	// sessions, for the tenants it is bound to. It belongs to no module.
+	CapabilityIdentitySessions = "identity:sessions"
 	// Process Studio capabilities. Each one guards a family of routes under
 	// /internal/v1/process; none of them carries any business rule.
 	CapabilityProcessDefine  = "process:define"
@@ -528,6 +531,27 @@ func (s *Store) ResolveTenant(serviceID, token, requested, capability string) (s
 		return "", err
 	}
 	return tenantID, nil
+}
+
+// TenantsForCapability authenticates the service and returns, sorted, the
+// active tenants it may act for with the capability (module gate applied).
+// No tenant is ErrCapabilityForbidden.
+func (s *Store) TenantsForCapability(serviceID, token, capability string) ([]string, error) {
+	c, exists := s.callers[serviceID]
+	if !exists || !validToken(token) || !s.tokenMatches(c, token) {
+		return nil, ErrUnauthorized
+	}
+	var out []string
+	for tenantID := range c.tenants {
+		if s.authorizeTenant(c, tenantID, capability) == nil {
+			out = append(out, tenantID)
+		}
+	}
+	if len(out) == 0 {
+		return nil, ErrCapabilityForbidden
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func (s *Store) Authorize(serviceID, token, tenantID, capability string) error {

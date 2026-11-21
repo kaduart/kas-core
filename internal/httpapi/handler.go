@@ -18,6 +18,7 @@ import (
 	"kas-core-pilot/internal/audit"
 	"kas-core-pilot/internal/configstore"
 	"kas-core-pilot/internal/events"
+	"kas-core-pilot/internal/identity"
 	"kas-core-pilot/internal/process"
 	"kas-core-pilot/internal/strictjson"
 )
@@ -41,6 +42,8 @@ type Handler struct {
 	process *process.Engine
 	// attribution is the KAS Attribution store (nil = routes answer 503).
 	attribution *attribution.Store
+	// identity keeps panel users and sessions (nil = routes answer 503).
+	identity *identity.Store
 	// readiness holds the integration check of each enabled module.
 	readiness map[string]ModuleReadiness
 	metrics   *metricsState
@@ -103,6 +106,7 @@ func newHandler(store *configstore.Store, auditService *audit.Service, maxConcur
 	h.registerProcessRoutes()
 	h.registerAttributionRoutes()
 	h.registerReportsRoutes()
+	h.registerIdentityRoutes()
 	return h
 }
 
@@ -272,6 +276,15 @@ func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		if err != nil {
 			h.writeError(w, r, http.StatusServiceUnavailable, "attribution_unavailable", "attribution storage is not ready")
+			return
+		}
+	}
+	if r.Method == http.MethodGet && h.identity != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		err := h.identity.Ready(ctx)
+		cancel()
+		if err != nil {
+			h.writeError(w, r, http.StatusServiceUnavailable, "identity_unavailable", "identity storage is not ready")
 			return
 		}
 	}

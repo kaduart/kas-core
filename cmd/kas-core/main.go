@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"kas-core-pilot/internal/attribution"
+	"kas-core-pilot/internal/identity"
 	"kas-core-pilot/internal/audit"
 	"kas-core-pilot/internal/configstore"
 	"kas-core-pilot/internal/events"
@@ -51,6 +52,13 @@ func run() int {
 	attributionAutoMigrate := flag.Bool("attribution-auto-migrate", true, "with -attribution-store postgres: apply pending attribution migrations at startup; set false when the runtime role has no DDL rights")
 	attributionMigrateOnly := flag.Bool("attribution-migrate-only", false, "apply attribution PostgreSQL migrations with the events migration role and exit (run after the events migrations)")
 	attributionKeyEnv := flag.String("attribution-fingerprint-key-env", "KAS_ATTRIBUTION_FINGERPRINT_KEY", "environment variable holding the secret key (32+ bytes) that turns phones and e-mails into fingerprints; changing it breaks matching with stored inputs")
+	identityBackend := flag.String("identity-store", "none", "panel sign-in (users, memberships, sessions): none (default, routes answer 503) or postgres; postgres requires -events-store postgres and uses the same database")
+	identityAutoMigrate := flag.Bool("identity-auto-migrate", true, "with -identity-store postgres: apply pending identity migrations at startup")
+	identityAddUser := flag.String("identity-add-user", "", "create a panel user with this e-mail and exit; name from -identity-user-name, password from the variable named by -identity-password-env, tenants from -identity-memberships")
+	identitySetPassword := flag.String("identity-set-password", "", "replace the password of the user with this e-mail (ends their sessions) and exit; password from -identity-password-env")
+	identityUserName := flag.String("identity-user-name", "", "with -identity-add-user: the person's name")
+	identityMemberships := flag.String("identity-memberships", "", "with -identity-add-user: comma-separated tenant:role pairs (roles: admin, gestor, atendimento, leitura)")
+	identityPasswordEnv := flag.String("identity-password-env", "KAS_IDENTITY_NEW_PASSWORD", "environment variable holding the password for -identity-add-user / -identity-set-password (never pass it as a flag)")
 	metricsTokenEnv := flag.String("metrics-token-env", "", "environment variable holding a bearer token that GET /metrics requires; without it /metrics is served only on a loopback listener")
 	addr := flag.String("addr", "127.0.0.1:8088", "listen address")
 	maxConcurrent := flag.Int("max-concurrent", 32, "maximum concurrent HTTP requests (1-128)")
@@ -59,6 +67,12 @@ func run() int {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if *identityAddUser != "" || *identitySetPassword != "" {
+		return runIdentityAdmin(logger, identityAdmin{
+			addEmail: *identityAddUser, setEmail: *identitySetPassword, name: *identityUserName,
+			memberships: *identityMemberships, passwordEnv: *identityPasswordEnv, dsnEnv: *eventsDatabaseURLEnv,
+		})
+	}
 	if *auditMigrateOnly || *eventsMigrateOnly || *eventsPurge || *processMigrateOnly || *modulesMigrateOnly || *attributionMigrateOnly {
 		if *auditMigrateOnly {
 			if *auditBackend != "postgres" {
@@ -336,6 +350,27 @@ func run() int {
 		logger.Info("kas attribution enabled")
 	default:
 		logger.Error("invalid attribution store; use none or postgres")
+		return 2
+	}
+
+	switch *identityBackend {
+	case "none":
+	case "postgres":
+		if eventStore == nil {
+			logger.Error("-identity-store postgres requires -events-store postgres (same database)")
+			return 2
+		}
+		dsn, _ := os.LookupEnv(*eventsDatabaseURLEnv)
+		identityStore, err := identity.Open(context.Background(), dsn, *identityAutoMigrate)
+		if err != nil {
+			logger.Error("identity store unavailable", "reason", err.Error())
+			return 2
+		}
+		defer identityStore.Close()
+		api.EnableIdentity(identityStore)
+		logger.Info("kas identity enabled")
+	default:
+		logger.Error("invalid identity store; use none or postgres")
 		return 2
 	}
 

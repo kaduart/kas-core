@@ -109,7 +109,7 @@ func ModuleOfCapability(capability string) string { return moduleOfCapability[ca
 
 func knownCapability(capability string) bool {
 	switch capability {
-	case CapabilityConfigRead, CapabilityAuditWrite, CapabilityAuditRead, CapabilityEventsPublish, CapabilityEventsConsume:
+	case CapabilityConfigRead, CapabilityAuditWrite, CapabilityAuditRead, CapabilityEventsPublish, CapabilityEventsConsume, CapabilityIdentitySessions:
 		return true
 	}
 	_, ok := moduleOfCapability[capability]

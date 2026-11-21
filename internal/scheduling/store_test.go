@@ -104,6 +104,12 @@ func TestMigrationIsReversible(t *testing.T) {
 	if _, _, err := s.CreateBooking(ctx, tenantA, book("sala-1", "cli-1", "k1", "2027-01-04 09:00", "2027-01-04 09:40")); err != nil {
 		t.Fatal(err)
 	}
+	// A mirrored booking too: the rollback of 0002 removes it before 0001 goes.
+	mi := MirrorItem{BookingID: "ag-1", ResourceID: "pr-1", ClientRef: "cl-1", Start: at("2027-01-05 09:00"), End: at("2027-01-05 09:40"),
+		Status: StatusScheduled, SourceStatus: "scheduled", SourceUpdatedAt: at("2027-01-01 00:00")}
+	if _, err := s.MirrorApply(ctx, tenantA, "crm", []MirrorItem{mi}, MirrorCursor{}, true); err != nil {
+		t.Fatal(err)
+	}
 	if s2, err := Open(ctx, dsn, false); err != nil {
 		t.Fatalf("verify after apply: %v", err)
 	} else {
@@ -181,9 +187,13 @@ func TestTenantIsolation(t *testing.T) {
 // Every statement of the store that touches a scheduling table filters or
 // writes tenant_id. A new query without it fails here before review.
 func TestEveryQueryIsScopedByTenant(t *testing.T) {
-	src, err := os.ReadFile("store.go")
-	if err != nil {
-		t.Fatal(err)
+	var src []byte
+	for _, f := range []string{"store.go", "mirror.go"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src = append(src, b...)
 	}
 	queries := regexp.MustCompile("(?s)`([^`]*)`").FindAllStringSubmatch(string(src), -1)
 	checked := 0
@@ -197,7 +207,7 @@ func TestEveryQueryIsScopedByTenant(t *testing.T) {
 			t.Errorf("query without tenant_id:\n%s", sql)
 		}
 	}
-	if checked < 15 {
+	if checked < 25 {
 		t.Fatalf("only %d queries found; the scan is broken", checked)
 	}
 }

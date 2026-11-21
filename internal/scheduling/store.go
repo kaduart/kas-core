@@ -74,7 +74,7 @@ func Migrate(ctx context.Context, connString string) error {
 	return migrator.Apply(ctx, pool)
 }
 
-// Rollback removes every scheduling table (rollback/0001_scheduling.down.sql),
+// Rollback removes every scheduling table (rollback/*.down.sql, newest first),
 // in one transaction. It deletes the data: use only with the migration role
 // and an explicit decision.
 func Rollback(ctx context.Context, connString string) error {
@@ -85,13 +85,18 @@ func Rollback(ctx context.Context, connString string) error {
 		return err
 	}
 	defer pool.Close()
-	down, err := sqlFiles.ReadFile("rollback/0001_scheduling.down.sql")
-	if err != nil {
-		return err
-	}
+	// Newest first: 0002 (mirror) before 0001 (tables).
 	return pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, string(down))
-		return err
+		for _, name := range []string{"rollback/0002_mirror.down.sql", "rollback/0001_scheduling.down.sql"} {
+			down, err := sqlFiles.ReadFile(name)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, string(down)); err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+		}
+		return nil
 	})
 }
 

@@ -67,3 +67,23 @@ CI do marco 1: commit `60feada`, run 44861034563, 6/6 verde.
 Classificação: **Implementada e validada** (contra modelos transcritos por
 leitura). A comparação com dados reais do CRM é a fase 3A/3B: **Bloqueada** até
 autorização de cópia.
+
+CI do marco 2: commit `7044b80`, run 44861541754.
+
+## Marco 3 — benchmark (fase 2, prioridade 3) e robustez (prioridade 4)
+
+- `internal/httpapi/scheduling_bench_test.go` (só roda com `KAS_BENCH=1`) e
+  `internal/scheduling/compute_bench_test.go`. Resultados e limitações em
+  `docs/agenda/BENCHMARK_FASE2.md`; dados brutos em JSON.
+- Resumo: 1 a 25 simultâneos sem erro com o limite padrão (32); 50 e 100 exigem
+  subir `-max-concurrent` (com 128: 0 erros, p99 30 ms em 50 e 67 ms em 100). Teto
+  ~1.900 leituras/s nesta máquina; gargalo pool de 8 conexões + CPU. Gravação no
+  mesmo profissional em fila (~700/s), espalhada ~1.300/s. Postgres congelado 3 s:
+  0 erros.
+- Sem comparação Node × Go: não há medição equivalente do CRM (declarado).
+- Robustez nova: log de execuções confere com o que aconteceu (execução que caiu
+  não grava linha), nenhuma consulta reescreve `tenant_id`, tenant inválido
+  recusado, mesmo id em dois tenants fica separado.
+
+Classificação: benchmark **Implementada e validada** (local); robustez
+**Implementada e validada** (Postgres e Mongo reais).

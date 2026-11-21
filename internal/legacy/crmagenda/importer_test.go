@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -712,5 +713,81 @@ func TestLogsAndReportsHoldNoSourceIds(t *testing.T) {
 		if strings.Contains(out, needle) {
 			t.Fatalf("logs contain %q", needle)
 		}
+	}
+}
+
+func TestRunLogMatchesWhatHappened(t *testing.T) {
+	e := newEnv(t)
+	ids := e.week(9)
+	ctx := context.Background()
+	im := e.importer(tenantA, keyA, 4)
+	if _, err := im.Full(ctx); err != nil {
+		t.Fatal(err)
+	}
+	im.OnBatch = func(int) error { return errCrash }
+	if _, err := im.Full(ctx); err == nil {
+		t.Fatal("want crash")
+	}
+	im.OnBatch = nil
+	if _, err := e.coll.DeleteOne(ctx, bson.D{{Key: "_id", Value: ids[0]}}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := im.Reconcile(ctx, march.from, march.to, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runs, err := e.store.MirrorRuns(ctx, tenantA, Source, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The crashed run is not recorded: only runs that finished leave a row.
+	if len(runs) != 3 || runs[2].Mode != "full" || runs[2].Read != 9 || runs[2].Upserted != 9 ||
+		runs[1].Candidates != 1 || runs[0].Deleted != 1 {
+		t.Fatalf("run log: %+v", runs)
+	}
+	other, _ := e.store.MirrorRuns(ctx, tenantB, Source, 50)
+	if len(other) != 0 {
+		t.Fatal("tenant B sees tenant A's runs")
+	}
+}
+
+func TestNoQueryCanMoveARowToAnotherTenant(t *testing.T) {
+	for _, f := range []string{"../../scheduling/store.go", "../../scheduling/mirror.go"} {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, bad := range []string{"SET tenant_id", "tenant_id = EXCLUDED", ", tenant_id = "} {
+			if strings.Contains(string(src), bad) {
+				t.Fatalf("%s rewrites tenant_id (%q)", f, bad)
+			}
+		}
+	}
+	e := newEnv(t)
+	ctx := context.Background()
+	start := time.Date(2027, 3, 3, 12, 0, 0, 0, time.UTC)
+	item := scheduling.MirrorItem{BookingID: "ag-t1", ResourceID: "pr-t1", ClientRef: "cl-t1", Start: start, End: start.Add(40 * time.Minute),
+		Status: scheduling.StatusScheduled, SourceStatus: "scheduled", SourceUpdatedAt: start}
+	for _, tenant := range []string{"", "../x", "Clinica Aurora", strings.Repeat("a", 200)} {
+		if _, err := e.store.MirrorApply(ctx, tenant, Source, []scheduling.MirrorItem{item}, scheduling.MirrorCursor{}, false); !errors.Is(err, scheduling.ErrInvalid) {
+			t.Fatalf("tenant %q accepted: %v", tenant, err)
+		}
+	}
+	// The same booking id in two tenants stays two rows.
+	for _, tenant := range []string{tenantA, tenantB} {
+		if _, err := e.store.MirrorApply(ctx, tenant, Source, []scheduling.MirrorItem{item}, scheduling.MirrorCursor{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	moved := item
+	moved.SourceUpdatedAt = start.Add(time.Hour)
+	moved.Status = scheduling.StatusCanceled
+	if _, err := e.store.MirrorApply(ctx, tenantB, Source, []scheduling.MirrorItem{moved}, scheduling.MirrorCursor{}, false); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := e.store.ListBookings(ctx, tenantA, "pr-t1", start.Add(-time.Hour), start.Add(time.Hour))
+	if len(a) != 1 || a[0].Status != scheduling.StatusScheduled {
+		t.Fatalf("tenant B's update reached tenant A: %+v", a)
 	}
 }

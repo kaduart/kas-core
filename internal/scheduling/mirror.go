@@ -314,3 +314,41 @@ func (s *Store) MirrorDayLoads(ctx context.Context, tenantID, source, zone strin
 	}
 	return out, mapError(rows.Err())
 }
+
+// MirrorRunRecord is one stored run (counters only).
+type MirrorRunRecord struct {
+	ID         int64     `json:"id"`
+	Mode       string    `json:"mode"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at"`
+	Read       int       `json:"read"`
+	Upserted   int       `json:"upserted"`
+	Skipped    int       `json:"skipped"`
+	Deleted    int       `json:"deleted"`
+	Candidates int       `json:"candidates"`
+	Cleared    int       `json:"cleared"`
+}
+
+// MirrorRuns lists the latest runs of (tenant, source), newest first.
+func (s *Store) MirrorRuns(ctx context.Context, tenantID, source string, limit int) ([]MirrorRunRecord, error) {
+	if !ValidRef(tenantID) || !sourcePattern.MatchString(source) || limit < 1 || limit > 500 {
+		return nil, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `SELECT id, mode, started_at, finished_at, read, upserted, skipped, deleted, candidates, cleared
+		FROM sched_mirror_runs WHERE tenant_id = $1 AND source = $2 ORDER BY id DESC LIMIT $3`, tenantID, source, limit)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	out := []MirrorRunRecord{}
+	for rows.Next() {
+		var r MirrorRunRecord
+		if err := rows.Scan(&r.ID, &r.Mode, &r.StartedAt, &r.FinishedAt, &r.Read, &r.Upserted, &r.Skipped, &r.Deleted, &r.Candidates, &r.Cleared); err != nil {
+			return nil, mapError(err)
+		}
+		out = append(out, r)
+	}
+	return out, mapError(rows.Err())
+}

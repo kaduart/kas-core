@@ -9,7 +9,8 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -trimpath -o /out/kas-core ./cmd/kas-core \
- && CGO_ENABLED=0 go build -trimpath -o /out/kas-attribution-import ./cmd/kas-attribution-import
+ && CGO_ENABLED=0 go build -trimpath -o /out/kas-attribution-import ./cmd/kas-attribution-import \
+ && CGO_ENABLED=0 go build -trimpath -o /out/kas-scheduling-seed ./cmd/kas-scheduling-seed
 
 FROM alpine:3.20
 COPY --from=build /out/ /usr/local/bin/

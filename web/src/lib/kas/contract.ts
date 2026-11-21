@@ -5,14 +5,14 @@
  */
 import { z } from "zod";
 
-export const MODULE_KEYS = ["attribution", "reports", "process", "crm", "omnichannel", "ai"] as const;
+export const MODULE_KEYS = ["scheduling", "attribution", "reports", "process", "crm", "omnichannel", "ai"] as const;
 export type ModuleKey = (typeof MODULE_KEYS)[number];
 
 export const CONTRACT_STATES = ["active", "paused", "absent", "planned"] as const;
 export type ContractState = (typeof CONTRACT_STATES)[number];
 
 /** Módulos que o KAS Core permite contratar hoje. crm, omnichannel e ai estão "planned" no catálogo do Go. */
-export const ACTIVATABLE: ModuleKey[] = ["attribution", "reports", "process"];
+export const ACTIVATABLE: ModuleKey[] = ["scheduling", "attribution", "reports", "process"];
 export const DEPENDS_ON: Partial<Record<ModuleKey, ModuleKey[]>> = { reports: ["attribution"] };
 
 export const moduleStateSchema = z.object({
@@ -136,3 +136,86 @@ export const REASON_LABEL: Record<string, string> = {
   sem_origem_capturada: "cliente sem origem registrada",
   estorno_acima_do_saldo: "estorno maior que o valor pago",
 };
+
+/* ---------- Agenda (GET/POST /internal/v1/scheduling/*, fases 1 e 4A) ---------- */
+
+export const BOOKING_STATUSES = ["tentative", "scheduled", "confirmed", "completed", "canceled", "no_show"] as const;
+export type BookingStatus = (typeof BOOKING_STATUSES)[number];
+export const ACTIVE_STATUSES: BookingStatus[] = ["tentative", "scheduled", "confirmed"];
+export const STATUS_LABEL: Record<BookingStatus, string> = {
+  tentative: "Pré-agendado",
+  scheduled: "Agendado",
+  confirmed: "Confirmado",
+  completed: "Realizado",
+  canceled: "Cancelado",
+  no_show: "Faltou",
+};
+
+/** Papéis que podem mudar a agenda. O Go confere de novo (403 role_forbidden). */
+export const WRITER_ROLES: Role[] = ["admin", "gestor", "atendimento"];
+
+/** Código opaco: sem espaço nem @, o que mantém nome e e-mail fora por construção (mesma regra do Go). */
+export const REF_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+
+export const resourceSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  label: z.string(),
+  tags: z.array(z.string()).nullish(),
+  capacity: z.number().int(),
+  active: z.boolean(),
+});
+export type AgendaResource = z.infer<typeof resourceSchema>;
+
+export const serviceSchema = z.object({ id: z.string(), label: z.string(), duration_min: z.number().int(), buffer_min: z.number().int() });
+export type AgendaService = z.infer<typeof serviceSchema>;
+
+export const agendaCatalogSchema = z.object({
+  contract_version: z.literal("v1"),
+  tenant_id: z.string(),
+  zone: z.string(),
+  read_only: z.boolean(),
+  resources: z.array(resourceSchema),
+  services: z.array(serviceSchema),
+});
+export type AgendaCatalog = z.infer<typeof agendaCatalogSchema>;
+
+export const bookingSchema = z.object({
+  id: z.string(),
+  resource_id: z.string(),
+  client_ref: z.string(),
+  service_id: z.string().optional(),
+  starts_at: z.string(),
+  ends_at: z.string(),
+  status: z.enum(BOOKING_STATUSES),
+  buffer_min: z.number().int(),
+  blocked_until: z.string(),
+  version: z.number().int(),
+  updated_at: z.string(),
+});
+export type AgendaBooking = z.infer<typeof bookingSchema>;
+
+export const bookingsResponseSchema = z.object({
+  contract_version: z.literal("v1"),
+  tenant_id: z.string(),
+  bookings: z.array(bookingSchema).nullish().transform((v) => v ?? []),
+});
+
+export const slotsResponseSchema = z.object({
+  contract_version: z.literal("v1"),
+  tenant_id: z.string(),
+  resource_id: z.string(),
+  slots: z
+    .array(z.object({ starts_at: z.string(), ends_at: z.string(), remaining: z.number().int() }))
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type AgendaSlot = z.infer<typeof slotsResponseSchema>["slots"][number];
+
+export const bookingWriteResponseSchema = z.object({
+  contract_version: z.literal("v1"),
+  tenant_id: z.string(),
+  booking: bookingSchema,
+  replayed: z.boolean().optional(),
+});
+export type BookingWriteResponse = z.infer<typeof bookingWriteResponseSchema>;

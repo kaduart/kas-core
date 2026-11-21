@@ -53,7 +53,7 @@ func run() int {
 	attributionAutoMigrate := flag.Bool("attribution-auto-migrate", true, "with -attribution-store postgres: apply pending attribution migrations at startup; set false when the runtime role has no DDL rights")
 	attributionMigrateOnly := flag.Bool("attribution-migrate-only", false, "apply attribution PostgreSQL migrations with the events migration role and exit (run after the events migrations)")
 	attributionKeyEnv := flag.String("attribution-fingerprint-key-env", "KAS_ATTRIBUTION_FINGERPRINT_KEY", "environment variable holding the secret key (32+ bytes) that turns phones and e-mails into fingerprints; changing it breaks matching with stored inputs")
-	schedulingBackend := flag.String("scheduling-store", "none", "KAS Agenda (phase 1: reads and calculations): none (default, routes answer 503) or postgres; postgres requires -events-store postgres and uses the same database")
+	schedulingBackend := flag.String("scheduling-store", "none", "KAS Agenda (reads, calculations and, since phase 4A, booking writes): none (default, routes answer 503) or postgres; postgres requires -events-store postgres and uses the same database")
 	schedulingAutoMigrate := flag.Bool("scheduling-auto-migrate", false, "with -scheduling-store postgres: apply pending scheduling migrations at startup (off by default: the migration needs the btree_gist extension, run -scheduling-migrate-only with the migration role)")
 	schedulingMigrateOnly := flag.Bool("scheduling-migrate-only", false, "apply scheduling PostgreSQL migrations with the events migration role and exit (run after the events migrations)")
 	identityBackend := flag.String("identity-store", "none", "panel sign-in (users, memberships, sessions): none (default, routes answer 503) or postgres; postgres requires -events-store postgres and uses the same database")
@@ -388,7 +388,7 @@ func run() int {
 		}
 		defer schedulingStore.Close()
 		api.EnableScheduling(schedulingStore)
-		logger.Info("kas scheduling enabled (reads and calculations only)")
+		logger.Info("kas scheduling enabled (reads, calculations and booking writes; mirrored tenants are read only)")
 	default:
 		logger.Error("invalid scheduling store; use none or postgres")
 		return 2

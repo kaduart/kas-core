@@ -29,6 +29,7 @@ func (h *Handler) EnableScheduling(store *scheduling.Store) {
 func (h *Handler) registerSchedulingRoutes() {
 	h.mux.HandleFunc("GET /internal/v1/scheduling/availability", h.schedulingAvailability)
 	h.mux.HandleFunc("GET /internal/v1/scheduling/bookings", h.schedulingBookings)
+	h.mux.HandleFunc("GET /internal/v1/scheduling/catalog", h.schedulingCatalog)
 	h.mux.HandleFunc("POST /internal/v1/scheduling/conflicts:check", h.schedulingConflicts)
 	h.mux.HandleFunc("POST /internal/v1/scheduling/series:preview", h.schedulingSeries)
 	h.registerSchedulingWriteRoutes()
@@ -238,4 +239,29 @@ func (h *Handler) schedulingSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeJSON(w, http.StatusOK, schedulingSeriesResponse{ContractVersion: scheduling.ContractVersion, TenantID: tenantID, SeriesResult: res})
+}
+
+type schedulingCatalogResponse struct {
+	ContractVersion string `json:"contract_version"`
+	TenantID        string `json:"tenant_id"`
+	scheduling.Catalog
+}
+
+// schedulingCatalog serves GET /internal/v1/scheduling/catalog: resources,
+// services, zone and whether the agenda is read only (mirrored).
+func (h *Handler) schedulingCatalog(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := h.schedulingTenant(w, r, r.URL.Query().Get("tenant_id"), configstore.CapabilitySchedulingRead)
+	if !ok {
+		return
+	}
+	if !strictQuery(r, "tenant_id") {
+		h.writeError(w, r, http.StatusBadRequest, "invalid_request", "query parameters are invalid")
+		return
+	}
+	c, err := h.scheduling.Catalog(r.Context(), tenantID)
+	if err != nil {
+		h.writeSchedulingError(w, r, err)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, schedulingCatalogResponse{ContractVersion: scheduling.ContractVersion, TenantID: tenantID, Catalog: c})
 }

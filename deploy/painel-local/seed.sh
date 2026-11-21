@@ -2,7 +2,8 @@
 # Carga do painel local. Pode rodar quantas vezes quiser: nada duplica.
 #  1. cria (ou atualiza) a pessoa que entra no painel, com acesso às 4 empresas;
 #  2. importa a Escola Exemplo (escola-demo) e a amostra fictícia na Clínica Aurora;
-#     o lote tem id fixo, então a segunda carga só repete a resposta original.
+#     o lote tem id fixo, então a segunda carga só repete a resposta original;
+#  3. carrega a Agenda fictícia da Clínica Aurora (chave fixa por dia: não duplica).
 # A Fono Inova fica sem dados de propósito: ela recebe o banco real da clínica depois.
 set -eu
 KAS=http://127.0.0.1:8089
@@ -26,4 +27,6 @@ load() { # SERVICE PASTA
 }
 echo "== Escola Exemplo (escola-demo)"; load escola-sis escola-demo
 echo "== Clínica Aurora (amostra fictícia)"; load aurora-sis amostra-fono
+echo "== Agenda fictícia da Clínica Aurora (profissionais, serviços e horários desta semana e da próxima)"
+kas-scheduling-seed -tenant clinica-aurora
 echo "== carga concluída"

@@ -50,6 +50,8 @@ services:
       - -modules-store=postgres
       - -attribution-store=postgres
       - -identity-store=postgres
+      - -scheduling-store=postgres
+      - -scheduling-auto-migrate
 
   # Repasse da porta 8088 (publicada só no 127.0.0.1 do PC) para o KAS. Só desenvolvimento:
   # em produção o KAS escuta com TLS (-tls-cert/-tls-key) e não existe este repasse.

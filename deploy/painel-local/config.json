@@ -1,6 +1,6 @@
 {
   "contract_version": "v1",
-  "config_version": "painel-local-2026-11-21",
+  "config_version": "painel-local-2026-11-21b",
   "tenant_registry": [
     {"id": "fono-inova", "status": "active"},
     {"id": "clinica-aurora", "status": "active"},
@@ -18,16 +18,16 @@
     "escola-demo": {"branding.name": "Escola Exemplo", "branding.color": "#C2410C"}
   },
   "modules": {
-    "fono-inova": {"attribution": {"status": "active"}, "reports": {"status": "active"}},
-    "clinica-aurora": {"attribution": {"status": "active"}, "reports": {"status": "active"}},
-    "odonto-sorriso": {"attribution": {"status": "active"}, "reports": {"status": "paused"}},
-    "escola-demo": {"attribution": {"status": "active"}, "reports": {"status": "active"}}
+    "fono-inova": {"attribution": {"status": "active"}, "reports": {"status": "active"}, "scheduling": {"status": "paused"}},
+    "clinica-aurora": {"attribution": {"status": "active"}, "reports": {"status": "active"}, "scheduling": {"status": "active"}},
+    "odonto-sorriso": {"attribution": {"status": "active"}, "reports": {"status": "paused"}, "scheduling": {"status": "paused"}},
+    "escola-demo": {"attribution": {"status": "active"}, "reports": {"status": "active"}, "scheduling": {"status": "paused"}}
   },
   "callers": {
     "kas-web": {
       "token_env": "KAS_WEB_TOKEN",
       "tenants": ["fono-inova", "clinica-aurora", "odonto-sorriso", "escola-demo"],
-      "capabilities": ["identity:sessions", "attribution:read", "reports:read"]
+      "capabilities": ["identity:sessions", "attribution:read", "reports:read", "scheduling:read", "scheduling:compute", "scheduling:write"]
     },
     "aurora-sis": {"token_env": "KAS_IMPORT_TOKEN", "tenants": ["clinica-aurora"], "capabilities": ["attribution:import"]},
     "escola-sis": {"token_env": "KAS_IMPORT_TOKEN", "tenants": ["escola-demo"], "capabilities": ["attribution:import"]}

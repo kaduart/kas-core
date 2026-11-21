@@ -10,6 +10,7 @@ catálogo e segunda empresa", sections 7 and 8.1 (decisions D1–D5 approved on
 
 | Module | State | Capabilities | Depends on |
 | --- | --- | --- | --- |
+| `scheduling` | activatable | `scheduling:read`, `scheduling:compute`, `scheduling:write` | — |
 | `attribution` | activatable | `attribution:import`, `attribution:read` | — |
 | `reports` | activatable | `reports:read` | `attribution` |
 | `process` | activatable (legacy-open) | `process:define`, `process:run`, `process:task`, `process:command`, `process:event` | — |

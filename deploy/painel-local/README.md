@@ -9,9 +9,9 @@ Nada aqui fala com Render, Atlas ou o CRM da clínica.
 | Empresa | Módulos | Dados |
 |---|---|---|
 | Escola Exemplo (`escola-demo`) | Attribution + Relatórios | CSVs de `testdata/attribution/escola-demo`: fecha **R$ 6.470,00** |
-| Clínica Aurora (`clinica-aurora`) | Attribution + Relatórios | amostra fictícia (`amostra-fono`) |
+| Clínica Aurora (`clinica-aurora`) | Attribution + Relatórios + **Agenda** | amostra fictícia (`amostra-fono`) e agenda fictícia (4 profissionais/salas, 3 serviços, horários desta semana e da próxima) |
 | Odonto Sorriso (`odonto-sorriso`) | Attribution ativo, Relatórios **pausado** | sem dados (mostra "falta integrar") |
-| Fono Inova (`fono-inova`) | Attribution + Relatórios | **vazia de propósito**: recebe o banco da clínica no teste |
+| Fono Inova (`fono-inova`) | Attribution + Relatórios; Agenda **pausada** | **vazia de propósito**: recebe o banco da clínica no teste. A Agenda da Fono não aceita escrita pelo painel |
 
 ## Passo a passo (PowerShell, na pasta do repositório)
 
@@ -68,3 +68,14 @@ docker compose -f deploy/painel-local/docker-compose.yml down -v
   pessoa não tem não abre nada: o painel volta para uma empresa permitida.
 - A porta 8088 fica só no `127.0.0.1` do PC, em HTTP, por um repasse (`porta`)
   que existe só aqui. Em produção o KAS escuta com TLS.
+
+## Agenda (fase 4B)
+
+A tela **Agenda** aparece só para a Clínica Aurora. Para ver as permissões por papel, crie mais pessoas
+(o papel `leitura` só consulta; `atendimento`, `gestor` e `admin` agendam, remarcam e cancelam):
+
+```
+docker compose -f deploy/painel-local/docker-compose.yml run --rm --entrypoint kas-core -e KAS_IDENTITY_NEW_PASSWORD=senha-de-teste-123 seed -config /etc/kas/config.json -events-store postgres -identity-store postgres -identity-add-user recepcao@aurora.exemplo -identity-user-name "Recepção Aurora" -identity-memberships clinica-aurora:atendimento
+```
+
+A carga da agenda (`kas-scheduling-seed`) só aceita empresas fictícias e banco local: recusa `fono-inova`.

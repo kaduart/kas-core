@@ -1,7 +1,7 @@
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
-import { ROLE_LABEL, type ModulesResponse, type SessionMode } from "@/lib/kas/contract";
+import { ROLE_LABEL, type ModulesResponse, type Role, type SessionMode } from "@/lib/kas/contract";
 import { CoreError, coreConfigFromEnv, getIdentitySession, getModules } from "@/lib/kas/core-client";
 import { demoModules, demoModulesCookie, parseDemoModulesCookie } from "@/lib/kas/demo";
 import { brandCookieName, parseBrandCookie } from "@/lib/tenant/brand-cookie";
@@ -17,7 +17,8 @@ export interface Session {
   tenantId: string;
   /** Empresas que esta pessoa pode abrir (no modo real, as do login). */
   allowedTenantIds: string[];
-  user: { name: string; role: string; email?: string };
+  /** role é o rótulo exibido; roleKey é o papel do contrato (só no modo real). */
+  user: { name: string; role: string; roleKey?: Role; email?: string };
   modules: ModulesResponse;
   /** Marcas personalizadas por empresa (modo demonstração). */
   brands: Record<string, TenantBrand>;
@@ -90,7 +91,7 @@ export const getSession = cache(async (): Promise<Session | null> => {
     mode: "live",
     tenantId,
     allowedTenantIds: allowed,
-    user: { name: identity.user.name || identity.user.email, role: ROLE_LABEL[role], email: identity.user.email },
+    user: { name: identity.user.name || identity.user.email, role: ROLE_LABEL[role], roleKey: role, email: identity.user.email },
     modules: await getModules(cfg, tenantId, token),
     brands: {},
   };

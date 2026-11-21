@@ -26,3 +26,21 @@ export function bffError(e: unknown): NextResponse {
   console.error("bff_failed", e);
   return NextResponse.json({ error: { code: "internal" } }, { status: 500 });
 }
+
+/**
+ * Escritas do navegador (POST com o cookie de sessão) só valem vindas do próprio painel:
+ * Origin precisa bater com o Host. Barra o envio de formulário por outro site (CSRF).
+ */
+export function sameOrigin(req: Request): boolean {
+  const origin = req.headers.get("origin");
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  if (!origin || !host) return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
+export const forbiddenOrigin = () => NextResponse.json({ error: { code: "origin_forbidden" } }, { status: 403 });
+export const badRequest = () => NextResponse.json({ error: { code: "invalid_request" } }, { status: 400 });

@@ -19,6 +19,7 @@ export interface ModuleInfo {
 }
 
 export const MODULES: ModuleInfo[] = [
+  { key: "scheduling", slug: "agenda", label: "Agenda", description: "Horários, profissionais e salas", icon: CalendarDays },
   { key: "attribution", slug: "attribution", label: "Attribution", description: "Campanhas, conversões e receita", icon: ChartNoAxesColumnIncreasing },
   { key: "crm", slug: "crm", label: "CRM", description: "Leads, funil e relacionamento", icon: UsersRound },
   { key: "omnichannel", slug: "omnichannel", label: "Omnichannel", description: "WhatsApp e canais integrados", icon: MessageSquareText },

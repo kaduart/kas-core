@@ -480,3 +480,22 @@ func auditActors(t *testing.T, dsn, tenant string) []string {
 func auditActions(t *testing.T, dsn, tenant string) []string {
 	return auditColumn(t, dsn, tenant, "action")
 }
+
+func TestSchedulingCatalogShowsReadOnly(t *testing.T) {
+	e := newWriteEnv(t)
+	for _, c := range []struct {
+		session, tenant string
+		readOnly        bool
+		services        int
+	}{{e.leo, "clinica-aurora", false, 1}, {e.fabio, "fono-espelho", true, 0}} {
+		rec := schedCall(e.h, http.MethodGet, "/internal/v1/scheduling/catalog?tenant_id="+c.tenant, "kas-web", handlerTokenA, c.session, "")
+		var out schedulingCatalogResponse
+		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.TenantID != c.tenant || out.ReadOnly != c.readOnly ||
+			len(out.Resources) != 2 || len(out.Services) != c.services || out.Zone != "UTC" {
+			t.Fatalf("%s: %d %s", c.tenant, rec.Code, rec.Body)
+		}
+	}
+	if rec := schedCall(e.h, http.MethodGet, "/internal/v1/scheduling/catalog?tenant_id=fono-espelho", "kas-web", handlerTokenA, e.leo, ""); rec.Code != 403 {
+		t.Fatalf("leo read another tenant's catalog: %d", rec.Code)
+	}
+}

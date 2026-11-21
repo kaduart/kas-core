@@ -647,10 +647,13 @@ func (s *Store) CreateBooking(ctx context.Context, tenantID string, nb NewBookin
 }
 
 // ensureWritable refuses writes to a tenant whose agenda is mirrored.
+// mirroredSQL: a tenant with mirror rows has its agenda written by the mirror only.
+const mirroredSQL = `SELECT EXISTS (SELECT 1 FROM sched_mirror_cursor WHERE tenant_id = $1)
+	OR EXISTS (SELECT 1 FROM sched_mirror_items WHERE tenant_id = $1)`
+
 func ensureWritable(ctx context.Context, tx pgx.Tx, tenantID string) error {
 	var mirrored bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sched_mirror_cursor WHERE tenant_id = $1)
-		OR EXISTS (SELECT 1 FROM sched_mirror_items WHERE tenant_id = $1)`, tenantID).Scan(&mirrored); err != nil {
+	if err := tx.QueryRow(ctx, mirroredSQL, tenantID).Scan(&mirrored); err != nil {
 		return err
 	}
 	if mirrored {
@@ -880,6 +883,64 @@ func (s *Store) ListExceptions(ctx context.Context, tenantID, resourceID string,
 			return nil, mapError(err)
 		}
 		out = append(out, e)
+	}
+	return out, mapError(rows.Err())
+}
+
+// Catalog is what an agenda screen needs before it asks for slots: the
+// tenant's resources and services, its zone, and whether its agenda is
+// mirrored from another system (read only).
+type Catalog struct {
+	Zone      string     `json:"zone"`
+	ReadOnly  bool       `json:"read_only"`
+	Resources []Resource `json:"resources"`
+	Services  []Service  `json:"services"`
+}
+
+// Catalog lists the tenant's resources (active first, by label) and services.
+func (s *Store) Catalog(ctx context.Context, tenantID string) (Catalog, error) {
+	if !ValidRef(tenantID) {
+		return Catalog{}, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+	st, err := getSettings(ctx, s.pool, tenantID)
+	if err != nil {
+		return Catalog{}, mapError(err)
+	}
+	out := Catalog{Zone: st.Zone, Resources: []Resource{}, Services: []Service{}}
+	if err := s.pool.QueryRow(ctx, mirroredSQL, tenantID).Scan(&out.ReadOnly); err != nil {
+		return Catalog{}, mapError(err)
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, kind, label, tags, capacity, active FROM sched_resources
+		WHERE tenant_id = $1 ORDER BY active DESC, label, id LIMIT 500`, tenantID)
+	if err != nil {
+		return Catalog{}, mapError(err)
+	}
+	for rows.Next() {
+		var r Resource
+		if err := rows.Scan(&r.ID, &r.Kind, &r.Label, &r.Tags, &r.Capacity, &r.Active); err != nil {
+			rows.Close()
+			return Catalog{}, mapError(err)
+		}
+		out.Resources = append(out.Resources, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return Catalog{}, mapError(err)
+	}
+	rows, err = s.pool.Query(ctx, `SELECT id, label, duration_min, buffer_min FROM sched_services
+		WHERE tenant_id = $1 ORDER BY label, id LIMIT 500`, tenantID)
+	if err != nil {
+		return Catalog{}, mapError(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sv Service
+		if err := rows.Scan(&sv.ID, &sv.Label, &sv.DurationMin, &sv.BufferMin); err != nil {
+			return Catalog{}, mapError(err)
+		}
+		out.Services = append(out.Services, sv)
 	}
 	return out, mapError(rows.Err())
 }

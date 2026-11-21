@@ -228,6 +228,21 @@ func (s *Store) SetPassword(ctx context.Context, email, password string) error {
 	})
 }
 
+// RemoveMembership takes a user out of a tenant. Open sessions stay, but they
+// stop opening that tenant at once: every request re-reads the memberships.
+// Removing a membership that does not exist is not an error.
+func (s *Store) RemoveMembership(ctx context.Context, email, tenantID string) error {
+	e, err := NormalizeEmail(email)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+	_, err = s.pool.Exec(ctx, `DELETE FROM identity_memberships m USING identity_users u
+		WHERE m.user_id = u.id AND u.email = $1 AND m.tenant_id = $2`, e, tenantID)
+	return err
+}
+
 // SetMembership gives (or changes) the role of a user in a tenant.
 func (s *Store) SetMembership(ctx context.Context, email, tenantID, role string) error {
 	e, err := NormalizeEmail(email)

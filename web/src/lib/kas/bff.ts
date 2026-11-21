@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { CoreError, coreConfigFromEnv, type CoreConfig } from "./core-client";
-import { getSession, type Session } from "@/lib/session";
+import { getSession, sessionToken, type Session } from "@/lib/session";
 
 /** Guarda das rotas /api/kas: só modo real e com sessão. A empresa vem sempre da sessão, nunca da URL. */
-export async function bffContext(): Promise<{ cfg: CoreConfig; session: Session } | NextResponse> {
+export async function bffContext(): Promise<{ cfg: CoreConfig; session: Session; token: string } | NextResponse> {
   const cfg = coreConfigFromEnv();
   if (!cfg) return NextResponse.json({ error: { code: "demo_mode" } }, { status: 404 });
   let session: Session | null;
@@ -12,8 +12,9 @@ export async function bffContext(): Promise<{ cfg: CoreConfig; session: Session 
   } catch (e) {
     return bffError(e);
   }
-  if (!session) return NextResponse.json({ error: { code: "session_invalid" } }, { status: 401 });
-  return { cfg, session };
+  const token = await sessionToken();
+  if (!session || !token) return NextResponse.json({ error: { code: "session_invalid" } }, { status: 401 });
+  return { cfg, session, token };
 }
 
 export function bffError(e: unknown): NextResponse {

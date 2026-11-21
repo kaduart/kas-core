@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
   if (!isPeriod(period)) return NextResponse.json({ error: { code: "invalid_request" } }, { status: 400 });
   const range = periodRange(period);
   try {
-    const data = await getRevenue(ctx.cfg, ctx.session.tenantId, { from: range.from, to: range.to });
+    const data = await getRevenue(ctx.cfg, ctx.session.tenantId, ctx.token, { from: range.from, to: range.to });
     return NextResponse.json({ ...data, periodo: { de: range.fromDate, ate: range.toDate } }, { headers: { "Cache-Control": "no-store" } });
   } catch (e) {
     return bffError(e);

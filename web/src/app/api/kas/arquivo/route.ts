@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
   if (!KINDS.includes(kind) || !isPeriod(period)) return NextResponse.json({ error: { code: "invalid_request" } }, { status: 400 });
   const range = periodRange(period);
   try {
-    const res = await getRevenueFile(ctx.cfg, ctx.session.tenantId, kind, { from: range.from, to: range.to });
+    const res = await getRevenueFile(ctx.cfg, ctx.session.tenantId, ctx.token, kind, { from: range.from, to: range.to });
     const headers = new Headers({ "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
     headers.set("Content-Type", res.headers.get("Content-Type") ?? "application/octet-stream");
     const ext = kind === "report-html" ? "html" : "csv";

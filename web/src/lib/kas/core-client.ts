@@ -30,6 +30,8 @@ export class CoreError extends Error {
 
 type FetchImpl = typeof fetch;
 
+const SESSION_HEADER = "X-KAS-Session";
+
 async function errorCode(res: Response): Promise<string> {
   try {
     return ((await res.json()) as { error?: { code?: string } }).error?.code ?? "unknown";
@@ -54,8 +56,12 @@ async function coreFetch(cfg: CoreConfig, path: string, init: RequestInit = {}, 
   return res;
 }
 
-export async function getModules(cfg: CoreConfig, tenantId: string, fetchImpl: FetchImpl = fetch): Promise<ModulesResponse> {
-  const res = await coreFetch(cfg, `/internal/v1/modules?tenant_id=${encodeURIComponent(tenantId)}`, {}, fetchImpl);
+/**
+ * O painel é um serviço que faz login de pessoas: o Go exige a sessão da pessoa em toda
+ * leitura de dados e só responde pelas empresas dela (o tenant_id sozinho não abre nada).
+ */
+export async function getModules(cfg: CoreConfig, tenantId: string, sessionToken: string, fetchImpl: FetchImpl = fetch): Promise<ModulesResponse> {
+  const res = await coreFetch(cfg, `/internal/v1/modules?tenant_id=${encodeURIComponent(tenantId)}`, { headers: { [SESSION_HEADER]: sessionToken } }, fetchImpl);
   const parsed = modulesResponseSchema.safeParse(await res.json());
   if (!parsed.success) throw new CoreError(502, "contract_mismatch");
   if (parsed.data.tenant_id !== tenantId) throw new CoreError(502, "tenant_mismatch");
@@ -63,8 +69,6 @@ export async function getModules(cfg: CoreConfig, tenantId: string, fetchImpl: F
 }
 
 /* ---------- Identidade: a pessoa entra no painel; o Go guarda usuário, senha e sessão ---------- */
-
-const SESSION_HEADER = "X-KAS-Session";
 
 function parseIdentity(body: unknown): IdentitySession {
   const parsed = identitySessionSchema.safeParse(body);
@@ -110,8 +114,8 @@ function revenueParams(tenantId: string, q: RevenueQuery, format?: string): stri
   return p.toString();
 }
 
-export async function getRevenue(cfg: CoreConfig, tenantId: string, q: RevenueQuery = {}, fetchImpl: FetchImpl = fetch): Promise<RevenueResponse> {
-  const res = await coreFetch(cfg, `/internal/v1/attribution/revenue?${revenueParams(tenantId, q)}`, {}, fetchImpl);
+export async function getRevenue(cfg: CoreConfig, tenantId: string, sessionToken: string, q: RevenueQuery = {}, fetchImpl: FetchImpl = fetch): Promise<RevenueResponse> {
+  const res = await coreFetch(cfg, `/internal/v1/attribution/revenue?${revenueParams(tenantId, q)}`, { headers: { [SESSION_HEADER]: sessionToken } }, fetchImpl);
   const parsed = revenueResponseSchema.safeParse(await res.json());
   if (!parsed.success) throw new CoreError(502, "contract_mismatch");
   if (parsed.data.tenant_id !== tenantId) throw new CoreError(502, "tenant_mismatch");
@@ -121,8 +125,8 @@ export async function getRevenue(cfg: CoreConfig, tenantId: string, q: RevenueQu
 export type RevenueFile = "attribution-csv" | "report-csv" | "report-html";
 
 /** Arquivo pronto do Go (CSV da receita ou relatório HTML com a marca da empresa), repassado como veio. */
-export async function getRevenueFile(cfg: CoreConfig, tenantId: string, kind: RevenueFile, q: RevenueQuery = {}, fetchImpl: FetchImpl = fetch): Promise<Response> {
+export async function getRevenueFile(cfg: CoreConfig, tenantId: string, sessionToken: string, kind: RevenueFile, q: RevenueQuery = {}, fetchImpl: FetchImpl = fetch): Promise<Response> {
   const path = kind === "attribution-csv" ? "/internal/v1/attribution/revenue" : "/internal/v1/reports/revenue";
   const format = kind === "report-html" ? "html" : "csv";
-  return coreFetch(cfg, `${path}?${revenueParams(tenantId, q, format)}`, { headers: { Accept: "*/*" } }, fetchImpl);
+  return coreFetch(cfg, `${path}?${revenueParams(tenantId, q, format)}`, { headers: { Accept: "*/*", [SESSION_HEADER]: sessionToken } }, fetchImpl);
 }

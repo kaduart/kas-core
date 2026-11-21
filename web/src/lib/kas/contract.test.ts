@@ -57,12 +57,12 @@ describe("modo real", () => {
 
   it("valida o contrato e o tenant da resposta", async () => {
     const body = { contract_version: "v1", tenant_id: "escola-demo", config_version: "3", modules: [{ key: "attribution", contract: "active" }] };
-    await expect(getModules(cfg, "escola-demo", ok(body))).resolves.toMatchObject({ tenant_id: "escola-demo" });
-    await expect(getModules(cfg, "outra", ok(body))).rejects.toMatchObject({ code: "tenant_mismatch" });
-    await expect(getModules(cfg, "escola-demo", ok({ ...body, contract_version: "v2" }))).rejects.toMatchObject({ code: "contract_mismatch" });
+    await expect(getModules(cfg, "escola-demo", "kss_x", ok(body))).resolves.toMatchObject({ tenant_id: "escola-demo" });
+    await expect(getModules(cfg, "outra", "kss_x", ok(body))).rejects.toMatchObject({ code: "tenant_mismatch" });
+    await expect(getModules(cfg, "escola-demo", "kss_x", ok({ ...body, contract_version: "v2" }))).rejects.toMatchObject({ code: "contract_mismatch" });
   });
   it("propaga o código de erro do Go", async () => {
-    const err = await getModules(cfg, "x", ok({ error: { code: "unauthorized" } }, 401)).catch((e) => e);
+    const err = await getModules(cfg, "x", "kss_x", ok({ error: { code: "unauthorized" } }, 401)).catch((e) => e);
     expect(err).toBeInstanceOf(CoreError);
     expect(err).toMatchObject({ status: 401, code: "unauthorized" });
   });

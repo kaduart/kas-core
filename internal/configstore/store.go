@@ -285,6 +285,13 @@ func Load(r io.Reader, lookupEnv func(string) (string, bool)) (*Store, error) {
 			}
 			capabilities[capability] = struct{}{}
 		}
+		if _, panel := capabilities[CapabilityIdentitySessions]; panel {
+			for capability := range capabilities {
+				if !panelCapability(capability) {
+					return nil, fmt.Errorf("service %q signs people in (identity:sessions) and may only hold %s; %s needs a separate service", serviceID, strings.Join(panelCapabilities, ", "), capability)
+				}
+			}
+		}
 		tokenBytes, _ := hex.DecodeString(token)
 		tokens := [][]byte{tokenBytes}
 		if rawCaller.TokenEnvNext != "" {
@@ -531,6 +538,34 @@ func (s *Store) ResolveTenant(serviceID, token, requested, capability string) (s
 		return "", err
 	}
 	return tenantID, nil
+}
+
+// panelCapabilities are the only capabilities a service that signs people in
+// (identity:sessions) may hold. Every one of them is a read that the handlers
+// bind to the person's session (see RequiresUserSession), so a panel service
+// can never act for a tenant outside the signed-in person's memberships.
+var panelCapabilities = []string{CapabilityIdentitySessions, CapabilityAttributionRead, CapabilityReportsRead}
+
+func panelCapability(capability string) bool {
+	for _, c := range panelCapabilities {
+		if c == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// RequiresUserSession reports whether the service acts on behalf of signed-in
+// people (it holds identity:sessions). For such a service, the tenant of every
+// data request must also be one of the person's memberships: the service
+// token alone never selects a tenant.
+func (s *Store) RequiresUserSession(serviceID string) bool {
+	c, exists := s.callers[serviceID]
+	if !exists {
+		return false
+	}
+	_, panel := c.capabilities[CapabilityIdentitySessions]
+	return panel
 }
 
 // TenantsForCapability authenticates the service and returns, sorted, the

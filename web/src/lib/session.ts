@@ -23,6 +23,11 @@ export interface Session {
   brands: Record<string, TenantBrand>;
 }
 
+/** Só no servidor: o token da sessão, que o Go exige em toda leitura de dados. Nunca vai para o navegador. */
+export async function sessionToken(): Promise<string | undefined> {
+  return (await cookies()).get(SESSION_COOKIE)?.value;
+}
+
 /**
  * Escolhe a empresa do modo real entre as que a pessoa tem acesso.
  * Domínio próprio de uma empresa manda; em localhost vale a escolha salva (cookie) ou a primeira.
@@ -86,7 +91,7 @@ export const getSession = cache(async (): Promise<Session | null> => {
     tenantId,
     allowedTenantIds: allowed,
     user: { name: identity.user.name || identity.user.email, role: ROLE_LABEL[role], email: identity.user.email },
-    modules: await getModules(cfg, tenantId),
+    modules: await getModules(cfg, tenantId, token),
     brands: {},
   };
 });

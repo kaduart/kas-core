@@ -53,11 +53,21 @@ describe("empresa da sessão", () => {
 });
 
 describe("receita", () => {
+  it("manda a sessão da pessoa junto com a credencial do serviço", async () => {
+    let seen: Headers | undefined;
+    const spy = (async (_u: string, init: RequestInit) => {
+      seen = new Headers(init.headers);
+      return new Response("{}", { status: 401, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    await getRevenue(cfg, "escola-demo", "kss_abc", {}, spy).catch(() => null);
+    expect(seen?.get("X-KAS-Session")).toBe("kss_abc");
+    expect(seen?.get("X-KAS-Service")).toBe("kas-web");
+  });
   it("recusa resposta de outra empresa", async () => {
     const body = { contract_version: "v1", tenant_id: "outra", moeda: "BRL", total_liquido_centavos: 0, por_nivel_centavos: {}, linhas: [],
       sem_vinculo: { recebido_centavos: 0, estornos_centavos: 0, liquido_centavos: 0, clientes: 0, lancamentos: 0 },
       invariante: { soma_niveis_centavos: 0, total_liquido_centavos: 0, fecha: true } };
-    const err = await getRevenue(cfg, "escola-demo", {}, json(200, body) as unknown as typeof fetch).catch((e) => e);
+    const err = await getRevenue(cfg, "escola-demo", "kss_x", {}, json(200, body) as unknown as typeof fetch).catch((e) => e);
     expect(err.code).toBe("tenant_mismatch");
   });
 });

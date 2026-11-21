@@ -72,6 +72,9 @@ func (h *Handler) reportsRevenue(w http.ResponseWriter, r *http.Request) {
 		h.writeAuthorizationError(w, r, err)
 		return
 	}
+	if !h.userSessionGate(w, r, r.Header.Get("X-KAS-Service"), tenantID) {
+		return
+	}
 	if !valid || (format != "" && format != "html" && format != "csv") {
 		h.writeError(w, r, http.StatusBadRequest, "invalid_request", "query parameters are invalid")
 		return

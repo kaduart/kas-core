@@ -98,3 +98,35 @@ Ajustes antes de agendar a janela:
 
 1. Rodar a janela curta com frequência (por exemplo, 7 dias atrás e 30 à frente, a cada 10 minutos) e a janela longa, de 120 dias, uma vez por noite.
 2. Melhoria no KAS (ainda não feita): pular, antes de gravar, as linhas cujo `updatedAt` não mudou. Isso deve levar a rodada sem mudanças de 30 s para poucos segundos. Não depende do Atlas.
+
+## 4. Atualização de 21/11, 10h30: gravação mais rápida e teste de saturação
+
+### Gravação no espelho (`MirrorApply`)
+
+Antes, cada linha fazia três consultas. Agora o lote inteiro faz uma consulta só para saber o dono e a versão já gravada de cada linha. Fora da carga completa, a linha com a mesma versão (`updatedAt`) é pulada. A mesma janela de 102 mil fictícios (`benchmark-janela-otimizada-2026-11-21.json`):
+
+| | Antes | Depois |
+|---|---|---|
+| Primeira rodada (18.060 linhas novas) | 102 s | 38 s |
+| Rodada sem mudanças | 30 s | **1,5 s** |
+
+Todos os testes do espelho continuam passando, inclusive os de exclusão, versão antiga e dono diferente.
+
+Limite conhecido: uma linha alterada na origem sem mudar o `updatedAt` não é regravada fora da carga completa. O Mongoose do CRM atualiza o `updatedAt` em toda gravação, mas um script que grave direto no banco pode não atualizar. A carga completa (`-mode full`) regrava tudo.
+
+### Saturação e estabilidade com pool 16 e limite 128 (`benchmark-saturacao-2026-11-21.json`)
+
+O teste roda em janelas de 10 s, em 4 fases, por 4 min 50 s, só na leitura de horários livres. O teste é o `TestSchedulingSoak`, com `KAS_BENCH=1 KAS_BENCH_SOAK=1`.
+
+| Fase | Clientes | ok/s | p99 | Recusas | Outros erros |
+|---|---|---|---|---|---|
+| Estável (12 janelas) | 50 | 1.480–1.832 | 43–52 ms | 0 | 0 |
+| No limite (6) | 128 | 1.634–1.863 | 89–107 ms | 0 | 0 |
+| Acima do limite (3) | 200 | 939–1.027 | 171–185 ms | ~93% (esperado) | 0 |
+| Recuperação (6) | 50 | 1.758–2.020 | 39–46 ms | 0 | 0 |
+
+- **Nenhuma deriva** em 30 janelas. O p99 da fase estável não cresce com o tempo. Depois da sobrecarga, a latência volta ao nível normal.
+- **Memória:** o heap do Go ficou entre 10 e 26 MB. Subiu durante a sobrecarga e voltou a ficar entre 15 e 20 MB.
+- **Postgres:** 18 conexões o tempo todo (o pool de 16 mais as do teste), entre 241 e 242 MB, sem vazamento de conexão.
+- **Goroutines:** o número sobe com a quantidade de clientes (155, 389 e 605), porque o cliente HTTP do teste mantém as conexões abertas. Elas não crescem dentro de uma mesma fase.
+- **Fora do teste:** escrita concorrente (reservas) e rede real entre o KAS e o banco. Aqui tudo roda na mesma máquina, com 4 vCPU.

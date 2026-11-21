@@ -99,31 +99,65 @@ func (s *Store) MirrorApply(ctx context.Context, tenantID, source string, items 
 	ctx, cancel := context.WithTimeout(ctx, 2*dbTimeout)
 	defer cancel()
 	changed, stale := 0, 0
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = it.BookingID
+	}
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		changed, stale = 0, 0
-		for _, it := range items {
-			if _, err := tx.Exec(ctx, `INSERT INTO sched_resources (tenant_id, id, kind, label, capacity, active)
-				VALUES ($1, $2, 'person', $2, 1, true) ON CONFLICT (tenant_id, id) DO NOTHING`, tenantID, it.ResourceID); err != nil {
+		// One read for the whole batch: who owns each id and the source version
+		// already mirrored (was one query per row).
+		owned := map[string]time.Time{}
+		foreignIDs := map[string]bool{}
+		rows, err := tx.Query(ctx, `SELECT b.id, m.source, m.source_updated_at
+			FROM sched_bookings b LEFT JOIN sched_mirror_items m ON m.tenant_id = b.tenant_id AND m.booking_id = b.id
+			WHERE b.tenant_id = $1 AND b.id = ANY($2)`, tenantID, ids)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id string
+			var src *string
+			var at *time.Time
+			if err := rows.Scan(&id, &src, &at); err != nil {
+				rows.Close()
 				return err
 			}
+			if src == nil || *src != source {
+				foreignIDs[id] = true
+			} else if at != nil {
+				owned[id] = *at
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		resources := map[string]bool{}
+		for _, it := range items {
 			// A booking with this id that the source does not own (a KAS-native one,
 			// or another source's) is never overwritten.
-			// An update older than the one already mirrored (out of order) is ignored.
-			var foreign bool
-			var known *time.Time
-			if err := tx.QueryRow(ctx, `SELECT
-					EXISTS (SELECT 1 FROM sched_bookings b WHERE b.tenant_id = $1 AND b.id = $2
-						AND NOT EXISTS (SELECT 1 FROM sched_mirror_items m WHERE m.tenant_id = $1 AND m.booking_id = $2 AND m.source = $3)),
-					(SELECT source_updated_at FROM sched_mirror_items WHERE tenant_id = $1 AND booking_id = $2 AND source = $3)`,
-				tenantID, it.BookingID, source).Scan(&foreign, &known); err != nil {
-				return err
-			}
-			if foreign {
+			if foreignIDs[it.BookingID] {
 				return fmt.Errorf("%w: booking %s belongs to another owner", ErrInvalid, it.BookingID)
 			}
-			if known != nil && it.SourceUpdatedAt.Before(*known) {
-				stale++
-				continue
+			// An update older than the one already mirrored (out of order) is ignored;
+			// outside a full load, the same version already mirrored is skipped.
+			if known, ok := owned[it.BookingID]; ok {
+				at := it.SourceUpdatedAt.Truncate(time.Microsecond)
+				if at.Before(known) {
+					stale++
+					continue
+				}
+				if at.Equal(known) && !fullLoad {
+					continue
+				}
+			}
+			if !resources[it.ResourceID] {
+				if _, err := tx.Exec(ctx, `INSERT INTO sched_resources (tenant_id, id, kind, label, capacity, active)
+					VALUES ($1, $2, 'person', $2, 1, true) ON CONFLICT (tenant_id, id) DO NOTHING`, tenantID, it.ResourceID); err != nil {
+					return err
+				}
+				resources[it.ResourceID] = true
 			}
 			tag, err := tx.Exec(ctx, `INSERT INTO sched_bookings (tenant_id, id, resource_id, client_ref, starts_at, ends_at, status,
 					idempotency_key, exclusive, client_exclusive, buffer_min, blocked_until)
@@ -151,7 +185,7 @@ func (s *Store) MirrorApply(ctx context.Context, tenantID, source string, items 
 			t := cursor.LastUpdatedAt.UTC()
 			last = &t
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO sched_mirror_cursor (tenant_id, source, last_updated_at, last_source_id, full_load_at)
+		_, err = tx.Exec(ctx, `INSERT INTO sched_mirror_cursor (tenant_id, source, last_updated_at, last_source_id, full_load_at)
 			VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN now() END)
 			ON CONFLICT (tenant_id, source) DO UPDATE SET last_updated_at = EXCLUDED.last_updated_at,
 				last_source_id = EXCLUDED.last_source_id,

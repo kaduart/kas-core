@@ -20,6 +20,7 @@ import (
 	"kas-core-pilot/internal/metrics"
 	"kas-core-pilot/internal/modules"
 	"kas-core-pilot/internal/process"
+	"kas-core-pilot/internal/scheduling"
 )
 
 func main() {
@@ -52,6 +53,9 @@ func run() int {
 	attributionAutoMigrate := flag.Bool("attribution-auto-migrate", true, "with -attribution-store postgres: apply pending attribution migrations at startup; set false when the runtime role has no DDL rights")
 	attributionMigrateOnly := flag.Bool("attribution-migrate-only", false, "apply attribution PostgreSQL migrations with the events migration role and exit (run after the events migrations)")
 	attributionKeyEnv := flag.String("attribution-fingerprint-key-env", "KAS_ATTRIBUTION_FINGERPRINT_KEY", "environment variable holding the secret key (32+ bytes) that turns phones and e-mails into fingerprints; changing it breaks matching with stored inputs")
+	schedulingBackend := flag.String("scheduling-store", "none", "KAS Agenda (phase 1: reads and calculations): none (default, routes answer 503) or postgres; postgres requires -events-store postgres and uses the same database")
+	schedulingAutoMigrate := flag.Bool("scheduling-auto-migrate", false, "with -scheduling-store postgres: apply pending scheduling migrations at startup (off by default: the migration needs the btree_gist extension, run -scheduling-migrate-only with the migration role)")
+	schedulingMigrateOnly := flag.Bool("scheduling-migrate-only", false, "apply scheduling PostgreSQL migrations with the events migration role and exit (run after the events migrations)")
 	identityBackend := flag.String("identity-store", "none", "panel sign-in (users, memberships, sessions): none (default, routes answer 503) or postgres; postgres requires -events-store postgres and uses the same database")
 	identityAutoMigrate := flag.Bool("identity-auto-migrate", true, "with -identity-store postgres: apply pending identity migrations at startup")
 	identityAddUser := flag.String("identity-add-user", "", "create a panel user with this e-mail and exit; name from -identity-user-name, password from the variable named by -identity-password-env, tenants from -identity-memberships")
@@ -73,7 +77,7 @@ func run() int {
 			memberships: *identityMemberships, passwordEnv: *identityPasswordEnv, dsnEnv: *eventsDatabaseURLEnv,
 		})
 	}
-	if *auditMigrateOnly || *eventsMigrateOnly || *eventsPurge || *processMigrateOnly || *modulesMigrateOnly || *attributionMigrateOnly {
+	if *auditMigrateOnly || *eventsMigrateOnly || *eventsPurge || *processMigrateOnly || *modulesMigrateOnly || *attributionMigrateOnly || *schedulingMigrateOnly {
 		if *auditMigrateOnly {
 			if *auditBackend != "postgres" {
 				logger.Error("-audit-migrate-only requires -audit-store postgres")
@@ -153,6 +157,22 @@ func run() int {
 				return 1
 			}
 			logger.Info("attribution migrations applied")
+		}
+		if *schedulingMigrateOnly {
+			if *schedulingBackend != "postgres" || *eventsBackend != "postgres" {
+				logger.Error("-scheduling-migrate-only requires -scheduling-store postgres and -events-store postgres")
+				return 2
+			}
+			dsn, found := os.LookupEnv(*eventsMigrationURLEnv)
+			if !found || dsn == "" {
+				logger.Error("events migration connection variable is not set; scheduling migrations use the same role", "env", *eventsMigrationURLEnv)
+				return 2
+			}
+			if err := scheduling.Migrate(context.Background(), dsn); err != nil {
+				logger.Error("scheduling migration failed", "reason", err.Error())
+				return 1
+			}
+			logger.Info("scheduling migrations applied")
 		}
 		if *eventsPurge {
 			if *eventsBackend != "postgres" {
@@ -350,6 +370,27 @@ func run() int {
 		logger.Info("kas attribution enabled")
 	default:
 		logger.Error("invalid attribution store; use none or postgres")
+		return 2
+	}
+
+	switch *schedulingBackend {
+	case "none":
+	case "postgres":
+		if eventStore == nil {
+			logger.Error("-scheduling-store postgres requires -events-store postgres (same database)")
+			return 2
+		}
+		dsn, _ := os.LookupEnv(*eventsDatabaseURLEnv)
+		schedulingStore, err := scheduling.Open(context.Background(), dsn, *schedulingAutoMigrate)
+		if err != nil {
+			logger.Error("scheduling store unavailable", "reason", err.Error())
+			return 2
+		}
+		defer schedulingStore.Close()
+		api.EnableScheduling(schedulingStore)
+		logger.Info("kas scheduling enabled (reads and calculations only)")
+	default:
+		logger.Error("invalid scheduling store; use none or postgres")
 		return 2
 	}
 

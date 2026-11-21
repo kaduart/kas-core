@@ -18,7 +18,15 @@ const (
 	CapabilityReportsRead       = "reports:read"
 )
 
+// Agenda (scheduling) capabilities. Phase 1 exposes only reads and pure
+// calculations; booking writes stay inside the store until a later approval.
 const (
+	CapabilitySchedulingRead    = "scheduling:read"
+	CapabilitySchedulingCompute = "scheduling:compute"
+)
+
+const (
+	ModuleScheduling  = "scheduling"
 	ModuleAttribution = "attribution"
 	ModuleReports     = "reports"
 	ModuleProcess     = "process"
@@ -69,6 +77,7 @@ type CatalogModule struct {
 }
 
 var catalog = []CatalogModule{
+	{Key: ModuleScheduling, Activatable: true, Capabilities: []string{CapabilitySchedulingRead, CapabilitySchedulingCompute}},
 	{Key: ModuleAttribution, Activatable: true, Capabilities: []string{CapabilityAttributionImport, CapabilityAttributionRead}},
 	{Key: ModuleReports, Activatable: true, Capabilities: []string{CapabilityReportsRead}, DependsOn: []string{ModuleAttribution}},
 	{Key: ModuleProcess, Activatable: true, LegacyOpen: true, Capabilities: []string{

@@ -206,11 +206,11 @@ func assertNoTenantCode(t *testing.T) {
 	t.Helper()
 	forbidden := regexp.MustCompile(`(?i)escola|fono|pacient|aluno|matr[ií]cula|mensalidade`)
 	files := []string{
-		"attribution.go", "reports.go", "modules.go",
+		"attribution.go", "reports.go", "modules.go", "scheduling.go",
 		"../configstore/modules.go",
 		"../../cmd/kas-attribution-import/main.go",
 	}
-	for _, dir := range []string{"../attribution", "../modules"} {
+	for _, dir := range []string{"../attribution", "../modules", "../scheduling"} {
 		matches, _ := filepath.Glob(filepath.Join(dir, "*.go"))
 		files = append(files, matches...)
 	}

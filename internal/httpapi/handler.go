@@ -20,6 +20,7 @@ import (
 	"kas-core-pilot/internal/events"
 	"kas-core-pilot/internal/identity"
 	"kas-core-pilot/internal/process"
+	"kas-core-pilot/internal/scheduling"
 	"kas-core-pilot/internal/strictjson"
 )
 
@@ -42,6 +43,8 @@ type Handler struct {
 	process *process.Engine
 	// attribution is the KAS Attribution store (nil = routes answer 503).
 	attribution *attribution.Store
+	// scheduling is the KAS Agenda store (nil = routes answer 503).
+	scheduling *scheduling.Store
 	// identity keeps panel users and sessions (nil = routes answer 503).
 	identity *identity.Store
 	// readiness holds the integration check of each enabled module.
@@ -105,6 +108,7 @@ func newHandler(store *configstore.Store, auditService *audit.Service, maxConcur
 	h.mux.HandleFunc("/internal/v1/modules", h.getModules)
 	h.registerProcessRoutes()
 	h.registerAttributionRoutes()
+	h.registerSchedulingRoutes()
 	h.registerReportsRoutes()
 	h.registerIdentityRoutes()
 	return h

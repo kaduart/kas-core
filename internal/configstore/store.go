@@ -544,7 +544,8 @@ func (s *Store) ResolveTenant(serviceID, token, requested, capability string) (s
 // (identity:sessions) may hold. Every one of them is a read that the handlers
 // bind to the person's session (see RequiresUserSession), so a panel service
 // can never act for a tenant outside the signed-in person's memberships.
-var panelCapabilities = []string{CapabilityIdentitySessions, CapabilityAttributionRead, CapabilityReportsRead}
+var panelCapabilities = []string{CapabilityIdentitySessions, CapabilityAttributionRead, CapabilityReportsRead,
+	CapabilitySchedulingRead, CapabilitySchedulingCompute}
 
 func panelCapability(capability string) bool {
 	for _, c := range panelCapabilities {

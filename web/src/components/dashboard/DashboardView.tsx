@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useDashboard } from "@/lib/kas/api";
 import type { Period } from "@/lib/kas/types";
 import { useTenant } from "@/lib/tenant/TenantProvider";
+import { LiveDashboard } from "@/components/live/LiveDashboard";
 import { ActivityCard } from "./ActivityCard";
 import { CampaignCard } from "./CampaignCard";
 import { FunnelCard } from "./FunnelCard";
@@ -14,6 +15,11 @@ import { PromoCard } from "./PromoCard";
 import { RevenueCard } from "./RevenueCard";
 
 export function DashboardView() {
+  const { mode } = useTenant();
+  return mode === "live" ? <LiveDashboard /> : <DemoDashboard />;
+}
+
+function DemoDashboard() {
   const { tenant } = useTenant();
   const [period, setPeriod] = useState<Period>("30d");
   const { data, isError, refetch } = useDashboard(tenant.id, period, tenant.vertical);

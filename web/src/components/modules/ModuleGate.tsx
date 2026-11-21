@@ -4,7 +4,7 @@ import { Eye, Lock, PauseCircle, PlugZap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MISSING_LABEL, moduleAccess, type ModuleKey } from "@/lib/kas/contract";
 import { MODULES } from "@/lib/modules";
-import { getSession, sessionTenant } from "@/lib/session";
+import { requireSession, sessionTenant } from "@/lib/session";
 
 const panel = "max-w-2xl rounded-[22px] bg-white p-6 shadow-[0_1px_3px_rgba(15,31,23,.05)]";
 
@@ -14,7 +14,7 @@ const panel = "max-w-2xl rounded-[22px] bg-white p-6 shadow-[0_1px_3px_rgba(15,3
  * Isto é apresentação: as APIs do Go recusam de novo (403 module_not_contracted / module_paused).
  */
 export async function ModuleGate({ module, children }: { module: ModuleKey; children: ReactNode }) {
-  const session = await getSession();
+  const session = await requireSession();
   const tenant = sessionTenant(session);
   const access = moduleAccess(session.mode, session.modules.modules, module);
   const label = MODULES.find((m) => m.key === module)?.label ?? module;

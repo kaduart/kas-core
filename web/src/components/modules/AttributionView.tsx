@@ -12,10 +12,16 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { brl, num } from "@/lib/kas/api";
 import { ATTRIBUTION, ATTRIBUTION_SCHOOL } from "@/lib/kas/modules-fixtures";
 import { useTenant } from "@/lib/tenant/TenantProvider";
+import { AttributionLive } from "@/components/live/AttributionLive";
 
 const F: Record<string, number> = { "7d": 0.24, "30d": 1, "90d": 2.7 };
 
 export function AttributionView() {
+  const { mode } = useTenant();
+  return mode === "live" ? <AttributionLive /> : <AttributionViewDemo />;
+}
+
+function AttributionViewDemo() {
   const [period, setPeriod] = useState("30d");
   const f = F[period];
   const { tenant } = useTenant();

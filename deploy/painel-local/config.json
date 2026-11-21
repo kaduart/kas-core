@@ -1,0 +1,35 @@
+{
+  "contract_version": "v1",
+  "config_version": "painel-local-2026-11-21",
+  "tenant_registry": [
+    {"id": "fono-inova", "status": "active"},
+    {"id": "clinica-aurora", "status": "active"},
+    {"id": "odonto-sorriso", "status": "active"},
+    {"id": "escola-demo", "status": "active"}
+  ],
+  "key_schema": {
+    "branding.name": {"type": "string"},
+    "branding.color": {"type": "string"}
+  },
+  "tenants": {
+    "fono-inova": {"branding.name": "Fono Inova", "branding.color": "#0E8F4E"},
+    "clinica-aurora": {"branding.name": "Clínica Aurora", "branding.color": "#1F5FD1"},
+    "odonto-sorriso": {"branding.name": "Odonto Sorriso", "branding.color": "#6B3FD1"},
+    "escola-demo": {"branding.name": "Escola Exemplo", "branding.color": "#C2410C"}
+  },
+  "modules": {
+    "fono-inova": {"attribution": {"status": "active"}, "reports": {"status": "active"}},
+    "clinica-aurora": {"attribution": {"status": "active"}, "reports": {"status": "active"}},
+    "odonto-sorriso": {"attribution": {"status": "active"}, "reports": {"status": "paused"}},
+    "escola-demo": {"attribution": {"status": "active"}, "reports": {"status": "active"}}
+  },
+  "callers": {
+    "kas-web": {
+      "token_env": "KAS_WEB_TOKEN",
+      "tenants": ["fono-inova", "clinica-aurora", "odonto-sorriso", "escola-demo"],
+      "capabilities": ["identity:sessions", "attribution:read", "reports:read"]
+    },
+    "aurora-sis": {"token_env": "KAS_IMPORT_TOKEN", "tenants": ["clinica-aurora"], "capabilities": ["attribution:import"]},
+    "escola-sis": {"token_env": "KAS_IMPORT_TOKEN", "tenants": ["escola-demo"], "capabilities": ["attribution:import"]}
+  }
+}

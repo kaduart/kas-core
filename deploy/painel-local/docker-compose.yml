@@ -1,0 +1,76 @@
+# Painel KAS no seu PC: Postgres + KAS Core (Go) + carga de demonstração.
+# O painel (Next.js) roda fora, com `npm run dev` na pasta web/.
+#
+#   cd deploy/painel-local
+#   copie .env.example para .env e preencha e-mail e senha
+#   docker compose up --build -d
+#
+# Só desenvolvimento: senhas e tokens abaixo são fictícios e o KAS fica em HTTP
+# só no 127.0.0.1 do seu PC. Nada aqui fala com Render, Atlas ou o CRM real.
+name: kas-painel-local
+
+x-kas-env: &kas-env
+  KAS_EVENTS_DATABASE_URL: postgres://kas:kas_local_only@127.0.0.1:5432/kas?sslmode=disable
+  KAS_AUDIT_DATABASE_URL: postgres://kas:kas_local_only@127.0.0.1:5432/kas?sslmode=disable
+  KAS_ATTRIBUTION_FINGERPRINT_KEY: painel-local-chave-de-teste-nao-usar-em-producao
+  KAS_WEB_TOKEN: ${KAS_WEB_TOKEN:-c88d56b62e56b24070cad724e4bbd164e359d6cdde79228314cdd037654e7b11}
+  KAS_IMPORT_TOKEN: 1e119d0145c2ce8a42b97e8bd451b013f2eff12a88fc30b046e62f91ac4b17f4
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: kas
+      POSTGRES_PASSWORD: kas_local_only
+      POSTGRES_DB: kas
+    volumes:
+      - kas-painel-db:/var/lib/postgresql/data
+    # O KAS e o repasse usam a rede deste serviço; por isso a porta do KAS é publicada aqui.
+    ports:
+      - "127.0.0.1:8088:8088"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kas -d kas"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # KAS Core em 127.0.0.1 dentro da rede do banco: o Postgres é loopback, sem TLS.
+  kas:
+    build: { context: ../.., dockerfile: deploy/painel-local/Dockerfile }
+    image: kas-core:painel-local
+    network_mode: service:db
+    depends_on: { db: { condition: service_healthy } }
+    restart: unless-stopped
+    environment: *kas-env
+    command:
+      - -config=/etc/kas/config.json
+      - -addr=127.0.0.1:8089
+      - -audit-store=postgres
+      - -events-store=postgres
+      - -modules-store=postgres
+      - -attribution-store=postgres
+      - -identity-store=postgres
+
+  # Repasse da porta 8088 (publicada só no 127.0.0.1 do PC) para o KAS. Só desenvolvimento:
+  # em produção o KAS escuta com TLS (-tls-cert/-tls-key) e não existe este repasse.
+  porta:
+    image: alpine/socat:1.8.0.1
+    network_mode: service:db
+    depends_on: [kas]
+    restart: unless-stopped
+    command: ["tcp-listen:8088,fork,reuseaddr", "tcp-connect:127.0.0.1:8089"]
+
+  seed:
+    image: kas-core:painel-local
+    network_mode: service:db
+    depends_on: [kas]
+    restart: "no"
+    entrypoint: ["/usr/local/bin/seed.sh"]
+    environment:
+      <<: *kas-env
+      KAS_PAINEL_EMAIL: ${KAS_PAINEL_EMAIL:?preencha KAS_PAINEL_EMAIL no arquivo .env}
+      KAS_PAINEL_NOME: ${KAS_PAINEL_NOME:-Administrador}
+      KAS_IDENTITY_NEW_PASSWORD: ${KAS_PAINEL_SENHA:?preencha KAS_PAINEL_SENHA no arquivo .env (10 caracteres ou mais)}
+
+volumes:
+  kas-painel-db:

@@ -7,8 +7,14 @@ import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { REPORTS, REPORTS_SCHOOL } from "@/lib/kas/modules-fixtures";
 import { useTenant } from "@/lib/tenant/TenantProvider";
+import { ReportsLive } from "@/components/live/ReportsLive";
 
 export function ReportsView() {
+  const { mode } = useTenant();
+  return mode === "live" ? <ReportsLive /> : <ReportsViewDemo />;
+}
+
+function ReportsViewDemo() {
   const { tenant } = useTenant();
   const reports = tenant.vertical === "educacao" ? REPORTS_SCHOOL : REPORTS;
   return (

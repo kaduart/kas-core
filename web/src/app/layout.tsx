@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import "@fontsource-variable/inter";
-import { getSession } from "@/lib/session";
 import { Providers } from "./providers";
 import "./globals.css";
 
@@ -11,12 +10,11 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#064023" };
 
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const session = await getSession();
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="pt-BR">
       <body>
-        <Providers session={session}>{children}</Providers>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

@@ -95,3 +95,16 @@ export function tenantByHost(host?: string | null): Tenant | undefined {
   const h = (host ?? "").split(":")[0].toLowerCase();
   return TENANTS.find((t) => t.domains.includes(h));
 }
+
+/** Empresa pelo id. Uma empresa real que ainda não tem cadastro de marca aqui aparece com a marca padrão. */
+export function tenantFromId(id: string): Tenant {
+  return (
+    findTenant(id) ?? { id, name: id, segment: "", vertical: "servicos", domains: [], brand: { ...KAS_DEFAULT_BRAND }, demoModules: {} }
+  );
+}
+
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+export function isLocalHost(host?: string | null): boolean {
+  const h = (host ?? "").toLowerCase().replace(/:\d+$/, "");
+  return LOCAL_HOSTS.has(h);
+}

@@ -7,19 +7,19 @@ import { demoModulesCookie } from "@/lib/kas/demo";
 import type { Session } from "@/lib/session";
 import { brandCookieName, serializeBrandCookie } from "./brand-cookie";
 import { themeTokens } from "./color";
-import { findTenant, KAS_DEFAULT_BRAND, TENANT_COOKIE, TENANTS } from "./presets";
+import { KAS_DEFAULT_BRAND, TENANT_COOKIE, tenantFromId } from "./presets";
 import type { Tenant, TenantBrand } from "./types";
 
 interface TenantContextValue {
   mode: SessionMode;
   tenant: Tenant;
-  /** Empresas que a sessão pode abrir. No modo real, só a do domínio/login. */
+  /** Empresas que a sessão pode abrir. No modo real, as do login. */
   tenants: Tenant[];
   user: Session["user"];
   /** Estado de cada módulo como o servidor decidiu (contrato v1 do KAS Core). */
   modules: ModuleState[];
   access: (key: ModuleKey) => ModuleAccess;
-  /** Só no modo demonstração. No modo real é ignorado. */
+  /** Troca de empresa entre as permitidas (no modo real, as do login). */
   switchTenant: (id: string) => void;
   /** Só no modo demonstração: simula o contrato do módulo e pede ao servidor para recalcular. */
   setDemoModule: (key: ModuleKey, state: ContractState) => void;
@@ -39,20 +39,20 @@ export function TenantProvider({ session, children }: { session: Session; childr
   const router = useRouter();
   const [overrides, setOverrides] = useState<Record<string, TenantBrand>>(session.brands);
   const tenantId = session.tenantId;
-  const base = findTenant(tenantId) ?? TENANTS[0];
+  const base = useMemo(() => tenantFromId(tenantId), [tenantId]);
   const tenant = useMemo<Tenant>(() => ({ ...base, brand: overrides[base.id] ?? base.brand }), [base, overrides]);
-  const tenants = useMemo(() => TENANTS.filter((t) => session.allowedTenantIds.includes(t.id)), [session.allowedTenantIds]);
+  const tenants = useMemo(() => session.allowedTenantIds.map(tenantFromId), [session.allowedTenantIds]);
   const modules = session.modules.modules;
 
   const access = useCallback((key: ModuleKey) => moduleAccess(session.mode, modules, key), [session.mode, modules]);
 
   const switchTenant = useCallback(
     (id: string) => {
-      if (session.mode !== "demo" || !session.allowedTenantIds.includes(id)) return;
+      if (!session.allowedTenantIds.includes(id)) return;
       writeCookie(TENANT_COOKIE, encodeURIComponent(id));
       router.refresh();
     },
-    [router, session.mode, session.allowedTenantIds],
+    [router, session.allowedTenantIds],
   );
 
   const setDemoModule = useCallback(

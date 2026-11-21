@@ -87,3 +87,13 @@ CI do marco 2: commit `7044b80`, run 44861541754.
 
 Classificação: benchmark **Implementada e validada** (local); robustez
 **Implementada e validada** (Postgres e Mongo reais).
+
+## Marco 4 — fase 3A: motor de comparação
+
+Detalhes em `docs/agenda/FASE3A_COMPARACAO.md`. Compara por profissional e dia
+(agendamentos, horários livres, status, conflitos, padrões semanais), classifica
+em igual / erro de importação / regra clínica / divergência real e guarda o
+histórico. 6 testes de integração + script ponta a ponta.
+
+Classificação: **Implementada e validada com fixtures**. Com dados reais:
+**Bloqueada** (depende da cópia autorizada).

@@ -85,9 +85,9 @@ func Rollback(ctx context.Context, connString string) error {
 		return err
 	}
 	defer pool.Close()
-	// Newest first: 0002 (mirror) before 0001 (tables).
+	// Newest first: 0003 (comparisons), 0002 (mirror), then 0001 (tables).
 	return pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		for _, name := range []string{"rollback/0002_mirror.down.sql", "rollback/0001_scheduling.down.sql"} {
+		for _, name := range []string{"rollback/0003_mirror_compare.down.sql", "rollback/0002_mirror.down.sql", "rollback/0001_scheduling.down.sql"} {
 			down, err := sqlFiles.ReadFile(name)
 			if err != nil {
 				return err
@@ -754,4 +754,28 @@ func mapError(err error) error {
 		}
 	}
 	return fmt.Errorf("%w: %v", ErrUnavailable, err)
+}
+
+// ListExceptions returns the exceptions of one resource that touch [from, to).
+func (s *Store) ListExceptions(ctx context.Context, tenantID, resourceID string, from, to time.Time) ([]Exception, error) {
+	if !ValidRef(tenantID) || !ValidRef(resourceID) || !to.After(from) {
+		return nil, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `SELECT starts_at, ends_at, reason FROM sched_exceptions
+		WHERE tenant_id = $1 AND resource_id = $2 AND starts_at < $4 AND ends_at > $3 ORDER BY starts_at`, tenantID, resourceID, from, to)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	out := []Exception{}
+	for rows.Next() {
+		var e Exception
+		if err := rows.Scan(&e.Start, &e.End, &e.Reason); err != nil {
+			return nil, mapError(err)
+		}
+		out = append(out, e)
+	}
+	return out, mapError(rows.Err())
 }

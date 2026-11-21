@@ -15,7 +15,8 @@ set -euo pipefail
 export KAS_MIRROR_KEY="${KAS_MIRROR_KEY:-chave-ficticia-somente-para-validacao-local-0001}"
 MONGOSH="${MONGOSH:-mongosh $KAS_MIRROR_MONGO_URI}"
 DB=kas_espelho_ficticio
-TENANT=clinica-aurora
+# A new tenant per run: the mirror of earlier runs is never touched.
+TENANT="validacao-$(date +%s)"
 BIN="$(mktemp -d)/kas-scheduling-mirror"
 go build -o "$BIN" ./cmd/kas-scheduling-mirror
 mirror() { "$BIN" -tenant "$TENANT" -mongo-db "$DB" -migrate "$@" 2>/dev/null; }
@@ -32,6 +33,9 @@ for (let i = 0; i < 200; i++) {
     operationalStatus: ["scheduled", "confirmed", "pre_agendado", "completed", "canceled"][i % 5],
     updatedAt: new Date(Date.now() - 3600e3), isDeleted: false, notes: "fictício" });
 }
+const times = ["08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","17:00"];
+db.doctors.insertMany(pros.map(id => ({ _id: id, fullName: "Profissional Fictício", email: "x@exemplo.invalid", status: "ativo",
+  weeklyAvailability: ["monday","tuesday","wednesday","thursday","friday"].map(day => ({ day, times })) })));
 docs.push({ patient: new ObjectId(), date: new Date(Date.UTC(2027, 2, 2, 12)), time: "09:00", updatedAt: new Date() });
 db.appointments.insertMany(docs);
 JS
@@ -59,4 +63,13 @@ R=$(mirror -mode reconcile -from 2027-03-01 -to 2027-04-01 -min-gap 0s)
 V=$(mirror -mode verify -from 2027-03-01 -to 2027-04-01)
 [ "$(echo "$V" | field "['equal']")" = True ] || { echo "FAIL: verify after changes"; echo "$V"; exit 1; }
 echo "$V" | field "['source_rows'], ['matching_resource_days']" >/dev/null
-echo "OK: full 200, idempotent rerun, incremental 5, delete after 2 checks, verify equal"
+echo "== sync availability + compare (fase 3A)"
+R=$(mirror -mode sync-availability)
+[ "$(echo "$R" | field "['professionals_synced']")" = 3 ] || { echo "FAIL: sync availability"; echo "$R"; exit 1; }
+C=$(mirror -mode compare -from 2027-03-01 -to 2027-04-01)
+echo "$C" | field "['summary']"
+[ "$(echo "$C" | field "['summary']['real_divergence']")" = 0 ] && [ "$(echo "$C" | field "['summary']['import_errors']")" = 0 ] || { echo "FAIL: compare"; exit 1; }
+mirror -mode compare -from 2027-03-01 -to 2027-04-01 -format md | head -12
+H=$(mirror -mode history)
+[ "$(echo "$H" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)) >= 2)')" = True ] || { echo "FAIL: history"; exit 1; }
+echo "OK: full 200, idempotent rerun, incremental 5, delete after 2 checks, verify equal, compare without import errors or real divergences, history"

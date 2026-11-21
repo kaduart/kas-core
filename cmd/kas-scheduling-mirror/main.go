@@ -50,7 +50,7 @@ type config struct {
 	from, to                                     time.Time
 	minGap, lag                                  time.Duration
 	maxListed                                    int
-	migrate                                      bool
+	migrate, markdown                            bool
 }
 
 var dbName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,60}$`)
@@ -65,9 +65,9 @@ func loopbackHost(h string) bool {
 
 func (c config) validate() error {
 	switch c.mode {
-	case "full", "incremental", "reconcile", "verify":
+	case "full", "incremental", "reconcile", "verify", "sync-availability", "compare", "history":
 	default:
-		return errors.New("-mode must be full, incremental, reconcile or verify")
+		return errors.New("-mode must be full, incremental, reconcile, verify, sync-availability, compare or history")
 	}
 	if !scheduling.ValidRef(c.tenant) {
 		return errors.New("-tenant is required")
@@ -98,7 +98,7 @@ func (c config) validate() error {
 	if c.batch < 1 || c.batch > crmagenda.MaxBatch {
 		return fmt.Errorf("-batch must be 1..%d", crmagenda.MaxBatch)
 	}
-	if c.mode == "reconcile" || c.mode == "verify" {
+	if c.mode == "reconcile" || c.mode == "verify" || c.mode == "compare" {
 		if c.from.IsZero() || !c.to.After(c.from) || c.to.Sub(c.from) > crmagenda.MaxWindow {
 			return errors.New("-from and -to (YYYY-MM-DD) must make a window of at most 400 days")
 		}
@@ -123,11 +123,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	lag := fs.Duration("safety-lag", 5*time.Minute, "incremental cursor starts this long before the full load began")
 	maxListed := fs.Int("max-divergences", 50, "divergences listed in the verify report")
 	migrate := fs.Bool("migrate", false, "apply the Agenda migrations before running (local only)")
+	format := fs.String("format", "json", "json, or md for the compare report")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	cfg := config{mode: *mode, tenant: *tenant, mongoURI: getenv("KAS_MIRROR_MONGO_URI"), mongoDB: *mongoDB, pgURL: getenv("KAS_MIRROR_PG_URL"),
-		zone: *zone, key: []byte(getenv("KAS_MIRROR_KEY")), batch: *batch, minGap: *minGap, lag: *lag, maxListed: *maxListed, migrate: *migrate}
+		zone: *zone, key: []byte(getenv("KAS_MIRROR_KEY")), batch: *batch, minGap: *minGap, lag: *lag, maxListed: *maxListed, migrate: *migrate, markdown: *format == "md"}
 	loc, err := time.LoadLocation(cfg.zone)
 	if err != nil {
 		fmt.Fprintln(stderr, "invalid -zone")
@@ -149,6 +150,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 	out, err := execute(ctx, cfg, slog.New(slog.NewJSONHandler(stderr, nil)))
+	if rep, ok := out.(crmagenda.ComparisonReport); ok && cfg.markdown && err == nil {
+		fmt.Fprint(stdout, rep.Markdown())
+		return 0
+	}
 	if out != nil {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
@@ -189,6 +194,14 @@ func execute(ctx context.Context, cfg config, log *slog.Logger) (any, error) {
 		return im.Incremental(ctx)
 	case "reconcile":
 		return im.Reconcile(ctx, cfg.from, cfg.to, cfg.minGap)
+	case "sync-availability":
+		n, err := im.SyncAvailability(ctx)
+		return map[string]int{"professionals_synced": n}, err
+	case "compare":
+		// -to is exclusive for the other modes; compare takes inclusive days.
+		return im.Compare(ctx, cfg.from.Format("2006-01-02"), cfg.to.AddDate(0, 0, -1).Format("2006-01-02"), cfg.maxListed)
+	case "history":
+		return store.ListComparisons(ctx, cfg.tenant, crmagenda.Source, 50)
 	default:
 		return im.Verify(ctx, cfg.from, cfg.to, cfg.zone, cfg.maxListed)
 	}

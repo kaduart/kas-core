@@ -352,3 +352,66 @@ func (s *Store) MirrorRuns(ctx context.Context, tenantID, source string, limit i
 	}
 	return out, mapError(rows.Err())
 }
+
+// ComparisonCounts is the summary of one comparison kept in the history.
+type ComparisonCounts struct {
+	ID             int64     `json:"id,omitempty"`
+	WindowFrom     string    `json:"window_from"`
+	WindowTo       string    `json:"window_to"`
+	CreatedAt      time.Time `json:"created_at,omitempty"`
+	ResourceDays   int       `json:"resource_days"`
+	Equal          int       `json:"equal"`
+	ImportErrors   int       `json:"import_errors"`
+	ClinicalRules  int       `json:"clinical_rules"`
+	RealDivergence int       `json:"real_divergence"`
+	PatternsEqual  int       `json:"weekly_patterns_equal"`
+	PatternsTotal  int       `json:"weekly_patterns_total"`
+}
+
+// RecordComparison stores a comparison summary and returns its id and time.
+func (s *Store) RecordComparison(ctx context.Context, tenantID, source string, c ComparisonCounts) (int64, time.Time, error) {
+	var at time.Time
+	if !ValidRef(tenantID) || !sourcePattern.MatchString(source) {
+		return 0, at, ErrInvalid
+	}
+	if _, ok := parseDate(c.WindowFrom); !ok {
+		return 0, at, ErrInvalid
+	}
+	if _, ok := parseDate(c.WindowTo); !ok {
+		return 0, at, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+	var id int64
+	err := s.pool.QueryRow(ctx, `INSERT INTO sched_mirror_comparisons (tenant_id, source, window_from, window_to, resource_days,
+			equal_days, import_errors, clinical_rules, unexplained, patterns_equal, patterns_total)
+		VALUES ($1, $2, $3::date, $4::date, $5, $6, $7, $8, $9, $10, $11) RETURNING id, created_at`, tenantID, source, c.WindowFrom, c.WindowTo,
+		c.ResourceDays, c.Equal, c.ImportErrors, c.ClinicalRules, c.RealDivergence, c.PatternsEqual, c.PatternsTotal).Scan(&id, &at)
+	return id, at, mapError(err)
+}
+
+// ListComparisons returns the latest comparison summaries, newest first.
+func (s *Store) ListComparisons(ctx context.Context, tenantID, source string, limit int) ([]ComparisonCounts, error) {
+	if !ValidRef(tenantID) || !sourcePattern.MatchString(source) || limit < 1 || limit > 500 {
+		return nil, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `SELECT id, window_from::text, window_to::text, created_at, resource_days, equal_days, import_errors,
+			clinical_rules, unexplained, patterns_equal, patterns_total
+		FROM sched_mirror_comparisons WHERE tenant_id = $1 AND source = $2 ORDER BY id DESC LIMIT $3`, tenantID, source, limit)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	out := []ComparisonCounts{}
+	for rows.Next() {
+		var c ComparisonCounts
+		if err := rows.Scan(&c.ID, &c.WindowFrom, &c.WindowTo, &c.CreatedAt, &c.ResourceDays, &c.Equal, &c.ImportErrors,
+			&c.ClinicalRules, &c.RealDivergence, &c.PatternsEqual, &c.PatternsTotal); err != nil {
+			return nil, mapError(err)
+		}
+		out = append(out, c)
+	}
+	return out, mapError(rows.Err())
+}

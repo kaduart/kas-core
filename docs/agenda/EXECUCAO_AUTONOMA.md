@@ -68,7 +68,9 @@ Classificação: **Implementada e validada** (contra modelos transcritos por
 leitura). A comparação com dados reais do CRM é a fase 3A/3B: **Bloqueada** até
 autorização de cópia.
 
-CI do marco 2: commit `7044b80`, run 44861541754.
+CI do marco 2: commit `7044b80`, run 44861541754 **falhou** (data race no buffer de log do
+teste `TestConcurrentImportersAreSerialized`, defeito do teste, não do importador). Corrigido
+em `ef64e37`, run 44862169245 verde. O run 44862113379 (`a0bc11f`) foi cancelado pelo seguinte.
 
 ## Marco 3 — benchmark (fase 2, prioridade 3) e robustez (prioridade 4)
 

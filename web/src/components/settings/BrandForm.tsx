@@ -1,14 +1,34 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ComponentProps } from "react";
+import { Plus } from "lucide-react";
 import { useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
 import { BrandMark, BrandName } from "@/components/shell/BrandMark";
 import { cn } from "@/lib/cn";
 import { contrast, isHex, mix } from "@/lib/tenant/color";
+import { NAV_TOP } from "@/lib/modules";
 import { useTenant } from "@/lib/tenant/TenantProvider";
 import type { BrandIcon } from "@/lib/tenant/types";
+
+/** Bolinha "+" que abre o seletor de cor do sistema; mostra a cor escolhida quando ela não está entre as prontas. */
+function CustomColor({ label, value, presets, ...input }: { label: string; value?: string; presets: string[] } & ComponentProps<"input">) {
+  const custom = !!value && !presets.some((c) => c.toLowerCase() === value.toLowerCase());
+  return (
+    <label
+      title={label}
+      className={cn(
+        "relative grid size-11 cursor-pointer place-items-center rounded-full border-[3px] border-white ring-1 ring-[#d5ddd8] focus-within:ring-[3px] focus-within:ring-ink",
+        custom && "ring-[3px] ring-ink",
+      )}
+      style={custom ? { background: value } : undefined}
+    >
+      {custom ? null : <Plus className="size-5 text-muted" aria-hidden />}
+      <input type="color" aria-label={label} className="absolute inset-0 size-full cursor-pointer opacity-0" {...input} />
+    </label>
+  );
+}
 
 const schema = z.object({
   name1: z.string().trim().min(1, "Informe o nome do sistema.").max(14, "Use até 14 letras para caber no menu."),
@@ -35,7 +55,13 @@ const ICONS: { k: BrandIcon; l: string }[] = [
 const input = "min-h-12 w-full rounded-xl border border-[#d5ddd8] bg-white px-3.5 text-[15px] text-ink";
 
 export function BrandForm() {
-  const { tenant, previewBrand, saveBrand, resetBrand } = useTenant();
+  const { tenant, previewBrand, saveBrand, resetBrand, access } = useTenant();
+  // A prévia mostra o mesmo menu que a empresa tem de verdade.
+  const menu = NAV_TOP.filter((n) => {
+    if (!n.module) return false;
+    const a = access(n.module);
+    return a.allowed && !a.preview;
+  }).map((n) => n.label);
   const [saved, setSaved] = useState("");
   const form = useForm<BrandValues>({ resolver: zodResolver(schema), defaultValues: tenant.brand, mode: "onChange" });
   const { register, handleSubmit, setValue, reset, control, formState } = form;
@@ -99,7 +125,7 @@ export function BrandForm() {
                   style={{ background: c }}
                 />
               ))}
-              <input type="color" aria-label="Outra cor principal" className="size-11 cursor-pointer bg-transparent" {...register("primary")} />
+              <CustomColor label="Outra cor principal" value={values.primary} presets={PRIMARY} {...register("primary")} />
             </div>
             {err.primary ? <span className="mt-1 block text-[13px] text-[#a3402b]">{err.primary.message}</span> : null}
           </fieldset>
@@ -118,7 +144,7 @@ export function BrandForm() {
                   style={{ background: c }}
                 />
               ))}
-              <input type="color" aria-label="Outra cor de destaque" className="size-11 cursor-pointer bg-transparent" {...register("accent")} />
+              <CustomColor label="Outra cor de destaque" value={values.accent} presets={ACCENT} {...register("accent")} />
             </div>
           </fieldset>
 
@@ -172,8 +198,9 @@ export function BrandForm() {
           </div>
         </div>
         <div className="nav-active flex min-h-[42px] items-center rounded-l-[28px] pl-4 font-bold">Dashboard</div>
-        <div className="flex min-h-[42px] items-center pl-4">Attribution</div>
-        <div className="flex min-h-[42px] items-center pl-4">CRM</div>
+        {menu.map((label) => (
+          <div key={label} className="flex min-h-[42px] items-center pl-4">{label}</div>
+        ))}
       </aside>
     </form>
   );

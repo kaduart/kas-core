@@ -17,6 +17,9 @@ const (
 	// OpenTimeout bounds connecting, pinging and (in callers) migrating.
 	OpenTimeout = 10 * time.Second
 	maxConns    = 8
+	// MaxConnsExplicit bounds an explicit pool_max_conns in the connection
+	// string. Without it the pool stays at maxConns, as before.
+	MaxConnsExplicit = 32
 )
 
 // ErrTLSRequired is returned for a non-loopback host that could connect without TLS.
@@ -36,9 +39,7 @@ func Open(ctx context.Context, label, connString string) (*pgxpool.Pool, error) 
 	if err := RequireSecureTransport(config); err != nil {
 		return nil, err
 	}
-	if config.MaxConns > maxConns || config.MaxConns < 2 {
-		config.MaxConns = maxConns
-	}
+	config.MaxConns = boundedMaxConns(connString, config.MaxConns)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("%s database connection could not be created", label)
@@ -73,4 +74,21 @@ func isLocalHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// boundedMaxConns keeps the historical pool of 8 unless the connection string
+// sets pool_max_conns explicitly; an explicit value is honoured within
+// [2, MaxConnsExplicit].
+func boundedMaxConns(connString string, parsed int32) int32 {
+	explicit := strings.Contains(connString, "pool_max_conns")
+	switch {
+	case explicit && parsed >= 2 && parsed <= MaxConnsExplicit:
+		return parsed
+	case explicit && parsed > MaxConnsExplicit:
+		return MaxConnsExplicit
+	case !explicit && parsed >= 2 && parsed <= maxConns:
+		return parsed
+	default:
+		return maxConns
+	}
 }

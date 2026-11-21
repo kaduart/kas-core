@@ -53,3 +53,22 @@ func TestOpenRejectsBadInputWithoutLeakingSecrets(t *testing.T) {
 		t.Fatalf("unreachable database error = %v", err)
 	}
 }
+
+func TestBoundedMaxConns(t *testing.T) {
+	cases := []struct {
+		dsn    string
+		parsed int32
+		want   int32
+	}{
+		{"postgres://h/db", 4, 4},
+		{"postgres://h/db", 16, 8},
+		{"postgres://h/db?pool_max_conns=16", 16, 16},
+		{"postgres://h/db?pool_max_conns=500", 500, MaxConnsExplicit},
+		{"postgres://h/db?pool_max_conns=1", 1, 8},
+	}
+	for _, c := range cases {
+		if got := boundedMaxConns(c.dsn, c.parsed); got != c.want {
+			t.Errorf("%s parsed=%d: %d, want %d", c.dsn, c.parsed, got, c.want)
+		}
+	}
+}

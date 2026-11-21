@@ -1,0 +1,44 @@
+{
+  "appointments": 102200,
+  "plans": [
+    {
+      "query": "window_7d_back_120d_ahead",
+      "winning_stage": "IXSCAN",
+      "index": "date_-1",
+      "returned": 18060,
+      "docs_examined": 18060,
+      "keys_examined": 18060,
+      "execution_ms": 36
+    },
+    {
+      "query": "incremental_updatedAt_no_index",
+      "winning_stage": "COLLSCAN",
+      "returned": 140,
+      "docs_examined": 102200,
+      "keys_examined": 0,
+      "execution_ms": 56
+    },
+    {
+      "query": "incremental_with_updatedAt_index",
+      "winning_stage": "IXSCAN",
+      "index": "updatedAt_1__id_1",
+      "returned": 140,
+      "docs_examined": 140,
+      "keys_examined": 140,
+      "execution_ms": 2
+    }
+  ],
+  "seed_seconds": 2.547135958,
+  "window_first_run": {
+    "batches": 19,
+    "changed": 18060,
+    "read": 18060,
+    "seconds": 102.450521936
+  },
+  "window_next_run": {
+    "changed": 0,
+    "deleted": 0,
+    "read": 18060,
+    "seconds": 30.192931539
+  }
+}

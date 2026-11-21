@@ -1,6 +1,6 @@
 # Agenda — Fase 3B: extração sem o índice `{updatedAt:1,_id:1}`
 
-Status: **Planejada, não implementada.** Nada aqui foi executado contra o Atlas.
+Status: **opção A implementada e testada só com dados fictícios** (`-mode window`). Nada aqui foi executado contra o Atlas.
 Pedido do Kadu (21/11, 08h54): "resolver a estratégia de consultas sem índice no Atlas", sem cópia de dados reais por enquanto.
 
 ## O problema
@@ -30,7 +30,9 @@ O que existe de fato no Atlas só se confirma com `-mode plan` lá, e isso tamb�
 
 **A primeiro, B depois se for preciso tempo real, C só se A e B não bastarem.**
 
-A usa só índices que já existem e não muda nada no Atlas. A reconciliação por janela já está implementada e testada: é o `-mode reconcile`, com exclusão só depois de duas verificações. Falta só agendar.
+A usa só índices que já existem e não muda nada no Atlas.
+
+**Correção (21/11, tarde):** a versão anterior dizia que o `-mode reconcile` já cobria a opção A. Não cobria: ele só trata exclusões, e as alterações vinham do incremental, que depende do índice em `updatedAt`. Por isso foi criado o `-mode window`, que lê a janela pelo índice de data, grava as alterações e trata as exclusões com duas verificações. Ele foi testado com 102 mil agendamentos fictícios: a janela examina só o que devolve (IXSCAN), e o incremental sem índice varre a coleção inteira (COLLSCAN). Os números estão em `BENCHMARK_503_E_JANELA.md`. Falta agendar e, antes disso, deixar a gravação no KAS mais rápida.
 
 ## Proteções em qualquer opção
 

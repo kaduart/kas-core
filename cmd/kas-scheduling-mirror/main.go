@@ -13,6 +13,7 @@
 //	kas-scheduling-mirror -mode full -tenant clinica-aurora -mongo-db fono_espelho
 //	kas-scheduling-mirror -mode incremental -tenant clinica-aurora -mongo-db fono_espelho
 //	kas-scheduling-mirror -mode reconcile -from 2027-03-01 -to 2027-04-01 ...
+//	kas-scheduling-mirror -mode window -from 2027-03-01 -to 2027-04-01 ...  (no updatedAt index needed)
 //	kas-scheduling-mirror -mode verify -from 2027-03-01 -to 2027-04-01 ...
 //
 // The output is one JSON report with counts only (and, for verify, opaque ids).
@@ -65,9 +66,9 @@ func loopbackHost(h string) bool {
 
 func (c config) validate() error {
 	switch c.mode {
-	case "full", "incremental", "reconcile", "verify", "sync-availability", "compare", "history", "plan":
+	case "full", "incremental", "reconcile", "window", "verify", "sync-availability", "compare", "history", "plan":
 	default:
-		return errors.New("-mode must be full, incremental, reconcile, verify, sync-availability, compare, history or plan")
+		return errors.New("-mode must be full, incremental, reconcile, window, verify, sync-availability, compare, history or plan")
 	}
 	// plan only asks MongoDB for query plans: no tenant, key or PostgreSQL needed.
 	if c.mode != "plan" && !scheduling.ValidRef(c.tenant) {
@@ -102,7 +103,7 @@ func (c config) validate() error {
 	if c.batch < 1 || c.batch > crmagenda.MaxBatch {
 		return fmt.Errorf("-batch must be 1..%d", crmagenda.MaxBatch)
 	}
-	if c.mode == "reconcile" || c.mode == "verify" || c.mode == "compare" {
+	if c.mode == "reconcile" || c.mode == "window" || c.mode == "verify" || c.mode == "compare" {
 		if c.from.IsZero() || !c.to.After(c.from) || c.to.Sub(c.from) > crmagenda.MaxWindow {
 			return errors.New("-from and -to (YYYY-MM-DD) must make a window of at most 400 days")
 		}
@@ -116,13 +117,13 @@ func (c config) validate() error {
 func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("kas-scheduling-mirror", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	mode := fs.String("mode", "", "full, incremental, reconcile, verify, sync-availability, compare, history or plan (query plans only)")
+	mode := fs.String("mode", "", "full, incremental, reconcile, window, verify, sync-availability, compare, history or plan (query plans only)")
 	tenant := fs.String("tenant", "", "KAS tenant that receives the mirror")
 	mongoDB := fs.String("mongo-db", "", "local MongoDB database holding the CRM copy")
 	zone := fs.String("zone", "America/Sao_Paulo", "clinic time zone")
 	batch := fs.Int64("batch", 500, "rows per batch (memory bound)")
-	from := fs.String("from", "", "window start, local day YYYY-MM-DD (reconcile, verify)")
-	to := fs.String("to", "", "window end, exclusive, local day YYYY-MM-DD (reconcile, verify)")
+	from := fs.String("from", "", "window start, local day YYYY-MM-DD (reconcile, window, verify)")
+	to := fs.String("to", "", "window end, exclusive, local day YYYY-MM-DD (reconcile, window, verify)")
 	minGap := fs.Duration("min-gap", 10*time.Minute, "a missing row is deleted only if it was missing at least this long before")
 	lag := fs.Duration("safety-lag", 5*time.Minute, "incremental cursor starts this long before the full load began")
 	maxListed := fs.Int("max-divergences", 50, "divergences listed in the verify report")
@@ -201,6 +202,8 @@ func execute(ctx context.Context, cfg config, log *slog.Logger) (any, error) {
 		return im.Incremental(ctx)
 	case "reconcile":
 		return im.Reconcile(ctx, cfg.from, cfg.to, cfg.minGap)
+	case "window":
+		return im.Window(ctx, cfg.from, cfg.to, cfg.minGap)
 	case "sync-availability":
 		n, err := im.SyncAvailability(ctx)
 		return map[string]int{"professionals_synced": n}, err

@@ -217,6 +217,61 @@ func (im *Importer) Incremental(ctx context.Context) (Report, error) {
 	return rep, err
 }
 
+// Window re-reads every source row whose day falls in [from, to) through the
+// date index, upserts it and then reconciles deletions in the same window. It
+// needs no updatedAt index and no full load: it is the extraction strategy for
+// a source without that index (docs/agenda/FASE3B_ESTRATEGIA_SEM_INDICE.md).
+// A change to a row outside the window is not seen; the window must cover the
+// days that matter for availability. The incremental cursor is not moved.
+func (im *Importer) Window(ctx context.Context, from, to time.Time, minGap time.Duration) (Report, error) {
+	rep := Report{Mode: "window", Tenant: im.Tenant, Skipped: Skips{}}
+	if !to.After(from) || to.Sub(from) > MaxWindow {
+		return rep, scheduling.ErrInvalid
+	}
+	started := time.Now().UTC()
+	err := im.locked(ctx, func() error {
+		cur, err := im.Store.GetMirrorCursor(ctx, im.Tenant, Source)
+		if err != nil {
+			return err
+		}
+		docs, err := im.Reader.InWindow(ctx, from, to)
+		if err != nil {
+			return fmt.Errorf("read source: %w", err)
+		}
+		ids := make([]string, 0, len(docs))
+		for _, d := range docs {
+			ids = append(ids, im.Mapper.BookingRef(d.ID))
+		}
+		for i := 0; i < len(docs); i += int(im.Batch) {
+			end := min(i+int(im.Batch), len(docs))
+			items := im.mapAll(docs[i:end], rep.Skipped)
+			res, err := im.Store.MirrorApply(ctx, im.Tenant, Source, items, cur, false)
+			if err != nil {
+				return fmt.Errorf("write mirror: %w", err)
+			}
+			rep.Changed += res.Changed
+			rep.Stale += res.Stale
+			rep.Batches++
+			if im.OnBatch != nil {
+				if err := im.OnBatch(rep.Batches); err != nil {
+					return err
+				}
+			}
+		}
+		rep.Read = len(docs)
+		res, err := im.Store.MirrorReconcile(ctx, im.Tenant, Source, from, to, ids, minGap)
+		if err != nil {
+			return fmt.Errorf("write mirror: %w", err)
+		}
+		rep.Deleted, rep.Pending, rep.Cleared = res.Deleted, res.Candidates, res.Cleared
+		return nil
+	})
+	if err == nil {
+		im.finish(ctx, &rep, started)
+	}
+	return rep, err
+}
+
 // sourceIDs streams the ids of the source rows in the window (only _id is read).
 func (im *Importer) sourceIDs(ctx context.Context, from, to time.Time) ([]string, error) {
 	filter := bson.D{{Key: "date", Value: bson.D{

@@ -47,3 +47,23 @@ verify igual).
 
 Classificação: **Implementada e validada** (com dados fictícios). Cópia de dados
 reais para `fono_espelho`: **Bloqueada** (precisa de autorização separada).
+
+CI do marco 1: commit `60feada`, run 44861034563, 6/6 verde.
+
+## Marco 2 — equivalência com as regras do CRM (fase 2, prioridade 2)
+
+- Lidos (sem executar nem alterar o CRM) os 3 geradores de recorrência: pacote
+  (formulário do front + ajuste de feriados do back), plano de convênio e
+  contrato de liminar; mais o cálculo de horários livres, feriados parciais e
+  status que bloqueiam.
+- 32 cenários fictícios em `internal/legacy/crmagenda/equivalence_test.go`:
+  20 iguais, 4 iguais depois que o módulo saúde aplica a regra clínica,
+  6 defeitos do CRM (o KAS acerta de propósito), 2 conceitos que só o KAS tem
+  (intervalo e férias por período). Tabela completa e separação genérico × saúde
+  em `docs/agenda/EQUIVALENCIA_RECORRENCIA.md`.
+- Ajustes no motor genérico: quinzenal ancorado na semana de início,
+  `time_by_weekday`, `skip_dates`, `count` + `until` juntos.
+
+Classificação: **Implementada e validada** (contra modelos transcritos por
+leitura). A comparação com dados reais do CRM é a fase 3A/3B: **Bloqueada** até
+autorização de cópia.

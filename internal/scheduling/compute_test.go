@@ -283,7 +283,6 @@ func TestSeriesLimits(t *testing.T) {
 	ok := SeriesRule{Frequency: "weekly", Weekdays: []int{1}, Time: "09:00", DurationMin: 40, StartDate: "2026-12-07", Count: 4, HolidayPolicy: HolidayKeep}
 	bad := map[string]func(*SeriesRule){
 		"frequency":      func(r *SeriesRule) { r.Frequency = "daily" },
-		"count+until":    func(r *SeriesRule) { r.Until = "2027-01-01" },
 		"no limit":       func(r *SeriesRule) { r.Count = 0 },
 		"too many":       func(r *SeriesRule) { r.Count = MaxSeriesCount + 1 },
 		"past 2 years":   func(r *SeriesRule) { r.Count = 0; r.Until = "2029-01-01" },

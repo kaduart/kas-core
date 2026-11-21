@@ -273,7 +273,9 @@ const (
 	HolidaySkip = "skip" // the holiday date is skipped; a count series grows to keep its size
 )
 
-// SeriesRule describes a recurring booking. Exactly one of Count or Until is set.
+// SeriesRule describes a recurring booking. Count, Until or both are set; with
+// both, the series stops at whichever comes first ("N sessions, until the
+// contract ends").
 type SeriesRule struct {
 	Frequency     string `json:"frequency"` // weekly or biweekly
 	Weekdays      []int  `json:"weekdays"`  // 0 = Sunday
@@ -283,6 +285,13 @@ type SeriesRule struct {
 	Count         int    `json:"count,omitempty"`
 	Until         string `json:"until,omitempty"`
 	HolidayPolicy string `json:"holiday_policy"`
+	// SkipDates are local dates the series leaves out whatever the policy
+	// (chosen by the caller, e.g. a module's own exclusions); they are reported
+	// with the holidays and a Count series grows past them.
+	SkipDates []string `json:"skip_dates,omitempty"`
+	// TimeByWeekday overrides Time for some weekdays (key 0 = Sunday), for a
+	// series that meets at different hours on different days.
+	TimeByWeekday map[int]string `json:"time_by_weekday,omitempty"`
 }
 
 // SeriesResult lists the occurrences and the holiday dates left out.
@@ -299,12 +308,13 @@ func parseClock(s string) (int, bool) {
 	return t.Hour()*60 + t.Minute(), true
 }
 
-// ExpandSeries turns a rule into dated occurrences. Each weekday is anchored
-// on its first date on or after StartDate and repeats every 7 (weekly) or 14
-// (biweekly) days. With HolidaySkip, a holiday date is dropped; a Count series
-// then continues until it has Count occurrences, which gives the same dates as
-// the CRM's "move to next week" rule but never lands on a second holiday. The
-// series may not reach past two years from StartDate.
+// ExpandSeries turns a rule into dated occurrences. Rounds are weeks counted
+// from the week (Monday to Sunday) that holds StartDate: weekly uses every
+// week, biweekly every other one (weeks 0, 2, 4...), so every weekday of a
+// biweekly series falls in the same week, as in the CRM's package form. Days of
+// week 0 before StartDate are left out. With HolidaySkip, a holiday date (or a
+// date in SkipDates) is dropped and a Count series continues until it has
+// Count occurrences. The series may not reach past two years from StartDate.
 func ExpandSeries(rule SeriesRule, settings Settings) (SeriesResult, error) {
 	loc, err := zoneOf(settings)
 	if err != nil {
@@ -327,7 +337,7 @@ func ExpandSeries(rule SeriesRule, settings Settings) (SeriesResult, error) {
 	if rule.HolidayPolicy != HolidayKeep && rule.HolidayPolicy != HolidaySkip {
 		return SeriesResult{}, ErrInvalid
 	}
-	if (rule.Count == 0) == (rule.Until == "") || rule.Count < 0 || rule.Count > MaxSeriesCount {
+	if (rule.Count == 0 && rule.Until == "") || rule.Count < 0 || rule.Count > MaxSeriesCount {
 		return SeriesResult{}, ErrInvalid
 	}
 	horizon := start.Add(MaxSeriesHorizon)
@@ -339,41 +349,67 @@ func ExpandSeries(rule SeriesRule, settings Settings) (SeriesResult, error) {
 		}
 		until = u
 	}
-	if len(rule.Weekdays) == 0 || len(rule.Weekdays) > 7 {
+	if len(rule.Weekdays) == 0 || len(rule.Weekdays) > 7 || len(rule.SkipDates) > MaxHolidays {
 		return SeriesResult{}, ErrInvalid
 	}
+	skip := map[string]bool{}
+	for _, d := range rule.SkipDates {
+		if _, ok := parseDate(d); !ok {
+			return SeriesResult{}, ErrInvalid
+		}
+		skip[d] = true
+	}
+	clockOf := map[int]int{}
+	for wd, c := range rule.TimeByWeekday {
+		m, ok := parseClock(c)
+		if !ok || wd < 0 || wd > 6 {
+			return SeriesResult{}, ErrInvalid
+		}
+		clockOf[(wd+6)%7] = m
+	}
+	// Offsets from the Monday of the start week, in week order (Sunday last).
 	used := map[int]bool{}
-	anchors := make([]time.Time, 0, len(rule.Weekdays))
+	offsets := make([]int, 0, len(rule.Weekdays))
 	for _, wd := range rule.Weekdays {
 		if wd < 0 || wd > 6 || used[wd] {
 			return SeriesResult{}, ErrInvalid
 		}
 		used[wd] = true
-		offset := (wd - int(start.Weekday()) + 7) % 7
-		anchors = append(anchors, start.AddDate(0, 0, offset))
+		offsets = append(offsets, (wd+6)%7)
 	}
-	sort.Slice(anchors, func(i, j int) bool { return anchors[i].Before(anchors[j]) })
+	sort.Ints(offsets)
+	for wd := range rule.TimeByWeekday {
+		if !used[wd] {
+			return SeriesResult{}, ErrInvalid
+		}
+	}
+	monday := start.AddDate(0, 0, -((int(start.Weekday()) + 6) % 7))
 
 	holidays := holidaySet(settings)
 	duration := time.Duration(rule.DurationMin) * time.Minute
 	res := SeriesResult{Occurrences: []Interval{}, SkippedHolidays: []string{}}
-	// Anchors fall within 7 days of StartDate, so round k of every weekday stays
-	// inside [start+k*step, start+k*step+7): rounds never interleave.
 	for k := 0; ; k++ {
-		for _, a := range anchors {
-			day := a.AddDate(0, 0, k*stepDays)
+		for _, off := range offsets {
+			day := monday.AddDate(0, 0, k*stepDays+off)
+			if day.Before(start) {
+				continue
+			}
 			if day.After(until) {
-				if rule.Count > 0 && len(res.Occurrences) < rule.Count {
+				if rule.Count > 0 && len(res.Occurrences) < rule.Count && rule.Until == "" {
 					return SeriesResult{}, fmt.Errorf("%w: series would pass two years", ErrInvalid)
 				}
 				return res, nil
 			}
 			date := day.Format(dateLayout)
-			if holidays[date] && rule.HolidayPolicy == HolidaySkip {
+			if skip[date] || (holidays[date] && rule.HolidayPolicy == HolidaySkip) {
 				res.SkippedHolidays = append(res.SkippedHolidays, date)
 				continue
 			}
-			s := localAt(day, minutes, loc)
+			m := minutes
+			if c, ok := clockOf[off]; ok {
+				m = c
+			}
+			s := localAt(day, m, loc)
 			res.Occurrences = append(res.Occurrences, Interval{Start: s, End: s.Add(duration)})
 			if rule.Count > 0 && len(res.Occurrences) == rule.Count {
 				return res, nil

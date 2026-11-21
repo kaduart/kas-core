@@ -27,6 +27,7 @@ import (
 const (
 	tenantA = "clinica-aurora"
 	tenantB = "escola-exemplo"
+	tenantC = "oficina-exemplo"
 	zone    = "America/Sao_Paulo"
 )
 
@@ -633,24 +634,30 @@ func TestTenantsAreIsolated(t *testing.T) {
 	if na, nb := len(e.mirrored(tenantA)), len(e.mirrored(tenantB)); na != 7 || nb != 8 {
 		t.Fatalf("tenant A reconcile touched tenant B: A=%d B=%d", na, nb)
 	}
-	// Tenant B's mirror cannot write over tenant A's ids, nor over a native booking.
+	// A mirrored tenant is read only for native writes (phase 4A).
 	native := scheduling.NewBooking{ID: "bk-nativo", ResourceID: "sala-1", ClientRef: "cli-1", IdempotencyKey: "n1", Actor: "teste",
 		Start: march.from.Add(30 * time.Hour), End: march.from.Add(31 * time.Hour)}
-	if err := e.store.PutSettings(ctx, tenantB, scheduling.Settings{Zone: zone}); err != nil {
-		t.Fatal(err)
+	for _, tn := range []string{tenantB, tenantC} {
+		if err := e.store.PutSettings(ctx, tn, scheduling.Settings{Zone: zone}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.store.PutResource(ctx, tn, scheduling.Resource{ID: "sala-1", Kind: "room", Label: "Sala", Capacity: 1, Active: true}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.store.PutWeeklyRules(ctx, tn, "sala-1", []scheduling.WeeklyRule{{Weekday: 1, StartMin: 0, EndMin: 24 * 60}}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := e.store.PutResource(ctx, tenantB, scheduling.Resource{ID: "sala-1", Kind: "room", Label: "Sala", Capacity: 1, Active: true}); err != nil {
-		t.Fatal(err)
+	if _, _, err := e.store.CreateBooking(ctx, tenantB, native); !errors.Is(err, scheduling.ErrReadOnly) {
+		t.Fatalf("native write accepted in a mirrored tenant: %v", err)
 	}
-	if err := e.store.PutWeeklyRules(ctx, tenantB, "sala-1", []scheduling.WeeklyRule{{Weekday: 1, StartMin: 0, EndMin: 24 * 60}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := e.store.CreateBooking(ctx, tenantB, native); err != nil {
+	// The mirror cannot write over a native booking of a tenant that has one.
+	if _, _, err := e.store.CreateBooking(ctx, tenantC, native); err != nil {
 		t.Fatal(err)
 	}
 	clash := scheduling.MirrorItem{BookingID: "bk-nativo", ResourceID: "pr-x", ClientRef: "cl-x", Start: native.Start, End: native.End,
 		Status: scheduling.StatusScheduled, SourceStatus: "scheduled", SourceUpdatedAt: time.Now()}
-	if _, err := e.store.MirrorApply(ctx, tenantB, Source, []scheduling.MirrorItem{clash}, scheduling.MirrorCursor{}, false); !errors.Is(err, scheduling.ErrInvalid) {
+	if _, err := e.store.MirrorApply(ctx, tenantC, Source, []scheduling.MirrorItem{clash}, scheduling.MirrorCursor{}, false); !errors.Is(err, scheduling.ErrInvalid) {
 		t.Fatalf("mirror overwrote a native booking: %v", err)
 	}
 }

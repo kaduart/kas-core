@@ -460,6 +460,9 @@ type NewBooking struct {
 	BufferMin      int
 	IdempotencyKey string
 	Actor          string
+	// RequireOpen refuses a time outside the opening hours (ErrClosed). The
+	// write routes always set it; internal callers (tests, imports) may not.
+	RequireOpen bool
 }
 
 func newID() string {
@@ -580,6 +583,14 @@ func (s *Store) CreateBooking(ctx context.Context, tenantID string, nb NewBookin
 		if err != nil {
 			return err
 		}
+		if err := ensureWritable(ctx, tx, tenantID); err != nil {
+			return err
+		}
+		if nb.RequireOpen {
+			if err := ensureOpen(ctx, tx, tenantID, r.ID, st, nb.Start, nb.End); err != nil {
+				return err
+			}
+		}
 		buffer := nb.BufferMin
 		if nb.ServiceID != "" {
 			if err := tx.QueryRow(ctx, `SELECT buffer_min FROM sched_services WHERE tenant_id = $1 AND id = $2 FOR SHARE`,
@@ -635,11 +646,83 @@ func (s *Store) CreateBooking(ctx context.Context, tenantID string, nb NewBookin
 	return Booking{}, false, mapError(err)
 }
 
+// ensureWritable refuses writes to a tenant whose agenda is mirrored.
+func ensureWritable(ctx context.Context, tx pgx.Tx, tenantID string) error {
+	var mirrored bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sched_mirror_cursor WHERE tenant_id = $1)
+		OR EXISTS (SELECT 1 FROM sched_mirror_items WHERE tenant_id = $1)`, tenantID).Scan(&mirrored); err != nil {
+		return err
+	}
+	if mirrored {
+		return ErrReadOnly
+	}
+	return nil
+}
+
+// ensureOpen loads the resource's rules and exceptions in the transaction and
+// checks [start, end) with OpenAt.
+func ensureOpen(ctx context.Context, tx pgx.Tx, tenantID, resourceID string, st Settings, start, end time.Time) error {
+	rows, err := tx.Query(ctx, `SELECT weekday, start_min, end_min, COALESCE(valid_from::text, ''), COALESCE(valid_to::text, '')
+		FROM sched_weekly_rules WHERE tenant_id = $1 AND resource_id = $2`, tenantID, resourceID)
+	if err != nil {
+		return err
+	}
+	var rules []WeeklyRule
+	for rows.Next() {
+		var r WeeklyRule
+		if err := rows.Scan(&r.Weekday, &r.StartMin, &r.EndMin, &r.ValidFrom, &r.ValidTo); err != nil {
+			rows.Close()
+			return err
+		}
+		rules = append(rules, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows, err = tx.Query(ctx, `SELECT starts_at, ends_at, reason FROM sched_exceptions
+		WHERE tenant_id = $1 AND resource_id = $2 AND starts_at < $4 AND ends_at > $3`, tenantID, resourceID, start, end)
+	if err != nil {
+		return err
+	}
+	var exc []Exception
+	for rows.Next() {
+		var e Exception
+		if err := rows.Scan(&e.Start, &e.End, &e.Reason); err != nil {
+			rows.Close()
+			return err
+		}
+		exc = append(exc, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	open, err := OpenAt(st, rules, exc, start, end)
+	if err != nil {
+		return err
+	}
+	if !open {
+		return ErrClosed
+	}
+	return nil
+}
+
 // Reschedule moves an active booking. expectedVersion must match the stored
 // version (optimistic lock): of two concurrent moves of the same booking, one
 // wins and the other gets ErrVersionConflict. The old slot is released only if
 // the move is committed.
 func (s *Store) Reschedule(ctx context.Context, tenantID, id string, expectedVersion int, start, end time.Time, actor string) (Booking, error) {
+	return s.reschedule(ctx, tenantID, id, expectedVersion, start, end, actor, false)
+}
+
+// RescheduleOpen is Reschedule that also refuses a new time outside the
+// resource's opening hours (ErrClosed). The write routes use it.
+func (s *Store) RescheduleOpen(ctx context.Context, tenantID, id string, expectedVersion int, start, end time.Time, actor string) (Booking, error) {
+	return s.reschedule(ctx, tenantID, id, expectedVersion, start, end, actor, true)
+}
+
+func (s *Store) reschedule(ctx context.Context, tenantID, id string, expectedVersion int, start, end time.Time, actor string, requireOpen bool) (Booking, error) {
 	if !ValidRef(tenantID) || !ValidRef(id) || !ValidRef(actor) || expectedVersion < 1 || !end.After(start) || end.Sub(start) > 12*time.Hour {
 		return Booking{}, ErrInvalid
 	}
@@ -655,6 +738,9 @@ func (s *Store) Reschedule(ctx context.Context, tenantID, id string, expectedVer
 		if err != nil {
 			return err
 		}
+		if err := ensureWritable(ctx, tx, tenantID); err != nil {
+			return err
+		}
 		if cur.Version != expectedVersion {
 			return ErrVersionConflict
 		}
@@ -664,6 +750,15 @@ func (s *Store) Reschedule(ctx context.Context, tenantID, id string, expectedVer
 		r, err := getResource(ctx, tx, tenantID, cur.ResourceID, "FOR SHARE")
 		if err != nil {
 			return err
+		}
+		if requireOpen {
+			st, err := getSettings(ctx, tx, tenantID)
+			if err != nil {
+				return err
+			}
+			if err := ensureOpen(ctx, tx, tenantID, r.ID, st, start, end); err != nil {
+				return err
+			}
 		}
 		if err := lockResource(ctx, tx, tenantID, r.ID); err != nil {
 			return err
@@ -710,6 +805,15 @@ func (s *Store) Cancel(ctx context.Context, tenantID, id string, expectedVersion
 		if err != nil {
 			return err
 		}
+		if err := ensureWritable(ctx, tx, tenantID); err != nil {
+			return err
+		}
+		// Canceling a canceled booking answers with it, unchanged: a repeated
+		// cancel (lost answer) is harmless whatever version it carries.
+		if status == StatusCanceled {
+			out, err = scanBooking(tx.QueryRow(ctx, `SELECT `+bookingColumns+` FROM sched_bookings WHERE tenant_id = $1 AND id = $2`, tenantID, id))
+			return err
+		}
 		if version != expectedVersion {
 			return ErrVersionConflict
 		}
@@ -732,7 +836,7 @@ func mapError(err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, known := range []error{ErrNotFound, ErrInvalid, ErrSlotTaken, ErrClientBusy, ErrVersionConflict, ErrIdempotencyMismatch, ErrUnavailable} {
+	for _, known := range []error{ErrNotFound, ErrInvalid, ErrSlotTaken, ErrClientBusy, ErrVersionConflict, ErrIdempotencyMismatch, ErrUnavailable, ErrReadOnly, ErrClosed} {
 		if errors.Is(err, known) {
 			return err
 		}

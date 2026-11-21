@@ -541,11 +541,13 @@ func (s *Store) ResolveTenant(serviceID, token, requested, capability string) (s
 }
 
 // panelCapabilities are the only capabilities a service that signs people in
-// (identity:sessions) may hold. Every one of them is a read that the handlers
-// bind to the person's session (see RequiresUserSession), so a panel service
-// can never act for a tenant outside the signed-in person's memberships.
+// (identity:sessions) may hold. The handlers bind every one of them to the
+// person's session (see RequiresUserSession), so a panel service can never act
+// for a tenant outside the signed-in person's memberships. All are reads
+// except scheduling:write, whose handlers also require a writing role
+// (admin, gestor or atendimento) in that tenant.
 var panelCapabilities = []string{CapabilityIdentitySessions, CapabilityAttributionRead, CapabilityReportsRead,
-	CapabilitySchedulingRead, CapabilitySchedulingCompute}
+	CapabilitySchedulingRead, CapabilitySchedulingCompute, CapabilitySchedulingWrite}
 
 func panelCapability(capability string) bool {
 	for _, c := range panelCapabilities {

@@ -229,8 +229,15 @@ func TestSchedulingDisabled(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable || errorCode(t, rec.Body.Bytes()) != "scheduling_unavailable" {
 		t.Fatalf("disabled: %d %s", rec.Code, rec.Body)
 	}
-	// No write route exists in phase 1.
-	for _, p := range []string{"/internal/v1/scheduling/bookings", "/internal/v1/scheduling/bookings:create"} {
+	// The write routes (phase 4A) are off too while the Agenda is disabled.
+	for _, p := range []string{"/internal/v1/scheduling/bookings", "/internal/v1/scheduling/bookings/bk-1/cancel", "/internal/v1/scheduling/bookings/bk-1/reschedule"} {
+		if rec := schedCall(h, http.MethodPost, p, "escola-sis", handlerTokenB, "", `{}`); rec.Code != http.StatusServiceUnavailable ||
+			errorCode(t, rec.Body.Bytes()) != "scheduling_unavailable" {
+			t.Fatalf("POST %s with the Agenda off: %d %s", p, rec.Code, rec.Body)
+		}
+	}
+	// Any other write path still does not exist.
+	for _, p := range []string{"/internal/v1/scheduling/bookings:create", "/internal/v1/scheduling/bookings/bk-1/delete"} {
 		if rec := schedCall(h, http.MethodPost, p, "escola-sis", handlerTokenB, "", `{}`); rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusNotFound {
 			t.Fatalf("POST %s must not exist: %d", p, rec.Code)
 		}

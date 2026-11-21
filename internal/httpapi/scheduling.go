@@ -11,8 +11,8 @@ import (
 	"kas-core-pilot/internal/scheduling"
 )
 
-// KAS Agenda routes, phase 1 (spec "Agenda genérica na KAS"): reads and pure
-// calculations only. No route writes a booking yet. The company always comes
+// KAS Agenda routes (spec "Agenda genérica na KAS"). This file holds the reads
+// and pure calculations; booking writes are in scheduling_write.go. The company always comes
 // from the caller's credentials (and, for the panel, the signed-in person's
 // session): a tenant_id in the request only picks among the companies the
 // caller may already serve, it never grants access.
@@ -31,6 +31,7 @@ func (h *Handler) registerSchedulingRoutes() {
 	h.mux.HandleFunc("GET /internal/v1/scheduling/bookings", h.schedulingBookings)
 	h.mux.HandleFunc("POST /internal/v1/scheduling/conflicts:check", h.schedulingConflicts)
 	h.mux.HandleFunc("POST /internal/v1/scheduling/series:preview", h.schedulingSeries)
+	h.registerSchedulingWriteRoutes()
 }
 
 // schedulingTenant authorizes the caller for the capability and binds the

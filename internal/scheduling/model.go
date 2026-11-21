@@ -52,6 +52,11 @@ var (
 	// ErrUnavailable: the database kept failing (serialization, deadlock) after
 	// the automatic retries. Nothing partial was written.
 	ErrUnavailable = errors.New("scheduling_unavailable")
+	// ErrReadOnly: the tenant's agenda is mirrored from another system; the
+	// KAS never writes it (the source of truth is elsewhere).
+	ErrReadOnly = errors.New("agenda_read_only")
+	// ErrClosed: the time is outside the resource's opening hours.
+	ErrClosed = errors.New("outside_opening_hours")
 )
 
 var refPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)

@@ -417,3 +417,31 @@ func ExpandSeries(rule SeriesRule, settings Settings) (SeriesResult, error) {
 		}
 	}
 }
+
+// OpenAt says whether [start, end) lies inside the resource's opening hours:
+// one local day that is not a tenant holiday, fully covered by one weekly
+// rule of that weekday, and touched by no exception. The buffer after end is
+// not required to fit (it is cleanup time, not service time).
+func OpenAt(settings Settings, rules []WeeklyRule, exceptions []Exception, start, end time.Time) (bool, error) {
+	loc, err := zoneOf(settings)
+	if err != nil {
+		return false, err
+	}
+	ls, le := start.In(loc), end.In(loc)
+	day := time.Date(ls.Year(), ls.Month(), ls.Day(), 0, 0, 0, 0, loc)
+	if !end.After(start) || le.Sub(day) > 24*time.Hour || holidaySet(settings)[day.Format(dateLayout)] {
+		return false, nil
+	}
+	if closedBy(Interval{Start: start, End: end}, exceptions) {
+		return false, nil
+	}
+	for _, r := range rules {
+		if !ruleApplies(r, day) {
+			continue
+		}
+		if !localAt(day, r.StartMin, loc).After(start) && !localAt(day, r.EndMin, loc).Before(end) {
+			return true, nil
+		}
+	}
+	return false, nil
+}

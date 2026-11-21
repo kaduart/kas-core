@@ -43,7 +43,25 @@ type env struct {
 	dsn   string
 	doc   []bson.ObjectID // doctors
 	pat   []bson.ObjectID // patients
-	logs  *bytes.Buffer
+	logs  *lockedBuffer
+}
+
+// lockedBuffer collects logs from importers running at the same time.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func newEnv(t *testing.T) *env {
@@ -56,7 +74,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(s.Close)
-	e := &env{t: t, coll: db.Collection(Collection), db: db, store: s, dsn: dsn, logs: &bytes.Buffer{}}
+	e := &env{t: t, coll: db.Collection(Collection), db: db, store: s, dsn: dsn, logs: &lockedBuffer{}}
 	for i := 0; i < 3; i++ {
 		e.doc = append(e.doc, bson.NewObjectID())
 		e.pat = append(e.pat, bson.NewObjectID())
